@@ -444,6 +444,90 @@ client.on("threadUpdate", async (antes, depois) => {
   }
 });
 
+/* ---------------- chat espelhado por idioma ----------------
+
+   A mesma conversa acontecendo em vários canais, cada um num idioma. Quem
+   escreve em #chat-en aparece em #chat-pt já em português, com o nome e a
+   foto de quem falou -- webhook deixa trocar isso por mensagem, então lá
+   parece que a pessoa escreveu em português.
+
+   A trava contra eco é estrutural, não uma lista de exceções: só mensagem de
+   GENTE é espelhada, e o espelho sai por webhook. Espelho de espelho não
+   existe porque webhook nunca entra aqui. */
+
+const cacheEspelho = new Map(); // aliancaId -> { v, t }
+async function canaisEspelho(aliancaId) {
+  const achado = cacheEspelho.get(aliancaId);
+  if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
+  let v = [];
+  try {
+    v = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook`) || [];
+  } catch { /* tenta de novo na proxima mensagem */ }
+  cacheEspelho.set(aliancaId, { v, t: Date.now() });
+  return v;
+}
+
+/* Google barra o endpoint classico quando a chamada sai do Supabase, mas o
+   Fly passa nos dois. Mesmo assim vale ter o clients5 primeiro: e' o que
+   sobreviveu ao bloqueio, e um dia o bloqueio pode chegar aqui tambem. */
+async function traduzir(texto, alvo) {
+  const tentativas = [
+    {
+      url: `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${alvo}&q=${encodeURIComponent(texto)}`,
+      ler: (j) => (Array.isArray(j) ? j.map((p) => (Array.isArray(p) ? p[0] : p)).join("") : ""),
+    },
+    {
+      url: `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
+      ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
+    },
+  ];
+  for (const t of tentativas) {
+    try {
+      const r = await fetch(t.url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) { console.error("espelho: tradutor devolveu HTTP", r.status); continue; }
+      const saiu = t.ler(await r.json());
+      if (saiu) return saiu;
+    } catch (e) {
+      console.error("espelho: tradutor falhou:", String(e).slice(0, 100));
+    }
+  }
+  return null;
+}
+
+async function espelharMensagem(msg, lista, origem, texto) {
+  /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
+     pros outros aqui dentro. */
+  const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
+  const foto = msg.author.displayAvatarURL({ extension: "png", size: 128 });
+  const anexos = [...msg.attachments.values()].map((a) => a.url);
+
+  for (const destino of lista) {
+    if (destino.canal_id === origem.canal_id) continue;
+
+    let corpo = texto;
+    if (texto && destino.idioma !== origem.idioma) {
+      /* Tradutor fora do ar nao pode calar a conversa: manda o original e
+         deixa a pessoa se virar, que e' melhor do que a mensagem sumir. */
+      corpo = (await traduzir(texto, destino.idioma)) || texto;
+    }
+
+    const conteudo = [corpo, ...anexos].filter(Boolean).join("\n").slice(0, 1900);
+    if (!conteudo) continue;
+
+    await fetch(destino.webhook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: conteudo,
+        username: nome,
+        avatar_url: foto,
+        /* Texto de terceiro nao pode virar @everyone do outro lado. */
+        allowed_mentions: { parse: [] },
+      }),
+    }).catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
+  }
+}
+
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
@@ -469,11 +553,23 @@ client.on("messageCreate", async (msg) => {
     }
     if (msg.author.bot) return;
 
-    const texto = String(msg.content || "").trim();
-    if (!texto) return;
-
     const aliancaId = await aliancaDoGuild(msg.guild.id);
     if (!aliancaId) return; // servidor ainda nao ligado ao portal (/configurar servidor)
+
+    const texto = String(msg.content || "").trim();
+
+    /* Canal de chat espelhado tem regra propria e sai por aqui: nada de
+       seletor de traducao nem topico, porque a traducao ja vai acontecer nos
+       outros canais. Vem antes do corte de texto vazio de proposito -- foto
+       sem legenda tambem tem que atravessar. */
+    const espelho = await canaisEspelho(aliancaId);
+    const origem = espelho.find((c) => c.canal_id === msg.channel.id);
+    if (origem) {
+      if (podeTraduzirAgora(msg.author.id)) await espelharMensagem(msg, espelho, origem, texto);
+      return;
+    }
+
+    if (!texto) return;
 
     if (mencionaLadyOuMaelle(texto)) {
       const url = await gifRosas();
