@@ -536,6 +536,12 @@ client.on("messageCreate", async (msg) => {
       const aliancaId = await aliancaDoGuild(msg.guild.id);
       if (!aliancaId) return;
 
+      /* Canal de chat espelhado nao leva tradutor: o que chega ali por webhook
+         E' a traducao, e pendurar um seletor embaixo dela seria oferecer
+         traduzir o que acabou de ser traduzido. No teste isso encheu o canal
+         de "Tradução / Translation" embaixo de cada fala. */
+      if ((await canaisEspelho(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+
       /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
          tradutor. Antes parava no seletor, com a ideia de que a mensagem era
          so o convite -- mas ela tem texto de verdade ("entrou na alianca,
