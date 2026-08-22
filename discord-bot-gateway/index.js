@@ -12,6 +12,7 @@
  */
 
 import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient } from "discord.js";
+import { createHash } from "node:crypto";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -482,6 +483,50 @@ async function canaisEspelho(aliancaId) {
 /* Google barra o endpoint classico quando a chamada sai do Supabase, mas o
    Fly passa nos dois. Mesmo assim vale ter o clients5 primeiro: e' o que
    sobreviveu ao bloqueio, e um dia o bloqueio pode chegar aqui tambem. */
+/* Acima disso nao vale guardar: mensagem longa e' quase sempre unica, e
+   encheria a tabela com frase que nunca mais sera lida. */
+const MAX_CACHE = 400;
+
+async function doCache(chave) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/rpc/traducao_do_cache`, {
+      method: "POST",
+      headers: {
+        apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_chave: chave }),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) || null;
+  } catch {
+    return null; // cache fora do ar nao pode impedir a traducao
+  }
+}
+
+/* Guarda o que ja foi traduzido, por hash do texto + idioma.
+
+   Conversa de alianca repete muito: "ok", "rally saindo", "quem vai no urso".
+   Com sete salas cada uma dessas custava seis chamadas ao tradutor pra
+   devolver o que ele ja tinha devolvido antes.
+
+   O hash tambem serve pra tabela nao virar um arquivo do que a alianca
+   conversa: o que fica guardado e' a traducao, nao o original. */
+async function traduzirComCache(texto, alvo) {
+  if (texto.length > MAX_CACHE) return await traduzir(texto, alvo);
+
+  const chave = createHash("sha256").update(`${alvo} ${texto}`).digest("hex").slice(0, 40);
+  const guardado = await doCache(chave);
+  if (guardado) return guardado;
+
+  const novo = await traduzir(texto, alvo);
+  if (novo) {
+    /* Sem await: a conversa nao espera o banco pra seguir. */
+    sbPost("discord_traducao_cache", { chave, idioma: alvo, traduzido: novo })
+      .catch(() => { /* ja traduzido; guardar e' bonus */ });
+  }
+  return novo;
+}
+
 async function traduzir(texto, alvo) {
   const tentativas = [
     {
@@ -565,7 +610,7 @@ async function espelharMensagem(msg, lista, origem, texto) {
          O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
          um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
          isso seria gastar seis chamadas pra devolver a mesma palavra. */
-      corpo = (await traduzir(texto, destino.idioma)) || texto;
+      corpo = (await traduzirComCache(texto, destino.idioma)) || texto;
     }
 
     /* A mencao vai junto pra dar de volta o que o webhook tira: identidade
