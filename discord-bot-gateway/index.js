@@ -517,9 +517,13 @@ async function espelharMensagem(msg, lista, origem, texto) {
     if (destino.canal_id === origem.canal_id) continue;
 
     let corpo = texto;
-    if (texto && destino.idioma !== origem.idioma) {
+    if (texto && destino.idioma !== origem.idioma && vantajosoTraduzir(texto, 1200)) {
       /* Tradutor fora do ar nao pode calar a conversa: manda o original e
-         deixa a pessoa se virar, que e' melhor do que a mensagem sumir. */
+         deixa a pessoa se virar, que e' melhor do que a mensagem sumir.
+
+         O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
+         um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
+         isso seria gastar seis chamadas pra devolver a mesma palavra. */
       corpo = (await traduzir(texto, destino.idioma)) || texto;
     }
 
@@ -725,7 +729,14 @@ client.on("messageCreate", async (msg) => {
     const espelho = await canaisEspelho(aliancaId);
     const origem = espelho.find((c) => c.canal_id === msg.channel.id);
     if (origem) {
-      if (podeTraduzirAgora(msg.author.id)) await espelharMensagem(msg, espelho, origem, texto);
+      /* Sem trava de quantidade aqui, de proposito.
+
+         O limite de seis por minuto existe pro seletor de traducao: sem ele,
+         quem escrevesse dez linhas seguidas encheria o canal de caixinhas. Mas
+         no espelho a mensagem descartada nao e' uma caixinha a menos -- e' uma
+         FALA que some. A pessoa do outro lado ve a conversa com buraco e nao
+         tem como saber. Vale mais deixar passar. */
+      await espelharMensagem(msg, espelho, origem, texto);
       return;
     }
 
