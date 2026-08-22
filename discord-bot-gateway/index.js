@@ -523,7 +523,17 @@ async function espelharMensagem(msg, lista, origem, texto) {
       corpo = (await traduzir(texto, destino.idioma)) || texto;
     }
 
-    const conteudo = [corpo, ...anexos].filter(Boolean).join("\n").slice(0, 1900);
+    /* A mencao vai junto pra dar de volta o que o webhook tira: identidade
+       clicavel. Nome e foto o webhook copia, mas sao pintura -- tocar neles
+       nao abre nada, e a mensagem fica com jeito de perfil fantasma. Com
+       <@id> o Discord desenha a pilha de verdade: toca e abre o perfil, da
+       pra mandar mensagem, ver cargo, tudo.
+
+       Nao notifica ninguem: allowed_mentions vazio faz a mencao aparecer sem
+       tocar sino. Seria barulho puro -- avisaria a propria pessoa, seis vezes,
+       em salas que ela nem enxerga. */
+    const conteudo = [`<@${msg.author.id}> ${corpo}`.trim(), ...anexos]
+      .filter(Boolean).join("\n").slice(0, 1900);
     if (!conteudo) continue;
 
     await fetch(destino.webhook, {
