@@ -452,10 +452,12 @@ client.on("messageCreate", async (msg) => {
       const aliancaId = await aliancaDoGuild(msg.guild.id);
       if (!aliancaId) return;
 
-      if (await webhookEhBoasVindas(aliancaId, msg.webhookId)) {
-        await talvezMandarSeletorIdioma(msg);
-        return; // e' so o convite pra escolher idioma, sem texto pra traduzir
-      }
+      /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
+         tradutor. Antes parava no seletor, com a ideia de que a mensagem era
+         so o convite -- mas ela tem texto de verdade ("entrou na alianca,
+         bem-vindo ao time"), e quem acabou de chegar sem falar a lingua da
+         casa e' exatamente quem mais precisa de traducao. */
+      if (await webhookEhBoasVindas(aliancaId, msg.webhookId)) await talvezMandarSeletorIdioma(msg);
 
       /* Avisos automaticos (evento, dica do dia, arena) vem como embed -- o
          texto que importa esta la, nao em msg.content (que as vezes so tem
@@ -491,4 +493,21 @@ client.once("clientReady", () => {
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
 
-client.login(TOKEN);
+/* Nao conseguir entrar tem que doer.
+
+   Ja aconteceu: o token foi trocado no Discord e nao aqui. O login falhou, a
+   rejeicao caiu no console, o event loop ficou vazio e o Node saiu com codigo
+   ZERO -- saida limpa. O Fly leu isso como "terminou o que tinha pra fazer" e
+   nao reiniciou. O bot ficou quatro horas fora do ar e nada gritou: o canal
+   simplesmente parou de ter tradutor, e a gente foi caçar bug no lugar errado.
+
+   Saindo com codigo 1, o Fly reinicia (ver a politica no fly.toml). Se o
+   token continuar errado, vira ciclo de reinicio -- que e' barulhento e
+   aparece no status, exatamente o oposto de sumir em silencio. E como o
+   token e' lido a cada partida, arrumar o segredo ja e' o suficiente pra
+   voltar sozinho, sem ninguem precisar mandar subir. */
+client.login(TOKEN).catch((e) => {
+  console.error("FATAL: nao consegui entrar no Discord:", e?.message || e);
+  console.error("Confira o segredo DISCORD_BOT_TOKEN. Saindo com erro pra forcar reinicio.");
+  process.exit(1);
+});
