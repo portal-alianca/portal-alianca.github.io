@@ -11,7 +11,7 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient } from "discord.js";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -506,12 +506,53 @@ async function traduzir(texto, alvo) {
   return null;
 }
 
+/* Um cliente por webhook, reaproveitado: ele sabe mandar arquivo de verdade
+   (multipart), que o fetch cru nao fazia. */
+const clientesWebhook = new Map();
+function clienteDoWebhook(url) {
+  let c = clientesWebhook.get(url);
+  if (!c) { c = new WebhookClient({ url }); clientesWebhook.set(url, c); }
+  return c;
+}
+
+/* O limite do Discord pra quem nao tem Nitro. Acima disso nao adianta tentar
+   reenviar; vai o link mesmo, com a validade curta que ele tem. */
+const MAX_ANEXO = 8 * 1024 * 1024;
+
+/* Baixa uma vez e reenvia pra todas as salas.
+
+   Repassar a URL do anexo parecia resolver e resolve por um dia: link de
+   anexo do Discord vem assinado e caduca. A foto aparecia hoje e virava
+   quadrado quebrado amanha, so nas copias -- a original continuava inteira,
+   o que deixaria o defeito ainda mais confuso de entender.
+
+   Reenviando os bytes, cada sala ganha um anexo proprio, hospedado pelo
+   Discord, sem validade. */
+async function baixarAnexos(msg) {
+  const arquivos = [];
+  const links = [];
+  for (const a of msg.attachments.values()) {
+    if (a.size > MAX_ANEXO) { links.push(a.url); continue; }
+    try {
+      const r = await fetch(a.url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo" });
+    } catch (e) {
+      console.error("espelho: nao consegui baixar o anexo:", e?.message || e);
+      links.push(a.url); // melhor um link que caduca do que foto nenhuma
+    }
+  }
+  return { arquivos, links };
+}
+
 async function espelharMensagem(msg, lista, origem, texto) {
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
   const foto = msg.author.displayAvatarURL({ extension: "png", size: 128 });
-  const anexos = [...msg.attachments.values()].map((a) => a.url);
+  const { arquivos, links: anexos } = msg.attachments.size
+    ? await baixarAnexos(msg)
+    : { arquivos: [], links: [] };
 
   for (const destino of lista) {
     if (destino.canal_id === origem.canal_id) continue;
@@ -538,18 +579,15 @@ async function espelharMensagem(msg, lista, origem, texto) {
        em salas que ela nem enxerga. */
     const conteudo = [`<@${msg.author.id}> ${corpo}`.trim(), ...anexos]
       .filter(Boolean).join("\n").slice(0, 1900);
-    if (!conteudo) continue;
+    if (!conteudo && !arquivos.length) continue;
 
-    await fetch(destino.webhook, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: conteudo,
-        username: nome,
-        avatar_url: foto,
-        /* Texto de terceiro nao pode virar @everyone do outro lado. */
-        allowed_mentions: { parse: [] },
-      }),
+    await clienteDoWebhook(destino.webhook).send({
+      content: conteudo || undefined,
+      username: nome,
+      avatarURL: foto,
+      files: arquivos,
+      /* Texto de terceiro nao pode virar @everyone do outro lado. */
+      allowedMentions: { parse: [] },
     }).catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
   }
 }
@@ -572,6 +610,18 @@ async function espelharMensagem(msg, lista, origem, texto) {
 const PREFIXO_SALA = "teste-chat-";  // enquanto e' teste; depois vira "chat-"
 const INTERVALO_SINCRONIA = 10 * 60 * 1000;
 
+/* Modo lento do proprio Discord, cinco segundos entre falas da mesma pessoa.
+
+   Nao e' pra conter briga: e' pra proteger o que uma rajada custa. Cada linha
+   vira seis traducoes e seis postagens, e o Discord aceita cinco mensagens a
+   cada cinco segundos por canal. Dez linhas seguidas de uma pessoa viravam
+   sessenta chamadas e perda de mensagem por rajada.
+
+   Cinco segundos quase nao se sente escrevendo -- da tempo de digitar a
+   proxima frase -- e corta a rajada pela raiz, do lado do Discord, antes de
+   qualquer codigo nosso rodar. */
+const SEGUNDOS_ENTRE_FALAS = 5;
+
 function nomeDoIdioma(cod) {
   const achado = LINGUAS_MENU.find(([c]) => c === cod);
   return achado ? `${achado[2]} ${achado[1]}` : cod;
@@ -587,6 +637,7 @@ async function garantirSala(guild, aliancaId, idioma) {
   const canal = await guild.channels.create({
     name: `${PREFIXO_SALA}${idioma.toLowerCase()}`,
     type: 0,
+    rateLimitPerUser: SEGUNDOS_ENTRE_FALAS,
     topic: `Chat espelhado — ${nomeDoIdioma(idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
     permissionOverwrites: [
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -658,6 +709,19 @@ async function sincronizarSalas() {
           porIdioma.set(idioma, await garantirSala(guild, aliancaId, idioma));
         } catch (e) {
           console.error("espelho: nao consegui criar a sala de", idioma, e?.message || e);
+        }
+      }
+
+      /* Modo lento nas salas que nasceram antes dele. */
+      for (const sala of porIdioma.values()) {
+        try {
+          const canal = await guild.channels.fetch(sala.canal_id);
+          if (canal && canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
+            await canal.setRateLimitPerUser(SEGUNDOS_ENTRE_FALAS, "modo lento do chat espelhado");
+            console.log(`espelho: modo lento de ${SEGUNDOS_ENTRE_FALAS}s na sala de ${sala.idioma}`);
+          }
+        } catch (e) {
+          console.error("espelho: nao consegui pôr modo lento em", sala.idioma, e?.message || e);
         }
       }
 
