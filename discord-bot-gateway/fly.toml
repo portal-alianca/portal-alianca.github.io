@@ -12,3 +12,11 @@ primary_region = "gru"
 
 [deploy]
   strategy = "immediate"
+
+# Isto aqui e' um processo que nunca deveria terminar: se ele saiu, deu errado.
+# Sem esta politica o Fly so reinicia quando a saida e' de erro, e uma saida
+# limpa (event loop vazio depois de um login recusado) passava por "acabou o
+# trabalho" -- foi assim que o bot ficou quatro horas parado sem ninguem notar.
+[[restart]]
+  policy = "always"
+  retries = 10

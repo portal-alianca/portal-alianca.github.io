@@ -11,7 +11,8 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient } from "discord.js";
+import { createHash } from "node:crypto";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -55,6 +56,18 @@ async function sbPost(caminho, corpo) {
   });
   if (!r.ok) throw new Error(`supabase ${r.status}`);
   return await r.json();
+}
+
+async function sbPatch(caminho, corpo) {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=minimal",
+    },
+    body: JSON.stringify(corpo),
+  });
+  if (!r.ok) throw new Error(`supabase ${r.status}`);
 }
 
 const cacheAlianca = new Map(); // guildId -> { v, t }
@@ -329,15 +342,16 @@ function mencionaLadyOuMaelle(texto) {
    por mensagem que talvez ninguem leia. E o menu lista vinte idiomas: quem
    nunca usou /meuidioma escolhe o dele na hora.
 
-   O topico nasce trancado, arquivado, e sem o autor da mensagem dentro. Os
-   tres juntos, porque cada um cobre um buraco do outro: arquivar tira da
-   lista, mas topico arquivado reabre sozinho quando alguem escreve; trancar
-   impede de escrever, entao ele fica so pra leitura e nao reabre; e remover
-   o autor e' o que limpa a barra lateral, que lista topico do qual voce e'
-   MEMBRO -- abrir topico na mensagem de alguem inscreve essa pessoa
-   automaticamente.
+   O topico nasce arquivado e sem o autor da mensagem dentro. Os dois juntos,
+   porque um sozinho nao resolve: arquivar tira da lista, e remover o autor e'
+   o que impede ele de voltar -- a barra mostra topico do qual voce e' MEMBRO,
+   e abrir topico na mensagem de alguem inscreve essa pessoa automaticamente.
 
-   Se ainda assim algum reabrir, o ouvinte de threadUpdate la embaixo fecha
+   Nao tranca. Trancar era a ideia obvia (topico so de leitura nao reabre) e
+   quebrava o proprio seletor: topico arquivado precisa reabrir pra receber o
+   clique, e trancado nem o Discord reabre -- dava "Esta interacao falhou".
+
+   Como reabrir voltou a ser possivel, o ouvinte de threadUpdate la embaixo fecha
    de novo. Os tres dependem de o bot ter "Gerenciar Topicos" no canal.
 
    Se nao der pra criar topico (permissao faltando, canal que nao aceita, a
@@ -365,9 +379,17 @@ async function fecharTopico(topico, autorId) {
     await topico.members.remove(id)
       .catch((e) => console.error("traducao: nao consegui tirar", id, "do topico:", e?.message || e));
   }
-  /* Trancar e arquivar numa edicao so. */
-  await topico.edit({ archived: true, locked: true })
-    .catch((e) => console.error("traducao: nao consegui trancar e arquivar o topico:", e?.message || e));
+  /* Arquiva, mas NAO tranca.
+
+     Trancar parecia a solucao perfeita -- topico so de leitura nao reabre --
+     e quebrou justamente o que ele deveria proteger: o clique no seletor
+     morria com "Esta interacao falhou". Topico arquivado precisa reabrir pra
+     receber a interacao, e trancado ninguem reabre, nem o Discord.
+
+     Entao volta a poder reabrir, e quem fecha de novo e' o threadUpdate la
+     embaixo -- meio minuto depois, pra nao atropelar a traducao a caminho. */
+  await topico.setArchived(true)
+    .catch((e) => console.error("traducao: nao consegui arquivar o topico:", e?.message || e));
 }
 
 async function traduzirEResponder(msg, texto) {
@@ -407,19 +429,371 @@ async function traduzirEResponder(msg, texto) {
     .catch((e) => console.error("traducao: nao consegui mandar o seletor:", e?.message || e));
 }
 
-/* Rede de seguranca da barra lateral: se um topico de traducao voltar a
-   abrir -- por um clique que o Discord resolveu tratar como atividade, por
-   alguem com permissao de destrancar, pelo que for -- ele e' fechado de novo
-   na hora, e quem entrou sai junto. */
+/* Rede de seguranca da barra lateral: topico de traducao que voltar a abrir
+   -- por um clique, por alguem que escreveu dentro, pelo que for -- e' fechado
+   de novo, e quem entrou sai junto.
+
+   Agora que nao ha mais tranca, e' isto que segura a barra limpa. */
+const ESPERA_REFECHAR = 30 * 1000;
+
 client.on("threadUpdate", async (antes, depois) => {
   try {
     if (depois.name !== NOME_TOPICO) return;
     if (!antes.archived || depois.archived) return; // so interessa a reabertura
-    await fecharTopico(depois, null);
+
+    /* Nao fecha na hora: quase sempre quem reabriu foi um clique no seletor,
+       e a resposta da traducao ainda esta a caminho. Arquivar no meio disso
+       derrubaria a entrega -- que e' exatamente o erro que a tranca causava.
+       Meio minuto e' bem mais do que a traducao precisa. */
+    await new Promise((ok) => setTimeout(ok, ESPERA_REFECHAR));
+
+    /* Nesse meio tempo alguem pode ter fechado, ou o topico pode ter sumido. */
+    const agora = await depois.fetch().catch(() => null);
+    if (!agora || agora.archived) return;
+
+    await fecharTopico(agora, null);
   } catch (e) {
     console.error("erro ao refechar topico de traducao:", e?.message || e);
   }
 });
+
+/* ---------------- chat espelhado por idioma ----------------
+
+   A mesma conversa acontecendo em vários canais, cada um num idioma. Quem
+   escreve em #chat-en aparece em #chat-pt já em português, com o nome e a
+   foto de quem falou -- webhook deixa trocar isso por mensagem, então lá
+   parece que a pessoa escreveu em português.
+
+   A trava contra eco é estrutural, não uma lista de exceções: só mensagem de
+   GENTE é espelhada, e o espelho sai por webhook. Espelho de espelho não
+   existe porque webhook nunca entra aqui. */
+
+const cacheEspelho = new Map(); // aliancaId -> { v, t }
+async function canaisEspelho(aliancaId) {
+  const achado = cacheEspelho.get(aliancaId);
+  if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
+  let v = [];
+  try {
+    v = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook`) || [];
+  } catch { /* tenta de novo na proxima mensagem */ }
+  cacheEspelho.set(aliancaId, { v, t: Date.now() });
+  return v;
+}
+
+/* Google barra o endpoint classico quando a chamada sai do Supabase, mas o
+   Fly passa nos dois. Mesmo assim vale ter o clients5 primeiro: e' o que
+   sobreviveu ao bloqueio, e um dia o bloqueio pode chegar aqui tambem. */
+/* Acima disso nao vale guardar: mensagem longa e' quase sempre unica, e
+   encheria a tabela com frase que nunca mais sera lida. */
+const MAX_CACHE = 400;
+
+async function doCache(chave) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/rpc/traducao_do_cache`, {
+      method: "POST",
+      headers: {
+        apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_chave: chave }),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) || null;
+  } catch {
+    return null; // cache fora do ar nao pode impedir a traducao
+  }
+}
+
+/* Guarda o que ja foi traduzido, por hash do texto + idioma.
+
+   Conversa de alianca repete muito: "ok", "rally saindo", "quem vai no urso".
+   Com sete salas cada uma dessas custava seis chamadas ao tradutor pra
+   devolver o que ele ja tinha devolvido antes.
+
+   O hash tambem serve pra tabela nao virar um arquivo do que a alianca
+   conversa: o que fica guardado e' a traducao, nao o original. */
+async function traduzirComCache(texto, alvo) {
+  if (texto.length > MAX_CACHE) return await traduzir(texto, alvo);
+
+  const chave = createHash("sha256").update(`${alvo} ${texto}`).digest("hex").slice(0, 40);
+  const guardado = await doCache(chave);
+  if (guardado) return guardado;
+
+  const novo = await traduzir(texto, alvo);
+  if (novo) {
+    /* Sem await: a conversa nao espera o banco pra seguir. */
+    sbPost("discord_traducao_cache", { chave, idioma: alvo, traduzido: novo })
+      .catch(() => { /* ja traduzido; guardar e' bonus */ });
+  }
+  return novo;
+}
+
+async function traduzir(texto, alvo) {
+  const tentativas = [
+    {
+      url: `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${alvo}&q=${encodeURIComponent(texto)}`,
+      ler: (j) => (Array.isArray(j) ? j.map((p) => (Array.isArray(p) ? p[0] : p)).join("") : ""),
+    },
+    {
+      url: `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
+      ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
+    },
+  ];
+  for (const t of tentativas) {
+    try {
+      const r = await fetch(t.url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) { console.error("espelho: tradutor devolveu HTTP", r.status); continue; }
+      const saiu = t.ler(await r.json());
+      if (saiu) return saiu;
+    } catch (e) {
+      console.error("espelho: tradutor falhou:", String(e).slice(0, 100));
+    }
+  }
+  return null;
+}
+
+/* Um cliente por webhook, reaproveitado: ele sabe mandar arquivo de verdade
+   (multipart), que o fetch cru nao fazia. */
+const clientesWebhook = new Map();
+function clienteDoWebhook(url) {
+  let c = clientesWebhook.get(url);
+  if (!c) { c = new WebhookClient({ url }); clientesWebhook.set(url, c); }
+  return c;
+}
+
+/* O limite do Discord pra quem nao tem Nitro. Acima disso nao adianta tentar
+   reenviar; vai o link mesmo, com a validade curta que ele tem. */
+const MAX_ANEXO = 8 * 1024 * 1024;
+
+/* Baixa uma vez e reenvia pra todas as salas.
+
+   Repassar a URL do anexo parecia resolver e resolve por um dia: link de
+   anexo do Discord vem assinado e caduca. A foto aparecia hoje e virava
+   quadrado quebrado amanha, so nas copias -- a original continuava inteira,
+   o que deixaria o defeito ainda mais confuso de entender.
+
+   Reenviando os bytes, cada sala ganha um anexo proprio, hospedado pelo
+   Discord, sem validade. */
+async function baixarAnexos(msg) {
+  const arquivos = [];
+  const links = [];
+  for (const a of msg.attachments.values()) {
+    if (a.size > MAX_ANEXO) { links.push(a.url); continue; }
+    try {
+      const r = await fetch(a.url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo" });
+    } catch (e) {
+      console.error("espelho: nao consegui baixar o anexo:", e?.message || e);
+      links.push(a.url); // melhor um link que caduca do que foto nenhuma
+    }
+  }
+  return { arquivos, links };
+}
+
+async function espelharMensagem(msg, lista, origem, texto) {
+  /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
+     pros outros aqui dentro. */
+  const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
+  const foto = msg.author.displayAvatarURL({ extension: "png", size: 128 });
+  const { arquivos, links: anexos } = msg.attachments.size
+    ? await baixarAnexos(msg)
+    : { arquivos: [], links: [] };
+
+  for (const destino of lista) {
+    if (destino.canal_id === origem.canal_id) continue;
+
+    let corpo = texto;
+    if (texto && destino.idioma !== origem.idioma && vantajosoTraduzir(texto, 1200)) {
+      /* Tradutor fora do ar nao pode calar a conversa: manda o original e
+         deixa a pessoa se virar, que e' melhor do que a mensagem sumir.
+
+         O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
+         um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
+         isso seria gastar seis chamadas pra devolver a mesma palavra. */
+      corpo = (await traduzirComCache(texto, destino.idioma)) || texto;
+    }
+
+    /* A mencao vai junto pra dar de volta o que o webhook tira: identidade
+       clicavel. Nome e foto o webhook copia, mas sao pintura -- tocar neles
+       nao abre nada, e a mensagem fica com jeito de perfil fantasma. Com
+       <@id> o Discord desenha a pilha de verdade: toca e abre o perfil, da
+       pra mandar mensagem, ver cargo, tudo.
+
+       Nao notifica ninguem: allowed_mentions vazio faz a mencao aparecer sem
+       tocar sino. Seria barulho puro -- avisaria a propria pessoa, seis vezes,
+       em salas que ela nem enxerga. */
+    const conteudo = [`<@${msg.author.id}> ${corpo}`.trim(), ...anexos]
+      .filter(Boolean).join("\n").slice(0, 1900);
+    if (!conteudo && !arquivos.length) continue;
+
+    await clienteDoWebhook(destino.webhook).send({
+      content: conteudo || undefined,
+      username: nome,
+      avatarURL: foto,
+      files: arquivos,
+      /* Texto de terceiro nao pode virar @everyone do outro lado. */
+      allowedMentions: { parse: [] },
+    }).catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
+  }
+}
+
+/* ---------------- as salas se montam sozinhas ----------------
+
+   Uma sala por idioma, privada, e o cargo daquele idioma e' a chave. Quem fala
+   arabe ve uma sala; as outras nem aparecem pra ele.
+
+   A regra que faz isso caber num servidor de verdade: sala so nasce quando
+   existe alguem falando aquele idioma. Sao vinte idiomas no seletor -- criar
+   os vinte deixaria dezoito salas mortas.
+
+   Roda de tempos em tempos em vez de reagir ao clique porque o idioma e'
+   escolhido no outro bot (o de comandos, no Supabase), que nao tem como mexer
+   em cargo aqui. Passar por cima disso exigiria um caminho entre os dois; uma
+   varredura periodica faz o mesmo e ainda conserta o que sair do lugar
+   sozinho -- cargo removido na mao, gente que entrou depois. */
+
+const PREFIXO_SALA = "teste-chat-";  // enquanto e' teste; depois vira "chat-"
+const INTERVALO_SINCRONIA = 10 * 60 * 1000;
+
+/* Modo lento do proprio Discord, cinco segundos entre falas da mesma pessoa.
+
+   Nao e' pra conter briga: e' pra proteger o que uma rajada custa. Cada linha
+   vira seis traducoes e seis postagens, e o Discord aceita cinco mensagens a
+   cada cinco segundos por canal. Dez linhas seguidas de uma pessoa viravam
+   sessenta chamadas e perda de mensagem por rajada.
+
+   Cinco segundos quase nao se sente escrevendo -- da tempo de digitar a
+   proxima frase -- e corta a rajada pela raiz, do lado do Discord, antes de
+   qualquer codigo nosso rodar. */
+const SEGUNDOS_ENTRE_FALAS = 5;
+
+function nomeDoIdioma(cod) {
+  const achado = LINGUAS_MENU.find(([c]) => c === cod);
+  return achado ? `${achado[2]} ${achado[1]}` : cod;
+}
+
+async function garantirSala(guild, aliancaId, idioma) {
+  const cargo = await guild.roles.create({
+    name: nomeDoIdioma(idioma),
+    mentionable: false,
+    reason: "sala de idioma do chat espelhado",
+  });
+
+  const canal = await guild.channels.create({
+    name: `${PREFIXO_SALA}${idioma.toLowerCase()}`,
+    type: 0,
+    rateLimitPerUser: SEGUNDOS_ENTRE_FALAS,
+    topic: `Chat espelhado — ${nomeDoIdioma(idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+    ],
+    reason: "sala de idioma do chat espelhado",
+  });
+
+  const webhook = await canal.createWebhook({ name: "CYRON espelho" });
+
+  await sbPost("discord_chat_espelho", {
+    alianca_id: aliancaId, canal_id: canal.id, idioma,
+    webhook: webhook.url, role_id: cargo.id,
+  });
+  console.log(`espelho: sala criada para ${idioma} (#${canal.name})`);
+  return { canal_id: canal.id, idioma, webhook: webhook.url, role_id: cargo.id };
+}
+
+async function sincronizarSalas() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const aliancaId = await aliancaDoGuild(guild.id);
+      if (!aliancaId) continue;
+
+      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,role_id`);
+      if (!salas?.length) continue; // ninguem ligou o espelho nesta alianca
+
+      /* So idioma que esta no seletor vira sala. Um valor estranho no banco
+         nao pode virar canal no servidor de ninguem. */
+      const validos = new Set(LINGUAS_MENU.map(([c]) => c));
+      const escolhas = await sb(`discord_idioma_jogador?select=discord_user_id,idioma`);
+      const porPessoa = new Map();
+      for (const e of escolhas || []) {
+        if (validos.has(e.idioma)) porPessoa.set(String(e.discord_user_id), e.idioma);
+      }
+
+      const porIdioma = new Map(salas.map((s) => [s.idioma, s]));
+
+      /* Sala sem cargo e' sala aberta: ou nasceu antes desta ideia, ou alguem
+         apagou o cargo. Nos dois casos ela esta visivel pra todo mundo agora,
+         entao o conserto e' o mesmo -- cria o cargo e fecha a porta. */
+      for (const sala of porIdioma.values()) {
+        if (sala.role_id && guild.roles.cache.has(sala.role_id)) continue;
+        try {
+          const canal = await guild.channels.fetch(sala.canal_id);
+          if (!canal) continue;
+          const cargo = await guild.roles.create({
+            name: nomeDoIdioma(sala.idioma), mentionable: false,
+            reason: "sala de idioma do chat espelhado",
+          });
+          await canal.permissionOverwrites.set([
+            { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+          ], "fechando a sala de idioma");
+          await sbPatch(`discord_chat_espelho?canal_id=eq.${encodeURIComponent(sala.canal_id)}`, { role_id: cargo.id });
+          sala.role_id = cargo.id;
+          console.log(`espelho: sala de ${sala.idioma} fechada, cargo criado`);
+        } catch (e) {
+          console.error("espelho: nao consegui fechar a sala de", sala.idioma, e?.message || e);
+        }
+      }
+
+      /* Idioma com gente e sem sala ganha sala agora. */
+      for (const idioma of new Set(porPessoa.values())) {
+        if (porIdioma.has(idioma)) continue;
+        try {
+          porIdioma.set(idioma, await garantirSala(guild, aliancaId, idioma));
+        } catch (e) {
+          console.error("espelho: nao consegui criar a sala de", idioma, e?.message || e);
+        }
+      }
+
+      /* Modo lento nas salas que nasceram antes dele. */
+      for (const sala of porIdioma.values()) {
+        try {
+          const canal = await guild.channels.fetch(sala.canal_id);
+          if (canal && canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
+            await canal.setRateLimitPerUser(SEGUNDOS_ENTRE_FALAS, "modo lento do chat espelhado");
+            console.log(`espelho: modo lento de ${SEGUNDOS_ENTRE_FALAS}s na sala de ${sala.idioma}`);
+          }
+        } catch (e) {
+          console.error("espelho: nao consegui pôr modo lento em", sala.idioma, e?.message || e);
+        }
+      }
+
+      /* Cargo de sala e' exclusivo: entrar numa e' sair das outras, senao a
+         pessoa passaria a ver a mesma conversa repetida em dois idiomas. */
+      const cargosDeSala = new Set([...porIdioma.values()].map((s) => s.role_id).filter(Boolean));
+      const membros = await guild.members.fetch();
+      for (const [, membro] of membros) {
+        if (membro.user.bot) continue;
+        const querido = porIdioma.get(porPessoa.get(membro.id))?.role_id || null;
+        for (const cargo of cargosDeSala) {
+          const tem = membro.roles.cache.has(cargo);
+          if (cargo === querido && !tem) {
+            await membro.roles.add(cargo, "idioma escolhido no bot").catch((e) =>
+              console.error("espelho: nao consegui dar o cargo a", membro.id, e?.message || e));
+          } else if (cargo !== querido && tem) {
+            await membro.roles.remove(cargo, "trocou de idioma").catch((e) =>
+              console.error("espelho: nao consegui tirar o cargo de", membro.id, e?.message || e));
+          }
+        }
+      }
+      cacheEspelho.delete(aliancaId); // a proxima mensagem le a lista nova
+    } catch (e) {
+      console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
+    }
+  }
+}
 
 client.on("messageCreate", async (msg) => {
   try {
@@ -429,10 +803,18 @@ client.on("messageCreate", async (msg) => {
       const aliancaId = await aliancaDoGuild(msg.guild.id);
       if (!aliancaId) return;
 
-      if (await webhookEhBoasVindas(aliancaId, msg.webhookId)) {
-        await talvezMandarSeletorIdioma(msg);
-        return; // e' so o convite pra escolher idioma, sem texto pra traduzir
-      }
+      /* Canal de chat espelhado nao leva tradutor: o que chega ali por webhook
+         E' a traducao, e pendurar um seletor embaixo dela seria oferecer
+         traduzir o que acabou de ser traduzido. No teste isso encheu o canal
+         de "Tradução / Translation" embaixo de cada fala. */
+      if ((await canaisEspelho(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+
+      /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
+         tradutor. Antes parava no seletor, com a ideia de que a mensagem era
+         so o convite -- mas ela tem texto de verdade ("entrou na alianca,
+         bem-vindo ao time"), e quem acabou de chegar sem falar a lingua da
+         casa e' exatamente quem mais precisa de traducao. */
+      if (await webhookEhBoasVindas(aliancaId, msg.webhookId)) await talvezMandarSeletorIdioma(msg);
 
       /* Avisos automaticos (evento, dica do dia, arena) vem como embed -- o
          texto que importa esta la, nao em msg.content (que as vezes so tem
@@ -444,11 +826,30 @@ client.on("messageCreate", async (msg) => {
     }
     if (msg.author.bot) return;
 
-    const texto = String(msg.content || "").trim();
-    if (!texto) return;
-
     const aliancaId = await aliancaDoGuild(msg.guild.id);
     if (!aliancaId) return; // servidor ainda nao ligado ao portal (/configurar servidor)
+
+    const texto = String(msg.content || "").trim();
+
+    /* Canal de chat espelhado tem regra propria e sai por aqui: nada de
+       seletor de traducao nem topico, porque a traducao ja vai acontecer nos
+       outros canais. Vem antes do corte de texto vazio de proposito -- foto
+       sem legenda tambem tem que atravessar. */
+    const espelho = await canaisEspelho(aliancaId);
+    const origem = espelho.find((c) => c.canal_id === msg.channel.id);
+    if (origem) {
+      /* Sem trava de quantidade aqui, de proposito.
+
+         O limite de seis por minuto existe pro seletor de traducao: sem ele,
+         quem escrevesse dez linhas seguidas encheria o canal de caixinhas. Mas
+         no espelho a mensagem descartada nao e' uma caixinha a menos -- e' uma
+         FALA que some. A pessoa do outro lado ve a conversa com buraco e nao
+         tem como saber. Vale mais deixar passar. */
+      await espelharMensagem(msg, espelho, origem, texto);
+      return;
+    }
+
+    if (!texto) return;
 
     if (mencionaLadyOuMaelle(texto)) {
       const url = await gifRosas();
@@ -463,9 +864,32 @@ client.on("messageCreate", async (msg) => {
 
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
+  /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
+     ficar esperando dez minutos, e depois de tempos em tempos. */
+  sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
+  setInterval(() => {
+    sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
+  }, INTERVALO_SINCRONIA);
 });
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
 
-client.login(TOKEN);
+/* Nao conseguir entrar tem que doer.
+
+   Ja aconteceu: o token foi trocado no Discord e nao aqui. O login falhou, a
+   rejeicao caiu no console, o event loop ficou vazio e o Node saiu com codigo
+   ZERO -- saida limpa. O Fly leu isso como "terminou o que tinha pra fazer" e
+   nao reiniciou. O bot ficou quatro horas fora do ar e nada gritou: o canal
+   simplesmente parou de ter tradutor, e a gente foi caçar bug no lugar errado.
+
+   Saindo com codigo 1, o Fly reinicia (ver a politica no fly.toml). Se o
+   token continuar errado, vira ciclo de reinicio -- que e' barulhento e
+   aparece no status, exatamente o oposto de sumir em silencio. E como o
+   token e' lido a cada partida, arrumar o segredo ja e' o suficiente pra
+   voltar sozinho, sem ninguem precisar mandar subir. */
+client.login(TOKEN).catch((e) => {
+  console.error("FATAL: nao consegui entrar no Discord:", e?.message || e);
+  console.error("Confira o segredo DISCORD_BOT_TOKEN. Saindo com erro pra forcar reinicio.");
+  process.exit(1);
+});
