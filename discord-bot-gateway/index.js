@@ -11,7 +11,7 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits } from "discord.js";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -55,6 +55,18 @@ async function sbPost(caminho, corpo) {
   });
   if (!r.ok) throw new Error(`supabase ${r.status}`);
   return await r.json();
+}
+
+async function sbPatch(caminho, corpo) {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=minimal",
+    },
+    body: JSON.stringify(corpo),
+  });
+  if (!r.ok) throw new Error(`supabase ${r.status}`);
 }
 
 const cacheAlianca = new Map(); // guildId -> { v, t }
@@ -528,6 +540,138 @@ async function espelharMensagem(msg, lista, origem, texto) {
   }
 }
 
+/* ---------------- as salas se montam sozinhas ----------------
+
+   Uma sala por idioma, privada, e o cargo daquele idioma e' a chave. Quem fala
+   arabe ve uma sala; as outras nem aparecem pra ele.
+
+   A regra que faz isso caber num servidor de verdade: sala so nasce quando
+   existe alguem falando aquele idioma. Sao vinte idiomas no seletor -- criar
+   os vinte deixaria dezoito salas mortas.
+
+   Roda de tempos em tempos em vez de reagir ao clique porque o idioma e'
+   escolhido no outro bot (o de comandos, no Supabase), que nao tem como mexer
+   em cargo aqui. Passar por cima disso exigiria um caminho entre os dois; uma
+   varredura periodica faz o mesmo e ainda conserta o que sair do lugar
+   sozinho -- cargo removido na mao, gente que entrou depois. */
+
+const PREFIXO_SALA = "teste-chat-";  // enquanto e' teste; depois vira "chat-"
+const INTERVALO_SINCRONIA = 10 * 60 * 1000;
+
+function nomeDoIdioma(cod) {
+  const achado = LINGUAS_MENU.find(([c]) => c === cod);
+  return achado ? `${achado[2]} ${achado[1]}` : cod;
+}
+
+async function garantirSala(guild, aliancaId, idioma) {
+  const cargo = await guild.roles.create({
+    name: nomeDoIdioma(idioma),
+    mentionable: false,
+    reason: "sala de idioma do chat espelhado",
+  });
+
+  const canal = await guild.channels.create({
+    name: `${PREFIXO_SALA}${idioma.toLowerCase()}`,
+    type: 0,
+    topic: `Chat espelhado — ${nomeDoIdioma(idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+    ],
+    reason: "sala de idioma do chat espelhado",
+  });
+
+  const webhook = await canal.createWebhook({ name: "CYRON espelho" });
+
+  await sbPost("discord_chat_espelho", {
+    alianca_id: aliancaId, canal_id: canal.id, idioma,
+    webhook: webhook.url, role_id: cargo.id,
+  });
+  console.log(`espelho: sala criada para ${idioma} (#${canal.name})`);
+  return { canal_id: canal.id, idioma, webhook: webhook.url, role_id: cargo.id };
+}
+
+async function sincronizarSalas() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const aliancaId = await aliancaDoGuild(guild.id);
+      if (!aliancaId) continue;
+
+      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,role_id`);
+      if (!salas?.length) continue; // ninguem ligou o espelho nesta alianca
+
+      /* So idioma que esta no seletor vira sala. Um valor estranho no banco
+         nao pode virar canal no servidor de ninguem. */
+      const validos = new Set(LINGUAS_MENU.map(([c]) => c));
+      const escolhas = await sb(`discord_idioma_jogador?select=discord_user_id,idioma`);
+      const porPessoa = new Map();
+      for (const e of escolhas || []) {
+        if (validos.has(e.idioma)) porPessoa.set(String(e.discord_user_id), e.idioma);
+      }
+
+      const porIdioma = new Map(salas.map((s) => [s.idioma, s]));
+
+      /* Sala sem cargo e' sala aberta: ou nasceu antes desta ideia, ou alguem
+         apagou o cargo. Nos dois casos ela esta visivel pra todo mundo agora,
+         entao o conserto e' o mesmo -- cria o cargo e fecha a porta. */
+      for (const sala of porIdioma.values()) {
+        if (sala.role_id && guild.roles.cache.has(sala.role_id)) continue;
+        try {
+          const canal = await guild.channels.fetch(sala.canal_id);
+          if (!canal) continue;
+          const cargo = await guild.roles.create({
+            name: nomeDoIdioma(sala.idioma), mentionable: false,
+            reason: "sala de idioma do chat espelhado",
+          });
+          await canal.permissionOverwrites.set([
+            { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+          ], "fechando a sala de idioma");
+          await sbPatch(`discord_chat_espelho?canal_id=eq.${encodeURIComponent(sala.canal_id)}`, { role_id: cargo.id });
+          sala.role_id = cargo.id;
+          console.log(`espelho: sala de ${sala.idioma} fechada, cargo criado`);
+        } catch (e) {
+          console.error("espelho: nao consegui fechar a sala de", sala.idioma, e?.message || e);
+        }
+      }
+
+      /* Idioma com gente e sem sala ganha sala agora. */
+      for (const idioma of new Set(porPessoa.values())) {
+        if (porIdioma.has(idioma)) continue;
+        try {
+          porIdioma.set(idioma, await garantirSala(guild, aliancaId, idioma));
+        } catch (e) {
+          console.error("espelho: nao consegui criar a sala de", idioma, e?.message || e);
+        }
+      }
+
+      /* Cargo de sala e' exclusivo: entrar numa e' sair das outras, senao a
+         pessoa passaria a ver a mesma conversa repetida em dois idiomas. */
+      const cargosDeSala = new Set([...porIdioma.values()].map((s) => s.role_id).filter(Boolean));
+      const membros = await guild.members.fetch();
+      for (const [, membro] of membros) {
+        if (membro.user.bot) continue;
+        const querido = porIdioma.get(porPessoa.get(membro.id))?.role_id || null;
+        for (const cargo of cargosDeSala) {
+          const tem = membro.roles.cache.has(cargo);
+          if (cargo === querido && !tem) {
+            await membro.roles.add(cargo, "idioma escolhido no bot").catch((e) =>
+              console.error("espelho: nao consegui dar o cargo a", membro.id, e?.message || e));
+          } else if (cargo !== querido && tem) {
+            await membro.roles.remove(cargo, "trocou de idioma").catch((e) =>
+              console.error("espelho: nao consegui tirar o cargo de", membro.id, e?.message || e));
+          }
+        }
+      }
+      cacheEspelho.delete(aliancaId); // a proxima mensagem le a lista nova
+    } catch (e) {
+      console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
+    }
+  }
+}
+
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
@@ -590,6 +734,12 @@ client.on("messageCreate", async (msg) => {
 
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
+  /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
+     ficar esperando dez minutos, e depois de tempos em tempos. */
+  sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
+  setInterval(() => {
+    sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
+  }, INTERVALO_SINCRONIA);
 });
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
