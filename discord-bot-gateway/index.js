@@ -702,6 +702,54 @@ async function garantirSala(guild, aliancaId, idioma) {
   return { canal_id: canal.id, idioma, webhook: webhook.url, role_id: cargo.id };
 }
 
+/* Passada curta: so quem mexeu no idioma agorinha.
+
+   A varredura completa lista todos os membros do servidor e conserta canal,
+   cargo e modo lento -- e' cara demais pra rodar de minuto em minuto. Mas o
+   hall de entrada precisa ser rapido: quem escolhe o idioma e fica dez
+   minutos sem ver sala nenhuma acha que nao funcionou e vai embora.
+
+   Entao a cada minuto olha so as escolhas dos ultimos quinze minutos e mexe
+   nessas pessoas. A janela e' maior que o intervalo de proposito: se uma
+   passada falhar, a proxima ainda pega. */
+const JANELA_RECENTE = 15 * 60 * 1000;
+
+async function sincronizarRecentes() {
+  const desde = new Date(Date.now() - JANELA_RECENTE).toISOString();
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const aliancaId = await aliancaDoGuild(guild.id);
+      if (!aliancaId) continue;
+
+      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=idioma,role_id`);
+      if (!salas?.length) continue;
+
+      const recentes = await sb(
+        `discord_idioma_jogador?atualizado_em=gte.${encodeURIComponent(desde)}&select=discord_user_id,idioma`);
+      if (!recentes?.length) continue;
+
+      const porIdioma = new Map(salas.map((s) => [s.idioma, s.role_id]).filter(([, r]) => r));
+      const cargosDeSala = new Set(porIdioma.values());
+
+      for (const escolha of recentes) {
+        const querido = porIdioma.get(escolha.idioma) || null;
+        /* Idioma sem sala ainda: quem cria e' a varredura completa, que sabe
+           montar canal e webhook. Aqui so distribuo cargo. */
+        if (!querido) continue;
+        const membro = await guild.members.fetch(String(escolha.discord_user_id)).catch(() => null);
+        if (!membro || membro.user.bot) continue;
+        for (const cargo of cargosDeSala) {
+          const tem = membro.roles.cache.has(cargo);
+          if (cargo === querido && !tem) await membro.roles.add(cargo, "idioma escolhido").catch(() => {});
+          else if (cargo !== querido && tem) await membro.roles.remove(cargo, "trocou de idioma").catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error("espelho: passada curta falhou em", guild.id, e?.message || e);
+    }
+  }
+}
+
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
     try {
@@ -870,6 +918,9 @@ client.once("clientReady", () => {
   setInterval(() => {
     sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
   }, INTERVALO_SINCRONIA);
+  setInterval(() => {
+    sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
+  }, 60 * 1000);
 });
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
