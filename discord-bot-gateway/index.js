@@ -2543,6 +2543,60 @@ client.on("messageCreate", async (msg) => {
   }
 });
 
+/* ---------------- os comandos que aparecem em cada servidor -----------------
+
+   Comando global aparece em TODO servidor onde o aplicativo esta. Isso estava
+   fazendo um servidor de comida italiana ver "/ranking — ranking de poder da
+   alianca" e "/player — buscar jogador do Kingshot" no menu de barra.
+
+   Nao e' so feio: e' o produto se apresentando como outra coisa. Quem instala
+   um tradutor e ve comando de jogo conclui que instalou errado.
+
+   O Discord separa comando global de comando por servidor. Entao os dois que
+   servem pra qualquer lugar ficam globais, e os do Kingshot passam a existir
+   so' nos servidores que tem alianca ligada.
+
+   Nao escrevo a definicao de cada comando aqui: leio do Discord o que ja esta
+   publicado e mudo de lugar. Reescrever a mao seria arriscar perder uma opcao,
+   uma descricao traduzida, um tipo de campo -- coisas que ja estao certas e
+   que eu nao teria como conferir sem testar comando por comando. */
+const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate"]);
+
+async function separarComandos() {
+  try {
+    const globais = await client.application.commands.fetch();
+    const doJogo = [...globais.values()].filter((c) => !COMANDOS_DE_TODOS.has(c.name));
+    if (!doJogo.length) return; // ja separado
+
+    const vinculos = await sb(`alianca_discord?guild_id=not.is.null&select=guild_id`) || [];
+    const guildsComAlianca = [...new Set(vinculos.map((v) => String(v.guild_id)))];
+    if (!guildsComAlianca.length) {
+      console.error("comandos: nenhum servidor com aliança; não mexo pra não sumir com tudo");
+      return;
+    }
+
+    const carga = doJogo.map((c) => c.toJSON());
+
+    /* Registra no servidor ANTES de tirar do global.
+
+       Comando por servidor entra na hora; global some devagar. Fazendo nesta
+       ordem, o pior caso e' o comando aparecer duplicado por alguns minutos.
+       Na ordem inversa, o pior caso e' a alianca ficar sem /events. */
+    for (const guildId of guildsComAlianca) {
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) continue;
+      await guild.commands.set(carga);
+      console.log(`comandos: ${carga.length} comandos do jogo agora são só de ${guild.name}`);
+    }
+
+    const ficam = [...globais.values()].filter((c) => COMANDOS_DE_TODOS.has(c.name)).map((c) => c.toJSON());
+    await client.application.commands.set(ficam);
+    console.log(`comandos: globais reduzidos a ${ficam.map((c) => c.name).join(", ")}`);
+  } catch (e) {
+    console.error("comandos: não consegui separar:", e?.message || e);
+  }
+}
+
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
   /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
@@ -2550,6 +2604,7 @@ client.once("clientReady", () => {
   sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
   garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
   repararInstalacoes().catch((e) => console.error("instalar: reparo inicial falhou:", e?.message || e));
+  separarComandos();
   setInterval(() => {
     /* Reparo primeiro: sem porta e sem fonte, as outras duas nao tem o que
        montar nem onde postar. */
