@@ -11,7 +11,7 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType } from "discord.js";
 import { createHash } from "node:crypto";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -474,7 +474,7 @@ async function canaisEspelho(aliancaId) {
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = [];
   try {
-    v = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook`) || [];
+    v = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,categoria_id`) || [];
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheEspelho.set(aliancaId, { v, t: Date.now() });
   return v;
@@ -750,13 +750,258 @@ async function sincronizarRecentes() {
   }
 }
 
+/* Aviso de evento e' longo: a organizacao do urso tem umas mil letras. E a
+   traducao vai por URL, com o texto inteiro dentro dela -- passando de uns
+   1500 caracteres o Google devolve erro e o aviso chegaria no idioma errado
+   justamente onde a traducao era o motivo do canal existir.
+
+   Entao parte por LINHA, nunca no meio de uma. Aviso e' lista: "ativar ataque
+   antes da armadilha", "primeiro slot: Amane". Cortar por contagem de letras
+   partiria uma frase no meio e as duas metades chegariam sem sentido. */
+const PEDACO_TRADUCAO = 1500;
+
+async function traduzirLongo(texto, alvo) {
+  if (texto.length <= PEDACO_TRADUCAO) return await traduzirComCache(texto, alvo);
+
+  const pedacos = [];
+  let atual = "";
+  for (const linha of texto.split("\n")) {
+    /* Linha sozinha maior que o pedaco: nao ha o que fazer de bonito, vai
+       inteira e o tradutor que decida. */
+    if (atual && atual.length + linha.length + 1 > PEDACO_TRADUCAO) {
+      pedacos.push(atual);
+      atual = linha;
+    } else {
+      atual = atual ? `${atual}\n${linha}` : linha;
+    }
+  }
+  if (atual) pedacos.push(atual);
+
+  const saiu = [];
+  for (const pedaco of pedacos) {
+    const t = await traduzirComCache(pedaco, alvo);
+    if (!t) return null; // meia traducao e' pior que nenhuma
+    saiu.push(t);
+  }
+  return saiu.join("\n");
+}
+
+/* ---------------- replica dos canais, um jogo por idioma ----------------
+
+   O chat resolveu a conversa, mas nao o resto: aviso de evento, dica do dia e
+   recado de jogo continuavam so no canal publico, em ingles. Quem escolheu
+   arabe ganhou uma sala de conversa e seguiu sem entender o aviso do urso.
+
+   Entao cada idioma ganha o jogo inteiro dentro de uma CATEGORIA propria --
+   evento, dica, game e o chat. A categoria e' o que faz isso caber na barra
+   lateral: sem ela seriam quatro canais soltos por idioma, vinte e oito no
+   topo, e ninguem acharia nada. Com ela a pessoa ve UMA linha, "🇧🇷 Português",
+   e o que esta dentro e' o servidor inteiro na lingua dela.
+
+   Os tres novos sao so-leitura: quem escreve neles e' o bot. Conversa tem
+   lugar, e o lugar e' o chat.
+
+   O conteudo vem de fora, nao daqui: o canal publico continua sendo a fonte.
+   O oficial (ou o aviso automatico do portal) posta uma vez la, e o bot leva
+   traduzido pra replica de cada idioma, mantendo o heroi que assinou. Ninguem
+   escreve cinco vezes, e o canal publico segue servindo quem nao escolheu
+   idioma nenhum. */
+
+const REPLICAS = [
+  { tipo: "evento", prefixo: "evento-", assunto: "Avisos de evento" },
+  { tipo: "dica",   prefixo: "dica-",   assunto: "Dicas e alertas" },
+  { tipo: "game",   prefixo: "game-",   assunto: "Recados do jogo" },
+];
+
+const cacheFontes = new Map(); // aliancaId -> { v: Map(canal_id -> tipo), t }
+async function fontesReplica(aliancaId) {
+  const achado = cacheFontes.get(aliancaId);
+  if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
+  let v = new Map();
+  try {
+    const r = await sb(`discord_fonte_replica?alianca_id=eq.${aliancaId}&select=canal_id,tipo`) || [];
+    v = new Map(r.map((f) => [f.canal_id, f.tipo]));
+  } catch { /* tenta de novo na proxima mensagem */ }
+  cacheFontes.set(aliancaId, { v, t: Date.now() });
+  return v;
+}
+
+const cacheReplicas = new Map(); // aliancaId -> { v, t }
+async function replicasDoIdioma(aliancaId) {
+  const achado = cacheReplicas.get(aliancaId);
+  if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
+  let v = [];
+  try {
+    v = await sb(`discord_canal_idioma?alianca_id=eq.${aliancaId}&select=canal_id,idioma,tipo,webhook`) || [];
+  } catch { /* tenta de novo na proxima mensagem */ }
+  cacheReplicas.set(aliancaId, { v, t: Date.now() });
+  return v;
+}
+
+/* Quem enxerga a categoria enxerga tudo que esta dentro: o cargo do idioma e'
+   a chave, e as portas de dentro herdam esta. */
+function portasDaCategoria(guild, cargoId) {
+  return [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: cargoId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
+    {
+      id: client.user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks],
+    },
+  ];
+}
+
+async function garantirCategoria(guild, sala) {
+  if (sala.categoria_id) {
+    const achada = await guild.channels.fetch(sala.categoria_id).catch(() => null);
+    if (achada) return achada;
+  }
+  if (!sala.role_id) return null; // sem cargo nao ha como fechar a porta
+
+  const categoria = await guild.channels.create({
+    name: nomeDoIdioma(sala.idioma),
+    type: ChannelType.GuildCategory,
+    permissionOverwrites: portasDaCategoria(guild, sala.role_id),
+    reason: "categoria do idioma",
+  });
+  await sbPatch(`discord_chat_espelho?canal_id=eq.${encodeURIComponent(sala.canal_id)}`,
+    { categoria_id: categoria.id });
+  sala.categoria_id = categoria.id;
+  console.log(`idioma: categoria criada para ${sala.idioma} (${categoria.name})`);
+  return categoria;
+}
+
+async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao) {
+  const canal = await guild.channels.create({
+    name: `${def.prefixo}${sala.idioma.toLowerCase()}`,
+    type: ChannelType.GuildText,
+    parent: categoria.id,
+    position: posicao,
+    topic: `${def.assunto} — ${nomeDoIdioma(sala.idioma)}. Só leitura: quem escreve aqui é o bot.`,
+    /* So-leitura de proposito: o cargo do idioma ve e le, mas nao fala.
+       Conversa tem lugar, e o lugar e' o chat da mesma categoria.
+
+       Tudo do cargo numa entrada so: dois overwrites com o mesmo id fazem o
+       Discord ficar com um deles, e qual dos dois vira sorte. */
+    permissionOverwrites: portasDaCategoria(guild, sala.role_id).map((p) =>
+      p.id === sala.role_id
+        ? { ...p, deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions] }
+        : p),
+    reason: "replica do canal no idioma",
+  });
+
+  const webhook = await canal.createWebhook({ name: "CYRON" });
+  await sbPost("discord_canal_idioma", {
+    alianca_id: aliancaId, idioma: sala.idioma, tipo: def.tipo,
+    canal_id: canal.id, webhook: webhook.url,
+  });
+  console.log(`idioma: #${canal.name} criado`);
+}
+
+/* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
+   sala. Roda junto da sincronia das salas. */
+async function montarCategorias(guild, aliancaId, porIdioma) {
+  const jaTem = new Set(
+    ((await sb(`discord_canal_idioma?alianca_id=eq.${aliancaId}&select=idioma,tipo,canal_id`)) || [])
+      .map((r) => `${r.idioma}|${r.tipo}`));
+
+  for (const sala of porIdioma.values()) {
+    try {
+      const categoria = await garantirCategoria(guild, sala);
+      if (!categoria) continue;
+
+      for (let i = 0; i < REPLICAS.length; i++) {
+        const def = REPLICAS[i];
+        if (jaTem.has(`${sala.idioma}|${def.tipo}`)) continue;
+        await garantirReplica(guild, aliancaId, sala, categoria, def, i);
+      }
+
+      /* O chat entra por ultimo na lista: ler o aviso vem antes de responder
+         a ele. E ele ja existia solto no topo, entao aqui e' mudanca de lugar,
+         nao criacao -- as permissoes dele sao proprias e ficam como estao. */
+      const chat = await guild.channels.fetch(sala.canal_id).catch(() => null);
+      if (chat && chat.parentId !== categoria.id) {
+        await chat.setParent(categoria.id, { lockPermissions: false, reason: "chat vai pra categoria do idioma" });
+        await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
+        console.log(`idioma: #${chat.name} movido pra ${categoria.name}`);
+      }
+    } catch (e) {
+      console.error("idioma: nao consegui montar a categoria de", sala.idioma, e?.message || e);
+    }
+  }
+  cacheReplicas.delete(aliancaId);
+}
+
+/* Leva o aviso do canal publico pra replica de cada idioma.
+
+   Mantem o heroi que assinou (nome e foto do webhook de origem) e a forma da
+   mensagem: se veio embed, sai embed com titulo e texto traduzidos e a imagem
+   intacta. Traduzir so o texto e jogar fora a moldura faria o aviso do urso
+   chegar sem o urso. */
+async function replicarPorIdioma(msg, aliancaId, tipo) {
+  const destinos = (await replicasDoIdioma(aliancaId)).filter((r) => r.tipo === tipo);
+  if (!destinos.length) return;
+
+  const emb = msg.embeds?.[0];
+  const titulo = String(emb?.title || "").trim();
+  const corpo = String(emb?.description || msg.content || "").trim();
+  if (!titulo && !corpo && !msg.attachments.size) return;
+
+  const nome = (msg.author?.username || "CYRON").slice(0, 80);
+  const foto = msg.author?.displayAvatarURL({ extension: "png", size: 128 });
+  const { arquivos, links } = msg.attachments.size ? await baixarAnexos(msg) : { arquivos: [], links: [] };
+
+  for (const destino of destinos) {
+    try {
+      /* Teto alto de proposito: aqui o texto longo e' o que MAIS precisa de
+         traducao. O vantajosoTraduzir continua servindo pra nao pagar por
+         emoji, link solto e "ok". */
+      const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO)
+        ? (await traduzirLongo(titulo, destino.idioma)) || titulo : titulo;
+      const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO)
+        ? (await traduzirLongo(corpo, destino.idioma)) || corpo : corpo;
+
+      const carga = { username: nome, avatarURL: foto, files: arquivos, allowedMentions: { parse: [] } };
+      if (emb) {
+        const cru = emb.toJSON();
+        /* Campo tambem e' texto que alguem vai ler. Deixar de fora faria o
+           aviso chegar meio traduzido, que e' pior que nao traduzir: da a
+           impressao de que aquela parte nao valia a pena. */
+        const campos = [];
+        for (const campo of cru.fields || []) {
+          campos.push({
+            ...campo,
+            name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO)
+              ? (await traduzirLongo(campo.name, destino.idioma)) || campo.name : campo.name,
+            value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO)
+              ? (await traduzirLongo(campo.value, destino.idioma)) || campo.value : campo.value,
+          });
+        }
+        carga.embeds = [{
+          ...cru,
+          title: t || undefined,
+          description: [c, ...links].filter(Boolean).join("\n") || undefined,
+          fields: campos.length ? campos : undefined,
+        }];
+      } else {
+        carga.content = [c, ...links].filter(Boolean).join("\n").slice(0, 1900) || undefined;
+      }
+      if (!carga.content && !carga.embeds && !arquivos.length) continue;
+
+      await clienteDoWebhook(destino.webhook).send(carga);
+    } catch (e) {
+      console.error("idioma: nao consegui replicar em", destino.idioma, e?.message || e);
+    }
+  }
+}
+
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
     try {
       const aliancaId = await aliancaDoGuild(guild.id);
       if (!aliancaId) continue;
 
-      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,role_id`);
+      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,role_id,categoria_id`);
       if (!salas?.length) continue; // ninguem ligou o espelho nesta alianca
 
       /* So idioma que esta no seletor vira sala. Um valor estranho no banco
@@ -848,6 +1093,10 @@ async function sincronizarSalas() {
           }
         }
       }
+      /* Depois dos cargos: a categoria e' fechada com o cargo do idioma, e
+         sem ele nao ha como fechar porta nenhuma. */
+      await montarCategorias(guild, aliancaId, porIdioma);
+
       cacheEspelho.delete(aliancaId); // a proxima mensagem le a lista nova
     } catch (e) {
       console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
@@ -980,6 +1229,15 @@ client.on("messageCreate", async (msg) => {
          traduzir o que acabou de ser traduzido. No teste isso encheu o canal
          de "Tradução / Translation" embaixo de cada fala. */
       if ((await canaisEspelho(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+
+      /* Nem a replica: o que chega nela JA e' a traducao. */
+      if ((await replicasDoIdioma(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+
+      /* Canal publico que abastece as replicas: o aviso sai daqui traduzido
+         pra cada idioma. Nao e' um "return" -- o canal publico continua
+         servindo quem nunca escolheu idioma, com o tradutor de sempre. */
+      const fonte = (await fontesReplica(aliancaId)).get(msg.channel.id);
+      if (fonte) await replicarPorIdioma(msg, aliancaId, fonte);
 
       /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
          tradutor. Antes parava no seletor, com a ideia de que a mensagem era
