@@ -92,7 +92,7 @@ async function servidorDoGuild(guildId) {
   if (achado && Date.now() - achado.t < 5 * 60 * 1000) return achado.v;
   let v = null;
   try {
-    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,tradutor,tradutor_chave,tradutor_regiao`);
+    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
     v = r?.[0] ?? null;
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheServidor.set(guildId, { v, t: Date.now() });
@@ -685,6 +685,42 @@ async function espelharMensagem(msg, lista, origem, texto) {
    varredura periodica faz o mesmo e ainda conserta o que sair do lugar
    sozinho -- cargo removido na mao, gente que entrou depois. */
 
+/* Teto por plano.
+
+   Limitar CANAL seria olhar pro sintoma. O numero que manda em tudo aqui e' o
+   de IDIOMAS: cada idioma novo e' uma categoria, mais um canal por tipo de
+   aviso, mais uma copia de cada anuncio no tradutor. Segurando um numero,
+   seguro os tres.
+
+   O teto de canais existe por outro motivo, e vale pra todo mundo: e' valvula
+   de seguranca. Um defeito meu num laco nao pode encher o servidor de alguem
+   com trezentos canais -- e ja quase aconteceu duas vezes nesta semana, com a
+   posicao e com o nome. */
+const PLANOS = {
+  gratis: { idiomas: 3,  canais: 20 },
+  pago:   { idiomas: 20, canais: 200 },
+};
+
+/* Um pedido de canal. Devolve false quando o orcamento acabou, e avisa uma
+   vez so' -- repetir a mesma linha a cada canal recusado encheria o log e
+   esconderia o resto. */
+function podeCriarCanal(orcamento, guild, limite) {
+  if (orcamento.resta > 0) { orcamento.resta -= 1; return true; }
+  if (!orcamento.avisou) {
+    orcamento.avisou = true;
+    console.log(`limite: ${guild.name} bateu o teto de ${limite.canais} canais; não crio mais nada nesta passada`);
+  }
+  return false;
+}
+
+function limitesDo(servidor) {
+  const base = PLANOS[servidor?.plano] || PLANOS.gratis;
+  return {
+    idiomas: servidor?.limite_idiomas ?? base.idiomas,
+    canais: servidor?.limite_canais ?? base.canais,
+  };
+}
+
 const PREFIXO_SALA = "chat-";
 const INTERVALO_SINCRONIA = 10 * 60 * 1000;
 
@@ -1065,7 +1101,7 @@ async function esconderOriginais(guild, servidorId, cargosComReplica) {
 
 /* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
    sala. Roda junto da sincronia das salas. */
-async function montarCategorias(guild, servidorId, porIdioma, pago) {
+async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite) {
   const existentes = (await sb(
     `discord_canal_idioma?servidor_id=eq.${servidorId}&select=idioma,tipo,canal_id`)) || [];
   const porChave = new Map(existentes.map((r) => [`${r.idioma}|${r.tipo}`, r.canal_id]));
@@ -1074,6 +1110,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago) {
 
   for (const sala of porIdioma.values()) {
     try {
+      if (!sala.categoria_id && !podeCriarCanal(orcamento, guild, limite)) continue;
       const categoria = await garantirCategoria(guild, sala);
       if (!categoria) continue;
 
@@ -1092,6 +1129,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago) {
         const jaExiste = porChave.get(`${sala.idioma}|${def.tipo}`);
 
         if (!jaExiste) {
+          if (!podeCriarCanal(orcamento, guild, limite)) continue;
           await garantirReplica(guild, servidorId, sala, categoria, def, i, nome);
           continue;
         }
@@ -1125,7 +1163,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago) {
          cargo, porque assim ja nasce dentro da categoria certa -- criar solta
          e mover depois deixaria o canal aparecendo no topo do servidor por
          alguns segundos, na frente de todo mundo. */
-      if (pago && !sala.canal_id) {
+      if (pago && !sala.canal_id && podeCriarCanal(orcamento, guild, limite)) {
         try {
           await garantirCanalDeChat(guild, sala, categoria.id);
         } catch (e) {
@@ -1236,6 +1274,19 @@ async function sincronizarSalas() {
       const servidorId = servidor.id;
 
       const pago = servidor.plano === "pago";
+      const limite = limitesDo(servidor);
+
+      /* Orcamento de canais desta passada.
+
+         Conta o que o bot ja criou (replica + sala de conversa + categoria) e
+         desconta do teto. Cada criacao gasta um; chegando a zero, ninguem cria
+         mais nada nesta passada e o motivo aparece no log.
+
+         Isto e' cinto de seguranca, nao regra de negocio: mesmo o plano pago
+         tem teto, porque o que eu preciso impedir e' um erro meu -- um laco
+         que se repete, um nome que nunca casa -- transformar o servidor de um
+         cliente em trezentos canais. */
+      const orcamento = { resta: limite.canais, avisou: false };
 
       const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=id,canal_id,idioma,webhook,role_id,categoria_id`) || [];
 
@@ -1243,12 +1294,42 @@ async function sincronizarSalas() {
          nao pode virar canal no servidor de ninguem. */
       const validos = new Set(LINGUAS_MENU.map(([c]) => c));
       const escolhas = await sb(`discord_idioma_jogador?select=discord_user_id,idioma`);
-      const porPessoa = new Map();
+      const escolhaDe = new Map();
       for (const e of escolhas || []) {
-        if (validos.has(e.idioma)) porPessoa.set(String(e.discord_user_id), e.idioma);
+        if (validos.has(e.idioma)) escolhaDe.set(String(e.discord_user_id), e.idioma);
+      }
+
+      /* A escolha de idioma e' da PESSOA e vale em qualquer servidor -- e' o
+         certo, a lingua dela nao muda de porta em porta. Mas a lista inteira
+         de escolhas nao pode virar canal aqui dentro: so conta quem e' membro
+         DESTE servidor.
+
+         Sem isso, um servidor recem-instalado nascia com uma categoria pra
+         cada idioma que qualquer pessoa ja tivesse escolhido em qualquer
+         outro lugar -- sete categorias de linguas que ninguem ali fala, no
+         primeiro minuto de uso. Passava despercebido enquanto havia um
+         servidor so, porque ali todo mundo era membro. */
+      const membros = await guild.members.fetch();
+      const porPessoa = new Map();
+      const falantes = new Map(); // idioma -> quantos, aqui dentro
+      for (const [id, membro] of membros) {
+        if (membro.user.bot) continue;
+        const idioma = escolhaDe.get(id);
+        if (!idioma) continue;
+        porPessoa.set(id, idioma);
+        falantes.set(idioma, (falantes.get(idioma) || 0) + 1);
       }
 
       const porIdioma = new Map(salas.map((s) => [s.idioma, s]));
+
+      /* Desconta o que ja esta de pe: categoria, sala de conversa e replica. */
+      const replicasFeitas = await sb(
+        `discord_canal_idioma?servidor_id=eq.${servidorId}&select=canal_id`) || [];
+      orcamento.resta -= replicasFeitas.length;
+      for (const sala of porIdioma.values()) {
+        if (sala.canal_id) orcamento.resta -= 1;
+        if (sala.categoria_id) orcamento.resta -= 1;
+      }
 
       /* Idioma sem cargo e' porta sem chave: ou nasceu antes desta ideia, ou
          alguem apagou o cargo na mao. Cria de novo e refecha o que estiver
@@ -1276,10 +1357,28 @@ async function sincronizarSalas() {
         }
       }
 
-      /* Idioma com gente de verdade passa a existir. Sao vinte no seletor;
-         criar os vinte deixaria dezoito categorias mortas. */
-      for (const idioma of new Set(porPessoa.values())) {
-        if (porIdioma.has(idioma)) continue;
+      /* Idioma com gente de verdade passa a existir, do mais falado pro menos
+         -- e ate o teto do plano.
+
+         A ordem importa por causa do teto: se o gratis leva tres, tem que
+         levar OS TRES MAIORES, nao os tres primeiros que aparecerem numa
+         consulta. Ordem de banco nao e' criterio, e o dono do servidor
+         perceberia na hora que a lingua da maioria ficou de fora.
+
+         Quem ja tem categoria nunca perde: idioma que caiu no ranking
+         continua com a dele. Tirar seria apagar canal com conversa dentro por
+         causa de uma flutuacao de contagem, e ninguem perdoa isso. */
+      const restam = limite.idiomas - porIdioma.size;
+      const querem = [...falantes.entries()]
+        .filter(([idioma]) => !porIdioma.has(idioma))
+        .sort((a, b) => b[1] - a[1]);
+
+      if (restam <= 0 && querem.length) {
+        console.log(`limite: ${guild.name} está no teto de ${limite.idiomas} idiomas (plano ${servidor.plano}); ` +
+          `${querem.length} esperando: ${querem.map(([i, n]) => `${i}(${n})`).join(", ")}`);
+      }
+
+      for (const [idioma] of querem.slice(0, Math.max(0, restam))) {
         try {
           porIdioma.set(idioma, await garantirIdioma(guild, servidorId, idioma));
         } catch (e) {
@@ -1312,7 +1411,6 @@ async function sincronizarSalas() {
       /* Cargo de sala e' exclusivo: entrar numa e' sair das outras, senao a
          pessoa passaria a ver a mesma conversa repetida em dois idiomas. */
       const cargosDeSala = new Set([...porIdioma.values()].map((s) => s.role_id).filter(Boolean));
-      const membros = await guild.members.fetch();
       for (const [, membro] of membros) {
         if (membro.user.bot) continue;
         const querido = porIdioma.get(porPessoa.get(membro.id))?.role_id || null;
@@ -1329,7 +1427,7 @@ async function sincronizarSalas() {
       }
       /* Depois dos cargos: a categoria e' fechada com o cargo do idioma, e
          sem ele nao ha como fechar porta nenhuma. */
-      await montarCategorias(guild, servidorId, porIdioma, pago);
+      await montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite);
 
       cacheEspelho.delete(servidorId); // a proxima mensagem le a lista nova
     } catch (e) {
