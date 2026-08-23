@@ -1470,7 +1470,10 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
   const corpo = String(emb?.description || msg.content || "").trim();
   if (!titulo && !corpo && !msg.attachments.size) return;
 
-  const nome = (msg.author?.username || "CYRON").slice(0, 80);
+  /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
+     pros outros aqui dentro. Pra aviso automatico (webhook) nao ha membro, e
+     o username ja e' o nome do heroi que assinou. */
+  const nome = (msg.member?.displayName || msg.author?.username || "CYRON").slice(0, 80);
   const foto = msg.author?.displayAvatarURL({ extension: "png", size: 128 });
   const { arquivos, links } = msg.attachments.size ? await baixarAnexos(msg) : { arquivos: [], links: [] };
 
@@ -2421,6 +2424,22 @@ client.on("messageCreate", async (msg) => {
     const aqui = (await replicasDoIdioma(servidorId)).find((r) => r.canal_id === msg.channel.id);
     if (aqui) {
       await orientarNaReplica(msg, servidor, aqui);
+      return;
+    }
+
+    /* Gente escrevendo no canal-fonte tambem replica.
+
+       Isto so' existia no ramo do webhook, e por muito tempo bastou: no
+       servidor onde tudo comecou a fonte e' alimentada por aviso automatico,
+       que chega por webhook. Num servidor qualquer quem escreve no canal de
+       anuncio e' UMA PESSOA -- e esse caminho nunca replicava. O anuncio saia
+       em portugues e nao chegava em lingua nenhuma.
+
+       Vem antes do espelho e do seletor de proposito: um canal e' fonte ou e'
+       conversa, nunca os dois. */
+    const fonteAqui = (await fontesReplica(servidorId)).get(msg.channel.id);
+    if (fonteAqui) {
+      await replicarPorIdioma(msg, servidorId, fonteAqui);
       return;
     }
 
