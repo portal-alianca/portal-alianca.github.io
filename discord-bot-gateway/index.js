@@ -70,6 +70,35 @@ async function sbPatch(caminho, corpo) {
   if (!r.ok) throw new Error(`supabase ${r.status}`);
 }
 
+/* ---------------- quem e' o dono deste servidor ----------------
+
+   Sao duas perguntas diferentes, e por muito tempo elas foram a mesma.
+
+   "Que ALIANCA e' esta?" e' pergunta do Kingshot: serve pra achar o herói que
+   assina o aviso, o GIF de boas-vindas, o ranking. Quem nao joga Kingshot nao
+   tem alianca e nao precisa de nenhuma dessas coisas.
+
+   "Que SERVIDOR e' este?" e' a pergunta do CYRON: portao de idioma, salas,
+   replicas, plano. Um servidor de trading, de anime ou de uma empresa responde
+   essa e nao responde a outra.
+
+   Enquanto as duas eram uma so, o motor de traducao so existia pra quem
+   tivesse alianca -- que e' o oposto de um produto. A [TOP] agora e' o
+   primeiro cliente, nao o dono. */
+
+const cacheServidor = new Map(); // guildId -> { v, t }
+async function servidorDoGuild(guildId) {
+  const achado = cacheServidor.get(guildId);
+  if (achado && Date.now() - achado.t < 5 * 60 * 1000) return achado.v;
+  let v = null;
+  try {
+    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,tradutor,tradutor_chave,tradutor_regiao`);
+    v = r?.[0] ?? null;
+  } catch { /* tenta de novo na proxima mensagem */ }
+  cacheServidor.set(guildId, { v, t: Date.now() });
+  return v;
+}
+
 const cacheAlianca = new Map(); // guildId -> { v, t }
 async function aliancaDoGuild(guildId) {
   const achado = cacheAlianca.get(guildId);
@@ -468,15 +497,19 @@ client.on("threadUpdate", async (antes, depois) => {
    GENTE é espelhada, e o espelho sai por webhook. Espelho de espelho não
    existe porque webhook nunca entra aqui. */
 
-const cacheEspelho = new Map(); // aliancaId -> { v, t }
-async function canaisEspelho(aliancaId) {
-  const achado = cacheEspelho.get(aliancaId);
+const cacheEspelho = new Map(); // servidorId -> { v, t }
+async function canaisEspelho(servidorId) {
+  const achado = cacheEspelho.get(servidorId);
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = [];
   try {
-    v = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,categoria_id`) || [];
+    /* So idioma que TEM sala de conversa entra aqui. Depois que a linha passou
+       a significar "este idioma existe" em vez de "esta sala existe", uma
+       linha sem canal virou possivel -- e ela chegaria no espelharMensagem
+       como um destino de webhook nulo. */
+    v = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&canal_id=not.is.null&select=canal_id,idioma,webhook,categoria_id`) || [];
   } catch { /* tenta de novo na proxima mensagem */ }
-  cacheEspelho.set(aliancaId, { v, t: Date.now() });
+  cacheEspelho.set(servidorId, { v, t: Date.now() });
   return v;
 }
 
@@ -672,34 +705,49 @@ function nomeDoIdioma(cod) {
   return achado ? `${achado[2]} ${achado[1]}` : cod;
 }
 
-async function garantirSala(guild, aliancaId, idioma) {
+/* Um idioma passa a EXISTIR num servidor quando alguem o escolhe. Existir
+   quer dizer: ter um cargo (a chave que abre as portas dele) e uma linha no
+   banco. A sala de conversa e' um bem desse idioma, nao a definicao dele --
+   por isso ela nasce numa funcao separada, e so no plano pago. */
+async function garantirIdioma(guild, servidorId, idioma) {
   const cargo = await guild.roles.create({
     name: nomeDoIdioma(idioma),
     mentionable: false,
-    reason: "sala de idioma do chat espelhado",
+    reason: "cargo do idioma",
   });
 
+  const linha = { servidor_id: servidorId, idioma, role_id: cargo.id };
+  await sbPost("discord_chat_espelho", linha);
+  console.log(`idioma: ${idioma} agora existe neste servidor`);
+  return { ...linha, canal_id: null, webhook: null, categoria_id: null };
+}
+
+/* A sala de conversa: privada, com modo lento, e o webhook por onde a fala
+   dos outros idiomas chega traduzida. So no plano pago -- e' o unico recurso
+   daqui que custa por mensagem. */
+async function garantirCanalDeChat(guild, sala, categoriaId) {
   const canal = await guild.channels.create({
-    name: `${PREFIXO_SALA}${idioma.toLowerCase()}`,
-    type: 0,
+    name: `${PREFIXO_SALA}${sala.idioma.toLowerCase()}`,
+    type: ChannelType.GuildText,
+    parent: categoriaId || undefined,
     rateLimitPerUser: SEGUNDOS_ENTRE_FALAS,
-    topic: `Chat espelhado — ${nomeDoIdioma(idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
+    topic: `Chat espelhado — ${nomeDoIdioma(sala.idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
     permissionOverwrites: [
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: sala.role_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
       { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
     ],
-    reason: "sala de idioma do chat espelhado",
+    reason: "sala de conversa do idioma",
   });
 
   const webhook = await canal.createWebhook({ name: "CYRON espelho" });
+  await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`,
+    { canal_id: canal.id, webhook: webhook.url });
 
-  await sbPost("discord_chat_espelho", {
-    alianca_id: aliancaId, canal_id: canal.id, idioma,
-    webhook: webhook.url, role_id: cargo.id,
-  });
-  console.log(`espelho: sala criada para ${idioma} (#${canal.name})`);
-  return { canal_id: canal.id, idioma, webhook: webhook.url, role_id: cargo.id };
+  sala.canal_id = canal.id;
+  sala.webhook = webhook.url;
+  console.log(`espelho: sala de conversa criada para ${sala.idioma} (#${canal.name})`);
+  return sala;
 }
 
 /* Passada curta: so quem mexeu no idioma agorinha.
@@ -718,10 +766,11 @@ async function sincronizarRecentes() {
   const desde = new Date(Date.now() - JANELA_RECENTE).toISOString();
   for (const [, guild] of client.guilds.cache) {
     try {
-      const aliancaId = await aliancaDoGuild(guild.id);
-      if (!aliancaId) continue;
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor) continue;
+      const servidorId = servidor.id;
 
-      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=idioma,role_id`);
+      const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=idioma,role_id`);
       if (!salas?.length) continue;
 
       const recentes = await sb(
@@ -833,28 +882,28 @@ function nomeDaReplica(modelo, def, idioma) {
   return `${base}-${idioma}`.toLowerCase().slice(0, 100);
 }
 
-const cacheFontes = new Map(); // aliancaId -> { v: Map(canal_id -> tipo), t }
-async function fontesReplica(aliancaId) {
-  const achado = cacheFontes.get(aliancaId);
+const cacheFontes = new Map(); // servidorId -> { v: Map(canal_id -> tipo), t }
+async function fontesReplica(servidorId) {
+  const achado = cacheFontes.get(servidorId);
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = new Map();
   try {
-    const r = await sb(`discord_fonte_replica?alianca_id=eq.${aliancaId}&select=canal_id,tipo&order=criado_em.asc`) || [];
+    const r = await sb(`discord_fonte_replica?servidor_id=eq.${servidorId}&select=canal_id,tipo&order=criado_em.asc`) || [];
     v = new Map(r.map((f) => [f.canal_id, f.tipo]));
   } catch { /* tenta de novo na proxima mensagem */ }
-  cacheFontes.set(aliancaId, { v, t: Date.now() });
+  cacheFontes.set(servidorId, { v, t: Date.now() });
   return v;
 }
 
-const cacheReplicas = new Map(); // aliancaId -> { v, t }
-async function replicasDoIdioma(aliancaId) {
-  const achado = cacheReplicas.get(aliancaId);
+const cacheReplicas = new Map(); // servidorId -> { v, t }
+async function replicasDoIdioma(servidorId) {
+  const achado = cacheReplicas.get(servidorId);
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = [];
   try {
-    v = await sb(`discord_canal_idioma?alianca_id=eq.${aliancaId}&select=canal_id,idioma,tipo,webhook`) || [];
+    v = await sb(`discord_canal_idioma?servidor_id=eq.${servidorId}&select=canal_id,idioma,tipo,webhook`) || [];
   } catch { /* tenta de novo na proxima mensagem */ }
-  cacheReplicas.set(aliancaId, { v, t: Date.now() });
+  cacheReplicas.set(servidorId, { v, t: Date.now() });
   return v;
 }
 
@@ -909,7 +958,7 @@ async function garantirCategoria(guild, sala) {
   return categoria;
 }
 
-async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao, nome) {
+async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome) {
   const canal = await guild.channels.create({
     name: nome,
     type: ChannelType.GuildText,
@@ -928,7 +977,7 @@ async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao, 
 
   const webhook = await canal.createWebhook({ name: "CYRON" });
   await sbPost("discord_canal_idioma", {
-    alianca_id: aliancaId, idioma: sala.idioma, tipo: def.tipo,
+    servidor_id: servidorId, idioma: sala.idioma, tipo: def.tipo,
     canal_id: canal.id, webhook: webhook.url,
   });
   console.log(`idioma: #${canal.name} criado`);
@@ -962,9 +1011,9 @@ function umaVezPorProcesso(chave) {
 /* Qual canal original empresta o nome pra cada tipo de replica. Dois canais
    podem alimentar o mesmo tipo (evento vem do event-guide E do hunting-trap):
    quem empresta e' o primeiro cadastrado, por isso a consulta vem ordenada. */
-async function modelosDeNome(guild, aliancaId) {
+async function modelosDeNome(guild, servidorId) {
   const modelos = new Map();
-  for (const [canalId, tipo] of await fontesReplica(aliancaId)) {
+  for (const [canalId, tipo] of await fontesReplica(servidorId)) {
     if (modelos.has(tipo)) continue;
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (canal) modelos.set(tipo, canal.name);
@@ -986,14 +1035,14 @@ async function modelosDeNome(guild, aliancaId) {
    Quem ainda nao escolheu continua vendo tudo como antes -- o cargo do idioma
    e' a chave, e quem nao tem cargo nao e' afetado. E quem perder o cargo volta
    a enxergar sozinho, sem ninguem precisar desfazer nada. */
-async function esconderOriginais(guild, aliancaId, cargosComReplica) {
+async function esconderOriginais(guild, servidorId, cargosComReplica) {
   if (!cargosComReplica.size) return;
 
-  const fontes = [...(await fontesReplica(aliancaId)).keys()];
+  const fontes = [...(await fontesReplica(servidorId)).keys()];
   let portoes = [];
   try {
     portoes = ((await sb(
-      `discord_convite_idioma?alianca_id=eq.${aliancaId}&tipo=eq.portao&select=canal_id`)) || [])
+      `discord_convite_idioma?servidor_id=eq.${servidorId}&tipo=eq.portao&select=canal_id`)) || [])
       .map((p) => p.canal_id);
   } catch { /* sem portao a lista so fica menor */ }
 
@@ -1016,11 +1065,11 @@ async function esconderOriginais(guild, aliancaId, cargosComReplica) {
 
 /* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
    sala. Roda junto da sincronia das salas. */
-async function montarCategorias(guild, aliancaId, porIdioma) {
+async function montarCategorias(guild, servidorId, porIdioma, pago) {
   const existentes = (await sb(
-    `discord_canal_idioma?alianca_id=eq.${aliancaId}&select=idioma,tipo,canal_id`)) || [];
+    `discord_canal_idioma?servidor_id=eq.${servidorId}&select=idioma,tipo,canal_id`)) || [];
   const porChave = new Map(existentes.map((r) => [`${r.idioma}|${r.tipo}`, r.canal_id]));
-  const modelos = await modelosDeNome(guild, aliancaId);
+  const modelos = await modelosDeNome(guild, servidorId);
   const prontos = new Set();
 
   for (const sala of porIdioma.values()) {
@@ -1043,7 +1092,7 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
         const jaExiste = porChave.get(`${sala.idioma}|${def.tipo}`);
 
         if (!jaExiste) {
-          await garantirReplica(guild, aliancaId, sala, categoria, def, i, nome);
+          await garantirReplica(guild, servidorId, sala, categoria, def, i, nome);
           continue;
         }
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
@@ -1072,10 +1121,21 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
         }
       }
 
+      /* A sala de conversa e' o recurso pago. Ela nasce aqui, e nao junto do
+         cargo, porque assim ja nasce dentro da categoria certa -- criar solta
+         e mover depois deixaria o canal aparecendo no topo do servidor por
+         alguns segundos, na frente de todo mundo. */
+      if (pago && !sala.canal_id) {
+        try {
+          await garantirCanalDeChat(guild, sala, categoria.id);
+        } catch (e) {
+          console.error("espelho: nao consegui criar a sala de conversa de", sala.idioma, e?.message || e);
+        }
+      }
+
       /* O chat entra por ultimo na lista: ler o aviso vem antes de responder
-         a ele. Ele ja existia solto no topo, entao aqui e' mudanca de lugar,
-         nao criacao -- as permissoes dele sao proprias e ficam como estao. */
-      const chat = await guild.channels.fetch(sala.canal_id).catch(() => null);
+         a ele. */
+      const chat = sala.canal_id ? await guild.channels.fetch(sala.canal_id).catch(() => null) : null;
       if (chat) {
         const nomeChat = nomeDaReplica(modelos.get("chat"), { prefixo: PREFIXO_SALA }, sala.idioma);
         if (chat.name !== nomeChat && umaVezPorProcesso(`nome:${chat.id}:${nomeChat}`)) {
@@ -1098,11 +1158,11 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
     }
   }
 
-  cacheReplicas.delete(aliancaId);
+  cacheReplicas.delete(servidorId);
 
   /* So depois de tudo montado: esconder o original de quem ainda nao tem pra
      onde ir deixaria a pessoa sem canal nenhum. */
-  await esconderOriginais(guild, aliancaId, prontos);
+  await esconderOriginais(guild, servidorId, prontos);
 }
 
 /* Leva o aviso do canal publico pra replica de cada idioma.
@@ -1111,8 +1171,8 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
    mensagem: se veio embed, sai embed com titulo e texto traduzidos e a imagem
    intacta. Traduzir so o texto e jogar fora a moldura faria o aviso do urso
    chegar sem o urso. */
-async function replicarPorIdioma(msg, aliancaId, tipo) {
-  const destinos = (await replicasDoIdioma(aliancaId)).filter((r) => r.tipo === tipo);
+async function replicarPorIdioma(msg, servidorId, tipo) {
+  const destinos = (await replicasDoIdioma(servidorId)).filter((r) => r.tipo === tipo);
   if (!destinos.length) return;
 
   const emb = msg.embeds?.[0];
@@ -1171,11 +1231,13 @@ async function replicarPorIdioma(msg, aliancaId, tipo) {
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
     try {
-      const aliancaId = await aliancaDoGuild(guild.id);
-      if (!aliancaId) continue;
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor) continue;
+      const servidorId = servidor.id;
 
-      const salas = await sb(`discord_chat_espelho?alianca_id=eq.${aliancaId}&select=canal_id,idioma,webhook,role_id,categoria_id`);
-      if (!salas?.length) continue; // ninguem ligou o espelho nesta alianca
+      const pago = servidor.plano === "pago";
+
+      const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=id,canal_id,idioma,webhook,role_id,categoria_id`) || [];
 
       /* So idioma que esta no seletor vira sala. Um valor estranho no banco
          nao pode virar canal no servidor de ninguem. */
@@ -1188,38 +1250,40 @@ async function sincronizarSalas() {
 
       const porIdioma = new Map(salas.map((s) => [s.idioma, s]));
 
-      /* Sala sem cargo e' sala aberta: ou nasceu antes desta ideia, ou alguem
-         apagou o cargo. Nos dois casos ela esta visivel pra todo mundo agora,
-         entao o conserto e' o mesmo -- cria o cargo e fecha a porta. */
+      /* Idioma sem cargo e' porta sem chave: ou nasceu antes desta ideia, ou
+         alguem apagou o cargo na mao. Cria de novo e refecha o que estiver
+         aberto. */
       for (const sala of porIdioma.values()) {
         if (sala.role_id && guild.roles.cache.has(sala.role_id)) continue;
         try {
-          const canal = await guild.channels.fetch(sala.canal_id);
-          if (!canal) continue;
+          const canal = sala.canal_id ? await guild.channels.fetch(sala.canal_id).catch(() => null) : null;
           const cargo = await guild.roles.create({
             name: nomeDoIdioma(sala.idioma), mentionable: false,
             reason: "sala de idioma do chat espelhado",
           });
-          await canal.permissionOverwrites.set([
-            { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
-          ], "fechando a sala de idioma");
-          await sbPatch(`discord_chat_espelho?canal_id=eq.${encodeURIComponent(sala.canal_id)}`, { role_id: cargo.id });
+          if (canal) {
+            await canal.permissionOverwrites.set([
+              { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+              { id: cargo.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+              { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+            ], "fechando a sala de idioma");
+          }
+          await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`, { role_id: cargo.id });
           sala.role_id = cargo.id;
-          console.log(`espelho: sala de ${sala.idioma} fechada, cargo criado`);
+          console.log(`idioma: cargo de ${sala.idioma} recriado`);
         } catch (e) {
           console.error("espelho: nao consegui fechar a sala de", sala.idioma, e?.message || e);
         }
       }
 
-      /* Idioma com gente e sem sala ganha sala agora. */
+      /* Idioma com gente de verdade passa a existir. Sao vinte no seletor;
+         criar os vinte deixaria dezoito categorias mortas. */
       for (const idioma of new Set(porPessoa.values())) {
         if (porIdioma.has(idioma)) continue;
         try {
-          porIdioma.set(idioma, await garantirSala(guild, aliancaId, idioma));
+          porIdioma.set(idioma, await garantirIdioma(guild, servidorId, idioma));
         } catch (e) {
-          console.error("espelho: nao consegui criar a sala de", idioma, e?.message || e);
+          console.error("idioma: nao consegui criar", idioma, e?.message || e);
         }
       }
 
@@ -1231,8 +1295,9 @@ async function sincronizarSalas() {
          minutos, cada uma desfazendo a outra, ate estourar o limite de duas
          trocas de nome a cada dez minutos que o Discord impoe. */
       for (const sala of porIdioma.values()) {
+        if (!sala.canal_id) continue; // idioma sem sala de conversa (plano gratis)
         try {
-          const canal = await guild.channels.fetch(sala.canal_id);
+          const canal = await guild.channels.fetch(sala.canal_id).catch(() => null);
           if (!canal) continue;
 
           if (canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
@@ -1264,9 +1329,9 @@ async function sincronizarSalas() {
       }
       /* Depois dos cargos: a categoria e' fechada com o cargo do idioma, e
          sem ele nao ha como fechar porta nenhuma. */
-      await montarCategorias(guild, aliancaId, porIdioma);
+      await montarCategorias(guild, servidorId, porIdioma, pago);
 
-      cacheEspelho.delete(aliancaId); // a proxima mensagem le a lista nova
+      cacheEspelho.delete(servidorId); // a proxima mensagem le a lista nova
     } catch (e) {
       console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
     }
@@ -1341,11 +1406,12 @@ async function fecharPortao(canal) {
 async function garantirConvites() {
   for (const [, guild] of client.guilds.cache) {
     try {
-      const aliancaId = await aliancaDoGuild(guild.id);
-      if (!aliancaId) continue;
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor) continue;
+      const servidorId = servidor.id;
 
       const portas = await sb(
-        `discord_convite_idioma?alianca_id=eq.${aliancaId}&select=canal_id,tipo,mensagem_id`);
+        `discord_convite_idioma?servidor_id=eq.${servidorId}&select=canal_id,tipo,mensagem_id`);
       if (!portas?.length) continue;
 
       for (const porta of portas) {
@@ -1372,7 +1438,7 @@ async function garantirConvites() {
             console.error("portaria: nao consegui fixar em", canal.name, e?.message || e));
 
           await sbPatch(
-            `discord_convite_idioma?alianca_id=eq.${aliancaId}&canal_id=eq.${encodeURIComponent(porta.canal_id)}`,
+            `discord_convite_idioma?servidor_id=eq.${servidorId}&canal_id=eq.${encodeURIComponent(porta.canal_id)}`,
             { mensagem_id: posta.id });
           console.log(`portaria: convite posto em #${canal.name} (${porta.tipo})`);
         } catch (e) {
@@ -1390,30 +1456,35 @@ client.on("messageCreate", async (msg) => {
     if (!msg.guild) return;
 
     if (msg.webhookId) {
-      const aliancaId = await aliancaDoGuild(msg.guild.id);
-      if (!aliancaId) return;
+      const servidor = await servidorDoGuild(msg.guild.id);
+      if (!servidor) return; // servidor sem /instalar: o motor nao mexe nele
+      const servidorId = servidor.id;
 
       /* Canal de chat espelhado nao leva tradutor: o que chega ali por webhook
          E' a traducao, e pendurar um seletor embaixo dela seria oferecer
          traduzir o que acabou de ser traduzido. No teste isso encheu o canal
          de "Tradução / Translation" embaixo de cada fala. */
-      if ((await canaisEspelho(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+      if ((await canaisEspelho(servidorId)).some((c) => c.canal_id === msg.channel.id)) return;
 
       /* Nem a replica: o que chega nela JA e' a traducao. */
-      if ((await replicasDoIdioma(aliancaId)).some((c) => c.canal_id === msg.channel.id)) return;
+      if ((await replicasDoIdioma(servidorId)).some((c) => c.canal_id === msg.channel.id)) return;
 
       /* Canal publico que abastece as replicas: o aviso sai daqui traduzido
          pra cada idioma. Nao e' um "return" -- o canal publico continua
          servindo quem nunca escolheu idioma, com o tradutor de sempre. */
-      const fonte = (await fontesReplica(aliancaId)).get(msg.channel.id);
-      if (fonte) await replicarPorIdioma(msg, aliancaId, fonte);
+      const fonte = (await fontesReplica(servidorId)).get(msg.channel.id);
+      if (fonte) await replicarPorIdioma(msg, servidorId, fonte);
 
       /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
          tradutor. Antes parava no seletor, com a ideia de que a mensagem era
          so o convite -- mas ela tem texto de verdade ("entrou na alianca,
          bem-vindo ao time"), e quem acabou de chegar sem falar a lingua da
          casa e' exatamente quem mais precisa de traducao. */
-      if (await webhookEhBoasVindas(aliancaId, msg.webhookId)) await talvezMandarSeletorIdioma(msg);
+      /* Daqui pra baixo e' recurso do portal do Kingshot (boas-vindas com GIF
+         e assinatura de heroi), entao volta a perguntar pela alianca. Servidor
+         que nao tem alianca simplesmente nao entra aqui. */
+      const aliancaId = await aliancaDoGuild(msg.guild.id);
+      if (aliancaId && await webhookEhBoasVindas(aliancaId, msg.webhookId)) await talvezMandarSeletorIdioma(msg);
 
       /* Avisos automaticos (evento, dica do dia, arena) vem como embed -- o
          texto que importa esta la, nao em msg.content (que as vezes so tem
@@ -1425,8 +1496,9 @@ client.on("messageCreate", async (msg) => {
     }
     if (msg.author.bot) return;
 
-    const aliancaId = await aliancaDoGuild(msg.guild.id);
-    if (!aliancaId) return; // servidor ainda nao ligado ao portal (/configurar servidor)
+    const servidor = await servidorDoGuild(msg.guild.id);
+    if (!servidor) return; // servidor sem /instalar
+    const servidorId = servidor.id;
 
     const texto = String(msg.content || "").trim();
 
@@ -1434,7 +1506,18 @@ client.on("messageCreate", async (msg) => {
        seletor de traducao nem topico, porque a traducao ja vai acontecer nos
        outros canais. Vem antes do corte de texto vazio de proposito -- foto
        sem legenda tambem tem que atravessar. */
-    const espelho = await canaisEspelho(aliancaId);
+    /* Chat espelhado e' o recurso pago, e o corte tem que ser aqui, no motor.
+
+       Nao e' capricho de embalagem: e' onde o dinheiro sai. O aviso replicado
+       repete o mesmo texto toda semana e bate no cache pra sempre -- custo que
+       tende a zero. Ja a conversa e' sempre nova, e cada frase vira uma
+       traducao por idioma. Uma sala de sete idiomas com gente falando e' a
+       unica coisa aqui dentro que escala com o tamanho do servidor.
+
+       O corte na interface (esconder botao, nao oferecer) seria enfeite: o
+       gasto acontece no momento em que a mensagem chega, entao e' aqui que ele
+       tem que parar. */
+    const espelho = servidor.plano === "pago" ? await canaisEspelho(servidorId) : [];
     const origem = espelho.find((c) => c.canal_id === msg.channel.id);
     if (origem) {
       /* Sem trava de quantidade aqui, de proposito.
