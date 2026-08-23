@@ -2188,13 +2188,10 @@ function corDoPainel(cheio, esperando) {
    tradutor nao mudaria nada visivel no cartao ate' alguma outra coisa mudar --
    o painel mentiria exatamente sobre o que a pessoa acabou de fazer.
 
-   O que esta' marcado no menu de canais fica FORA da assinatura de proposito.
-   Um lado dela vem do que o Discord devolve na mensagem, e eu nao tenho como
-   garantir daqui que ele devolve default_values do mesmo jeito que eu mandei;
-   se nao devolver, os dois lados nunca batem e o cartao passa a ser reescrito
-   a cada dez minutos pra sempre -- o defeito que a assinatura existe pra
-   evitar. Nao faz falta: a lista de canais tambem aparece num campo do embed,
-   entao mudou a fonte, mudou a assinatura, e o menu vai junto na edicao. */
+   As opcoes do menu de canais entram junto. Elas mudam por coisas que o embed
+   nao mostra -- um canal criado, um renomeado, um que virou copia minha --, e
+   sem elas na assinatura o menu ficaria oferecendo a lista velha ate' que
+   alguma outra coisa mudasse. */
 function assinaturaDoCartao(embed, componentes) {
   return JSON.stringify([
     embed.description,
@@ -2203,6 +2200,7 @@ function assinaturaDoCartao(embed, componentes) {
     embed.footer?.text,
     (componentes || []).map((linha) => (linha.components || []).map((c) => [
       c.custom_id, c.label, c.style, c.placeholder,
+      (c.options || []).map((o) => [o.value, o.label, !!o.default]),
     ])),
   ]);
 }
@@ -2246,42 +2244,94 @@ async function replicasOrfas(guild, servidor) {
    em dois faria o menu simplesmente parar de aceitar cliques no plano gratis,
    sem dizer por que -- o silencio de sempre. Deixando escolher e explicando na
    hora, a pessoa fica sabendo que existe limite, qual e', e o que fazer. */
-function componentesDoPainel(servidor, fontes, limite, orfas) {
-  const marcados = fontes.slice(0, 25).map((f) => ({ id: f.canal_id, type: "channel" }));
-  return [
-    {
+function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
+  const escolhidos = new Set(fontes.map((f) => f.canal_id));
+
+  /* O teto do menu e' o teto do plano, e nao o do Discord.
+
+     Eu tinha feito o contrario, com um argumento que na hora pareceu bom:
+     cortar em dois faria o menu parar de aceitar cliques sem dizer por que.
+     Só que o rotulo do menu ja' diz "ate' 2 no plano gratis" -- entao nao e'
+     silencio, e' coerencia: dois cabem, dois marcam, acabou. Deixar escolher
+     cinco pra depois recusar os cinco era pedir trabalho pra jogar fora.
+
+     Se o plano caiu e sobrou fonte a mais, o teto sobe pro que ja' esta'
+     marcado. Sem isso o Discord recusa a mensagem inteira (marcado nao pode
+     passar do maximo) e o painel some -- e a pessoa perde o unico lugar de
+     onde poderia tirar as fontes sobrando. */
+  const teto = Math.min(25, Math.max(limite.fontes, escolhidos.size));
+
+  const linhas = [];
+
+  if (opcoes.length) {
+    linhas.push({
       type: 1,
       components: [{
-        type: 8,
+        type: 3,
         custom_id: "cyron:fontes",
         placeholder: `Canais que eu traduzo — até ${limite.fontes} no plano ${planoDe(servidor)}`,
-        channel_types: [ChannelType.GuildText],
         min_values: 0,
-        max_values: 25,
-        default_values: marcados,
+        /* Nunca acima do numero de opcoes: o Discord recusa a mensagem
+           inteira se o maximo for maior que a lista, e o painel some. */
+        max_values: Math.min(teto, opcoes.length),
+        options: opcoes.map((c) => ({
+          label: `#${c.name}`.slice(0, 100),
+          value: c.id,
+          default: escolhidos.has(c.id),
+        })),
       }],
-    },
-    {
-      type: 1,
-      components: [
-        {
-          type: 2,
-          custom_id: "cyron:tradutor",
-          style: servidor.tradutor_topico ? 3 : 2,
-          emoji: { name: "💬" },
-          label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
-        },
-        { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
-        { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
-        ...(orfas?.length
-          ? [{
-              type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
-              label: `Apagar ${orfas.length} ${orfas.length === 1 ? "cópia sem origem" : "cópias sem origem"}`,
-            }]
-          : []),
-      ],
-    },
-  ];
+    });
+  }
+
+  linhas.push({
+    type: 1,
+    components: [
+      {
+        type: 2,
+        custom_id: "cyron:tradutor",
+        style: servidor.tradutor_topico ? 3 : 2,
+        emoji: { name: "💬" },
+        label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
+      },
+      { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
+      { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
+      ...(orfas?.length
+        ? [{
+            type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
+            label: `Apagar ${orfas.length} ${orfas.length === 1 ? "cópia sem origem" : "cópias sem origem"}`,
+          }]
+        : []),
+    ],
+  });
+
+  return linhas;
+}
+
+/* Quais canais podem virar fonte.
+
+   O menu nativo do Discord (tipo 8) lista TODOS os canais e nao aceita lista
+   de exclusao. Na pratica ele mostrava geral-pt, geral-en, anuncios-pt e
+   anuncios-en junto com os originais -- que sao exatamente as copias que eu
+   mesmo criei. Marcar uma delas nunca ia dar certo (eu recusava depois), e
+   pra quem olha a lista sao quatro linhas indistinguiveis das de verdade.
+
+   Trocar por um menu de opcoes montado aqui custa o filtro nativo do Discord
+   e o limite de 25 opcoes; devolve uma lista em que tudo que aparece e'
+   escolhivel. Pra servidor com mais de 25 candidatos, os marcados entram
+   primeiro (nenhuma fonte atual pode sumir da lista) e o resto vem por ordem
+   do servidor -- e continua dando pra apontar os outros escrevendo `#canal`. */
+async function canaisElegiveis(guild, servidor, fontes) {
+  const proprios = await canaisMeus(servidor);
+  const escolhidos = new Set(fontes.map((f) => f.canal_id));
+
+  const candidatos = [...guild.channels.cache.values()]
+    .filter((c) => c.type === ChannelType.GuildText && !proprios.has(c.id))
+    .sort((a, b) => a.rawPosition - b.rawPosition);
+
+  if (candidatos.length <= 25) return candidatos;
+  const dentro = candidatos.filter((c) => escolhidos.has(c.id));
+  const fora = candidatos.filter((c) => !escolhidos.has(c.id));
+  return [...dentro, ...fora].slice(0, 25).sort((a, b) => a.rawPosition - b.rawPosition);
 }
 
 /* Desenha o painel sem escrever em lugar nenhum.
@@ -2307,6 +2357,7 @@ async function montarPainel(guild, servidor) {
   const vivas = fontes.filter((f) => guild.channels.cache.has(f.canal_id));
   const fila = esperando.get(servidor.id) || [];
   const orfas = await replicasOrfas(guild, servidor);
+  const elegiveis = await canaisElegiveis(guild, servidor, vivas);
 
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
@@ -2317,7 +2368,9 @@ async function montarPainel(guild, servidor) {
       name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
       value: vivas.length
         ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
-        : "_nenhum ainda — escolha no menu aqui embaixo_",
+        : elegiveis.length
+          ? "_nenhum ainda — escolha no menu aqui embaixo_"
+          : "_nenhum, e não sobrou canal para escolher: todos os canais de texto daqui já são meus. Crie um canal onde vocês escrevem e ele aparece no menu._",
     },
     {
       name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
@@ -2365,7 +2418,7 @@ async function montarPainel(guild, servidor) {
     footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${emTeste ? ` · teste até ${emTeste}` : ""}` },
   };
 
-  return { embed, componentes: componentesDoPainel(servidor, vivas, limite, orfas) };
+  return { embed, componentes: componentesDoPainel(servidor, vivas, limite, orfas, elegiveis) };
 }
 
 async function cartaoDeConfig(guild, servidor) {
@@ -2408,18 +2461,29 @@ async function confirmado(msg) {
   await msg.react("✅").catch(() => {});
 }
 
-/* Todo canal em que o proprio bot escreve.
+/* Os canais cujo conteudo e' meu.
 
    Serve pra barrar o laco: uma replica apontada como fonte faz o bot traduzir
    a propria traducao. Aqui o laco nao chega a rodar solto -- o destino repete
    o de origem e a coisa para --, mas enche o servidor de canal e traduz a
-   mesma frase varias vezes. O mesmo vale pro chat de idioma, pra sala de
-   comando e pra porta de entrada: nenhum e' lugar de conteudo original. */
+   mesma frase varias vezes. Vale pra replica, pro chat de idioma e pra sala
+   de comando: nenhum e' lugar de conteudo original.
+
+   Canal de CONVITE nao entra, e isso foi um erro meu que quase custou caro.
+   Ele e' um canal comum das pessoas que ganhou uma mensagem fixada minha --
+   o conteudo continua sendo delas, e e' justamente o tipo de canal que se quer
+   traduzir. Na [TOP], #geral e #anuncios sao fonte E convite ao mesmo tempo.
+   Excluindo convite, o menu do painel abria sem nenhuma das quatro fontes
+   marcadas, e como o menu manda o conjunto inteiro, um clique ali teria
+   apagado as quatro de uma vez.
+
+   O risco que me fez excluir -- eu traduzir a minha propria mensagem de
+   convite -- nao existe: mensagem de bot sai do tratador antes de chegar na
+   replicacao. */
 async function canaisMeus(servidor) {
   const proprios = new Set();
   for (const r of (await sb(`discord_canal_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
   for (const r of (await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&canal_id=not.is.null&select=canal_id`)) || []) proprios.add(r.canal_id);
-  for (const r of (await sb(`discord_convite_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
   if (servidor.canal_config) proprios.add(servidor.canal_config);
   return proprios;
 }
@@ -2675,7 +2739,29 @@ async function cliquePainel(inter) {
   }
 
   if (acao === "fontes") {
-    const ids = inter.values || [];
+    /* O que a pessoa NAO viu, ela nao decidiu tirar.
+
+       O menu manda o conjunto inteiro, entao a ausencia de um canal e' um
+       pedido pra remover. So que "ausente" tem dois motivos diferentes: ela
+       desmarcou, ou o canal nem estava na lista que ela tinha na frente. Um
+       painel aberto ha' uma hora, uma copia efemera do /cyron de antes, uma
+       lista que passou de 25 -- em qualquer desses casos, obedecer ao
+       conjunto ao pe' da letra apaga fonte que ninguem mandou apagar.
+
+       Entao eu leio as opcoes da mensagem em que ela clicou, e as fontes que
+       nao estavam la' ficam onde estao. So conta como remocao o que ela podia
+       ver e deixou desmarcado. */
+    const vistos = new Set();
+    for (const linha of inter.message?.components || []) {
+      for (const c of (linha.toJSON?.() ?? linha).components || []) {
+        if (c.custom_id !== "cyron:fontes") continue;
+        for (const o of c.options || []) vistos.add(o.value);
+      }
+    }
+    const atuais = (await sb(
+      `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`)) || [];
+    const invisiveis = atuais.map((a) => a.canal_id).filter((id) => !vistos.has(id));
+    const ids = [...new Set([...(inter.values || []), ...invisiveis])];
 
     const proprios = await canaisMeus(servidor);
     const meus = ids.filter((id) => proprios.has(id));
@@ -3320,10 +3406,12 @@ async function comandoDeInteracao(inter) {
 
 client.on("interactionCreate", async (inter) => {
   try {
-    /* Painel: botao e menu nativo de canais. */
-    if (inter.isButton() || inter.isChannelSelectMenu()) {
-      if (inter.customId.startsWith("cyron:")) return await cliquePainel(inter);
-      return;
+    /* Painel: botao e menu de canais. O prefixo vem antes do tipo porque o
+       menu de fontes deixou de ser o nativo (tipo 8) e virou menu de opcoes
+       (tipo 3) -- o mesmo tipo do seletor de idioma. Roteando pelo customId,
+       trocar o tipo do componente nao volta a quebrar isto. */
+    if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
+      return await cliquePainel(inter);
     }
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
