@@ -123,7 +123,7 @@ async function servidorDoGuild(guildId) {
   if (achado && Date.now() - achado.t < 5 * 60 * 1000) return achado.v;
   let v = null;
   try {
-    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,teste_ate,canal_config,msg_config,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
+    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,teste_ate,tradutor_topico,canal_config,msg_config,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
     v = r?.[0] ?? null;
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheServidor.set(guildId, { v, t: Date.now() });
@@ -2188,6 +2188,9 @@ async function cartaoDeConfig(guild, servidor) {
     "",
     "O que for postado neles sai traduzido numa cópia por idioma, dentro da categoria de quem escolheu aquele idioma.",
     "",
+    `**Tradutor por mensagem:** ${servidor.tradutor_topico ? "🟢 ligado" : "⚪ desligado"} ` +
+      "— botão de tradução em cada mensagem dos canais comuns. `tradutor ligar` / `tradutor desligar`",
+    "",
     "**Para adicionar**, mande os canais aqui neste canal:",
     "```",
     "#canal1 #canal2",
@@ -2241,11 +2244,40 @@ async function comandoDeConfig(msg, servidor) {
     .filter((c) => c.type === ChannelType.GuildText);
   const texto = String(msg.content || "").trim().toLowerCase();
 
+  /* "tradutor ligar" / "tradutor desligar" */
+  const mexeuNoTradutor = /^tradutor\b/.test(texto);
+  if (mexeuNoTradutor) {
+    if (!msg.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await msg.reply("🔒 Só quem tem **Gerenciar Servidor** pode mudar isto.");
+      return true;
+    }
+    const ligar = /\b(ligar|liga|ativar|ativa|on|sim)\b/.test(texto);
+    const desligar = /\b(desligar|desliga|desativar|desativa|off|nao|não)\b/.test(texto);
+    if (!ligar && !desligar) {
+      await msg.reply(
+        `O tradutor por mensagem está **${servidor.tradutor_topico ? "ligado" : "desligado"}**.\n` +
+        "Escreva `tradutor ligar` ou `tradutor desligar`.");
+      return true;
+    }
+
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { tradutor_topico: ligar });
+    servidor.tradutor_topico = ligar;
+    cacheServidor.delete(msg.guild.id);
+
+    await msg.reply(ligar
+      ? "✅ Tradutor por mensagem **ligado**. Cada mensagem dos canais comuns ganha um botão de tradução — " +
+        "quem clicar lê na língua dele, e só quem clica custa tradução.\n" +
+        "_Se achar intrusivo, `tradutor desligar` desfaz._"
+      : "✅ Tradutor por mensagem **desligado**. As cópias por idioma continuam funcionando normalmente.");
+    await cartaoDeConfig(msg.guild, servidor);
+    return true;
+  }
+
   if (!escolhidos.length) {
     /* Sem canal nenhum: so responde se parecia uma tentativa. A sala e' da
        administracao, e duas pessoas conversando ali nao querem um bot
        corrigindo cada frase. */
-    if (/^(fonte|canais?|remover|remove|tirar|tira)\b/.test(texto)) {
+    if (/^(fonte|canais?|remover|remove|tirar|tira|tradutor)\b/.test(texto)) {
       await msg.reply("Não vi canal nenhum na mensagem. Digite `#` e escolha na lista que o Discord abre.");
       return true;
     }
@@ -2446,10 +2478,10 @@ client.on("messageCreate", async (msg) => {
       /* Avisos automaticos (evento, dica do dia, arena) vem como embed -- o
          texto que importa esta la, nao em msg.content (que as vezes so tem
          "@everyone"). */
-      /* So em servidor com alianca, pelo mesmo motivo do outro ramo: num
-         servidor qualquer, TODO webhook de terceiro (bot de música, aviso de
-         GitHub, feed de notícia) ganharia um tópico de tradução pendurado. */
-      if (!aliancaId) return;
+      /* Mesmo ajuste do outro ramo: sem ele, TODO webhook de terceiro (bot de
+         música, aviso de GitHub, feed de notícia) ganharia um tópico de
+         tradução pendurado. */
+      if (!servidor.tradutor_topico) return;
 
       const emb = msg.embeds?.[0];
       const texto = String(emb ? [emb.title, emb.description].filter(Boolean).join("\n") : (msg.content || "")).trim();
@@ -2555,15 +2587,25 @@ client.on("messageCreate", async (msg) => {
        O CYRON traduz onde mandaram traduzir: canal-fonte vira replica, sala de
        idioma vira conversa espelhada. Traduzir o servidor inteiro por conta
        propria e' outra funcao, e ela precisa ser pedida. */
+    /* A piada das rosas continua sendo coisa da alianca. */
     const aliancaId = await aliancaDoGuild(msg.guild.id);
-    if (!aliancaId) return;
-
-    if (mencionaLadyOuMaelle(texto)) {
+    if (aliancaId && mencionaLadyOuMaelle(texto)) {
       const url = await gifRosas();
       if (url) msg.reply({ files: [url], allowedMentions: { repliedUser: false } }).catch(() => {});
     }
 
-    if (podeTraduzirAgora(msg.author.id)) await traduzirEResponder(msg, texto);
+    /* O tradutor por topico e' ajuste do servidor, nao privilegio de plano.
+
+       Ele cabe no gratis porque nao constroi nada -- nem categoria, nem cargo,
+       nem canal -- e porque e' PUXADO: traduz uma vez, quando alguem clica, e so
+       pra lingua daquela pessoa. A replica traduz pra todos os idiomas em toda
+       mensagem, tenha leitor ou nao.
+
+       Vem desligado porque ligado de fabrica ele pendura um topico embaixo de
+       cada frase de cada canal, inclusive dos webhooks de terceiro. */
+    if (servidor.tradutor_topico && podeTraduzirAgora(msg.author.id)) {
+      await traduzirEResponder(msg, texto);
+    }
   } catch (e) {
     console.error("erro ao processar mensagem:", e?.message || e);
   }
