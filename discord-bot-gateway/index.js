@@ -1451,6 +1451,124 @@ async function garantirConvites() {
   }
 }
 
+/* ---------------- o CYRON se instala sozinho ao entrar ---------------------
+
+   Ate aqui, ligar um servidor era eu abrindo o banco e inserindo linha com id
+   de canal na mao. Serve pra um servidor; nao serve pra um produto.
+
+   A instalacao acontece no guildCreate -- o evento que o Discord manda quando
+   o bot entra num servidor. Ou seja: ADICIONAR o bot ja e' instalar. Nao ha
+   comando pra digitar, nem link pra clicar depois, nem passo que alguem possa
+   esquecer no meio.
+
+   Comando de instalacao teria que morar na edge function, porque aplicativo
+   com endereco de interacoes configurado nao recebe mais comando pelo gateway
+   -- este bot aqui nunca veria um /instalar. O guildCreate ele ve.
+
+   Dois canais e' tudo de que um servidor novo precisa:
+
+   - a PORTA: publica, so-leitura, com o seletor de idioma fixado. E' por ela
+     que a pessoa escolhe e abre a propria categoria.
+   - a FONTE: onde o dono escreve UMA vez e o bot leva traduzido pra replica de
+     cada idioma.
+
+   Servidor recem-criado e' o caso mais facil justamente por estar vazio: nao
+   ha canal antigo pra adivinhar. */
+
+const CANAL_PORTA = "🌐-idioma-language";
+const CANAL_FONTE = "📢-anuncios";
+
+const TEXTO_PORTA = [
+  "🌐 **Selecione seu idioma / Select your language**",
+  "",
+  "🇧🇷 Escolha seu idioma abaixo e este servidor passa a falar com você no seu idioma.",
+  "🇬🇧 Pick your language below and this server starts speaking to you in your own language.",
+  "🇸🇦 اختر لغتك أدناه وسيبدأ هذا الخادم بالتحدث معك بلغتك.",
+  "🇪🇸 Elige tu idioma abajo y este servidor empezará a hablarte en tu idioma.",
+  "🇨🇳 在下方选择你的语言，本服务器将用你的语言与你交流。",
+].join("\n");
+
+/* Acha o canal pelo nome antes de criar. Entrar, sair e entrar de novo no
+   mesmo servidor nao pode dobrar os canais dele. */
+async function canalPorNomeOuCria(guild, nome, topico) {
+  const achado = guild.channels.cache.find((c) => c.type === ChannelType.GuildText && c.name === nome);
+  if (achado) return achado;
+
+  return await guild.channels.create({
+    name: nome,
+    type: ChannelType.GuildText,
+    topic: topico,
+    /* So-leitura pelas quatro portas. Fechar so' "mandar mensagem" faria o
+       Discord tratar o canal como "somente tópicos" e trocar a caixa de texto
+       por um botao de criar tópico -- a pessoa continuaria falando por outro
+       caminho. */
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: Object.keys(SO_LEITURA).map((k) => PermissionFlagsBits[k]) },
+      { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageWebhooks] },
+    ],
+    reason: "instalação do CYRON",
+  });
+}
+
+async function instalarServidor(guild) {
+  /* Ja instalado: sair no comeco. Isto roda tambem na varredura, pra consertar
+     instalacao que parou no meio -- e uma instalacao completa nao pode ser
+     refeita toda vez. */
+  const jaTem = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guild.id)}&select=id,plano`);
+  let servidor = jaTem?.[0];
+
+  if (!servidor) {
+    const criado = await sbPost("cyron_servidor", { guild_id: guild.id, nome: guild.name });
+    servidor = Array.isArray(criado) ? criado[0] : criado;
+    if (!servidor?.id) {
+      /* sbPost pode nao devolver a linha; le de volta em vez de adivinhar. */
+      servidor = (await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guild.id)}&select=id,plano`))?.[0];
+    }
+    if (!servidor?.id) throw new Error("nao consegui registrar o servidor");
+    console.log(`instalar: ${guild.name} registrado (plano ${servidor.plano})`);
+  }
+
+  /* A porta. O convite e' gravado sem mensagem_id de proposito: quem posta e
+     fixa e' a garantirConvites, que ja sabe fazer isso e ja cuida de repor se
+     alguem apagar. Duplicar aqui seria ter duas partes do codigo mandando na
+     mesma mensagem. */
+  const jaPorta = await sb(
+    `discord_convite_idioma?servidor_id=eq.${servidor.id}&tipo=eq.convite&select=canal_id`);
+  if (!jaPorta?.length) {
+    const porta = await canalPorNomeOuCria(guild, CANAL_PORTA, "Escolha seu idioma aqui / Pick your language here.");
+    await sbPost("discord_convite_idioma", {
+      servidor_id: servidor.id, canal_id: porta.id, tipo: "convite",
+    });
+    console.log(`instalar: porta de entrada em #${porta.name}`);
+  }
+
+  /* A fonte. */
+  const jaFonte = await sb(`discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id`);
+  if (!jaFonte?.length) {
+    const fonte = await canalPorNomeOuCria(guild, CANAL_FONTE,
+      "Escreva aqui. O CYRON leva traduzido para a réplica de cada idioma.");
+    await sbPost("discord_fonte_replica", {
+      servidor_id: servidor.id, canal_id: fonte.id, tipo: "evento",
+    });
+    console.log(`instalar: canal-fonte em #${fonte.name}`);
+  }
+
+  cacheServidor.delete(guild.id); // a proxima mensagem ja enxerga o servidor novo
+  return servidor;
+}
+
+client.on("guildCreate", async (guild) => {
+  try {
+    console.log(`instalar: entrei em ${guild.name} (${guild.id})`);
+    await instalarServidor(guild);
+    /* Monta o que der na hora: quem adiciona o bot quer ver acontecer, nao
+       quer esperar a proxima varredura. */
+    await garantirConvites();
+  } catch (e) {
+    console.error("instalar: falhei em", guild.name, e?.message || e);
+  }
+});
+
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
