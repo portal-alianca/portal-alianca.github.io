@@ -949,16 +949,16 @@ async function traduzirLongo(texto, alvo) {
    escreve cinco vezes, e o canal publico segue servindo quem nao escolheu
    idioma nenhum. */
 
-/* A ordem daqui e' a ordem na barra lateral. O urso vem logo depois dos
-   eventos porque e' o que mais se olha, e ANTES de tudo o mais porque ele tem
-   canal proprio de proposito: cair junto dos eventos e' o que a alianca pediu
-   pra nao acontecer. */
-const REPLICAS = [
-  { tipo: "evento", prefixo: "evento-", assunto: "Avisos de evento" },
-  { tipo: "urso",   prefixo: "urso-",   assunto: "Caçada ao Urso" },
-  { tipo: "dica",   prefixo: "dica-",   assunto: "Dicas e alertas" },
-  { tipo: "game",   prefixo: "game-",   assunto: "Recados do jogo" },
-];
+/* Nao ha mais lista de replicas no codigo, e nao deve haver.
+
+   Ela era fixa: evento, urso, dica, game. Vocabulario de Kingshot aplicado a
+   todo servidor -- um servidor de comida italiana ganhava um canal "urso-pt"
+   que nao quer dizer nada pra ninguem ali.
+
+   A regra que vale em qualquer servidor e' esta: REPLICA EXISTE PORQUE EXISTE
+   UM CANAL-FONTE. Quem tem um #receitas ganha receitas-pt e receitas-en; quem
+   tem um #urso ganha urso-pt. O motor nao precisa saber o que e' urso nem o
+   que e' receita -- e e' justamente por nao saber que ele serve pros dois. */
 
 /* A replica se chama como o canal que ela copia, mais o codigo do idioma:
    "🎯-event-guide📢" vira "🎯-event-guide📢-pt". Nome inventado ("evento-pt")
@@ -970,9 +970,8 @@ const REPLICAS = [
 
    Se a fonte sumir, o prefixo simples serve de rede -- e' feio, mas e' melhor
    do que nao criar o canal. */
-function nomeDaReplica(modelo, def, idioma) {
-  const base = modelo || def.prefixo.replace(/-$/, "");
-  return `${base}-${idioma}`.toLowerCase().slice(0, 100);
+function nomeDaReplica(modelo, rotulo, idioma) {
+  return `${modelo || rotulo}-${idioma}`.toLowerCase().slice(0, 100);
 }
 
 const cacheFontes = new Map(); // servidorId -> { v: Map(canal_id -> tipo), t }
@@ -981,8 +980,12 @@ async function fontesReplica(servidorId) {
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = new Map();
   try {
-    const r = await sb(`discord_fonte_replica?servidor_id=eq.${servidorId}&select=canal_id,tipo&order=criado_em.asc`) || [];
+    const r = await sb(`discord_fonte_replica?servidor_id=eq.${servidorId}&select=canal_id,tipo,gera_replica&order=criado_em.asc`) || [];
     v = new Map(r.map((f) => [f.canal_id, f.tipo]));
+    /* Quais fontes viram canal. A do chat entra na lista so pra emprestar o
+       nome do canal original pra sala de conversa -- o espelho ja leva a fala
+       de sala em sala, entao ela nao pode gerar replica tambem. */
+    v.geraReplica = new Set(r.filter((f) => f.gera_replica).map((f) => f.canal_id));
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheFontes.set(servidorId, { v, t: Date.now() });
   return v;
@@ -1087,7 +1090,7 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    topic: `${def.assunto} — ${nomeDoIdioma(sala.idioma)}. Só leitura: quem escreve aqui é o bot.`,
+    topic: `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. Só leitura: quem escreve aqui é o bot.`,
     /* So-leitura de proposito: o cargo do idioma ve e le, mas nao fala.
        Conversa tem lugar, e o lugar e' o chat da mesma categoria.
 
@@ -1206,11 +1209,25 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
   const modelos = await modelosDeNome(guild, servidorId);
   const prontos = new Set();
 
+  /* A lista de replicas DESTE servidor: uma por canal-fonte que gera replica.
+     Ordem estavel pela ordem de cadastro, porque ela vira a ordem na barra
+     lateral. */
+  const fontes = await fontesReplica(servidorId);
+  const tipos = [];
+  for (const [canalId, tipo] of fontes) {
+    if (!fontes.geraReplica?.has(canalId)) continue;
+    if (tipos.some((t) => t.tipo === tipo)) continue; // duas fontes, um destino
+    tipos.push({ tipo, nomeBase: modelos.get(tipo) || tipo });
+  }
+  if (!tipos.length) {
+    console.log(`idioma: ${guild.name} não tem canal-fonte que gere réplica; só a categoria`);
+  }
+
   for (const sala of porIdioma.values()) {
     try {
       /* Pista de onde a categoria deste idioma esta: qualquer canal dele que
          ja exista -- uma replica, ou a sala de conversa. */
-      const pistaCanal = REPLICAS.map((d) => porChave.get(`${sala.idioma}|${d.tipo}`))
+      const pistaCanal = tipos.map((t) => porChave.get(`${sala.idioma}|${t.tipo}`))
         .find(Boolean) || sala.canal_id || null;
 
       if (!sala.categoria_id && !pistaCanal && !podeCriarCanal(orcamento, guild, limite)) continue;
@@ -1226,9 +1243,9 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
           .catch((e) => console.error("idioma: nao consegui subir a categoria de", sala.idioma, e?.message || e));
       }
 
-      for (let i = 0; i < REPLICAS.length; i++) {
-        const def = REPLICAS[i];
-        const nome = nomeDaReplica(modelos.get(def.tipo), def, sala.idioma);
+      for (let i = 0; i < tipos.length; i++) {
+        const def = tipos[i];
+        const nome = nomeDaReplica(def.nomeBase, def.tipo, sala.idioma);
         const jaExiste = porChave.get(`${sala.idioma}|${def.tipo}`);
 
         if (!jaExiste) {
@@ -1278,7 +1295,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
          a ele. */
       const chat = sala.canal_id ? await guild.channels.fetch(sala.canal_id).catch(() => null) : null;
       if (chat) {
-        const nomeChat = nomeDaReplica(modelos.get("chat"), { prefixo: PREFIXO_SALA }, sala.idioma);
+        const nomeChat = nomeDaReplica(modelos.get("chat"), PREFIXO_SALA.replace(/-$/, ""), sala.idioma);
         if (chat.name !== nomeChat && umaVezPorProcesso(`nome:${chat.id}:${nomeChat}`)) {
           console.log(`idioma: chat de ${sala.idioma} vira #${nomeChat}`);
           await chat.setName(nomeChat, "chat segue o nome do canal original");
@@ -1288,8 +1305,8 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
           console.log(`idioma: chat de ${sala.idioma} movido pra ${categoria.name}`);
         }
         /* O chat fecha a categoria: ler o aviso vem antes de responder a ele. */
-        if (chat.position !== REPLICAS.length && umaVezPorProcesso(`pos:${chat.id}:${REPLICAS.length}`)) {
-          await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
+        if (chat.position !== tipos.length && umaVezPorProcesso(`pos:${chat.id}:${tipos.length}`)) {
+          await chat.setPosition(tipos.length).catch(() => { /* posicao e' capricho */ });
         }
       }
 
