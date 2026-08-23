@@ -987,7 +987,7 @@ async function sincronizarRecentes() {
       if (novidade) {
         ultimaMontagem.set(guild.id, agora);
         console.log(`idioma: ${guild.name} tem idioma novo escolhido agora; montando sem esperar`);
-        await sincronizarUmGuild(guild);
+        await sincronizarAgora(guild);
         return;
       }
 
@@ -1549,6 +1549,47 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
   }
 }
 
+/* A lista de membros, sem pedir de novo o que ja se sabe.
+
+   Pedir a lista completa e' opcode 8 no gateway, com limite curto -- foi o que
+   travou os tres servidores hoje. Mas com a intencao GuildMembers ligada, o
+   discord.js recebe cada entrada e saida por evento e mantem a memoria em dia.
+   Se ela ja tem todo mundo, perguntar de novo e' pagar caro pela mesma
+   resposta.
+
+   E' isto que deixa a montagem virar acao imediata em vez de tarefa de dez em
+   dez minutos: sem o pedido caro no meio, sincronizar um servidor fica barato
+   o bastante pra rodar quando a pessoa clica. */
+async function membrosDo(guild) {
+  if (guild.members.cache.size >= (guild.memberCount ?? Infinity)) return guild.members.cache;
+  return await guild.members.fetch();
+}
+
+/* Montar agora, sem esperar o relogio -- e sem atropelar.
+
+   Duas montagens do mesmo servidor ao mesmo tempo brigariam pelas mesmas
+   linhas e criariam canal repetido. Entao: se ja tem uma rodando, a segunda
+   nao comeca, so deixa um bilhete. Quem esta rodando ve o bilhete no fim e
+   roda mais uma vez -- assim o ultimo pedido sempre e' atendido, e nunca ha
+   dois ao mesmo tempo. */
+const montando = new Set();
+const montarDeNovo = new Set();
+
+async function sincronizarAgora(guild) {
+  if (montando.has(guild.id)) { montarDeNovo.add(guild.id); return; }
+  montando.add(guild.id);
+  try {
+    do {
+      montarDeNovo.delete(guild.id);
+      await sincronizarUmGuild(guild);
+    } while (montarDeNovo.has(guild.id));
+  } catch (e) {
+    console.error("espelho: montagem imediata falhou em", guild.name, e?.message || e);
+  } finally {
+    montando.delete(guild.id);
+  }
+}
+
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
     try {
@@ -1630,7 +1671,7 @@ async function sincronizarUmGuild(guild) {
          outro lugar -- sete categorias de linguas que ninguem ali fala, no
          primeiro minuto de uso. Passava despercebido enquanto havia um
          servidor so, porque ali todo mundo era membro. */
-      const membros = await guild.members.fetch();
+      const membros = await membrosDo(guild);
       const porPessoa = new Map();
       const falantes = new Map(); // idioma -> quantos, aqui dentro
       for (const [id, membro] of membros) {
@@ -2293,12 +2334,15 @@ async function comandoDeConfig(msg, servidor) {
     `✅ Agora eu traduzo: ${lista}\n` +
     (removendo
       ? "As cópias do que saiu eu deixo onde estão — apague na mão se não quiser mais."
-      : "As cópias por idioma aparecem em até um minuto."));
+      : "Montando as cópias por idioma agora…"));
 
+  /* Monta na hora, com a pessoa olhando. Esperar a volta do relogio era o que
+     matava a primeira impressao: quem acabou de apontar os canais fica dez
+     minutos sem ver nada acontecer e conclui que nao funcionou. */
   cacheFontes.delete(servidor.id);
-  await msg.reply(
-    `✅ Agora eu traduzo ${escolhidos.map((c) => `<#${c.id}>`).join(", ")}.\n` +
-    "As cópias por idioma aparecem em até dez minutos. As de canais que saíram da lista eu deixo onde estão — apague na mão se não quiser mais.");
+  await sincronizarAgora(msg.guild);
+
+  /* O cartao por ultimo: ele mostra o que a montagem acabou de fazer. */
   await cartaoDeConfig(msg.guild, servidor);
   return true;
 }
@@ -2328,6 +2372,7 @@ client.on("guildCreate", async (guild) => {
     /* Monta o que der na hora: quem adiciona o bot quer ver acontecer, nao
        quer esperar a proxima varredura. */
     await garantirConvites();
+    await sincronizarAgora(guild);
     await cartaoDeConfig(guild, servidor).catch((e) =>
       console.error("config: nao consegui pôr o cartão:", e?.message || e));
   } catch (e) {
