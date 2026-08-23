@@ -61,6 +61,34 @@ async function sbPost(caminho, corpo) {
   return await r.json();
 }
 
+/* Canal apagado na mao tem que se curar sozinho.
+
+   Alguem vai arrumar a barra lateral e apagar um canal do CYRON -- e' certo que
+   vai acontecer. Ate agora o bot lia a linha no banco, tentava buscar o canal,
+   nao achava, e seguia em frente: a linha ficava apontando pra um fantasma e o
+   canal nunca voltava. O servidor emperrava sem ninguem entender por que.
+
+   A regra passou a ser: o Discord manda. Se o canal nao esta la, a linha vai
+   embora, e o caminho normal de criacao repoe na mesma passada.
+
+   A lista de vivos vem de UMA busca por servidor, nao de um fetch por canal.
+   Buscar um por um confunde "canal apagado" com "a rede falhou agora", e
+   apagar linha por causa de falha de rede criaria canal duplicado ao lado do
+   que ainda existe. A lista inteira nao tem esse meio-termo: ou ela veio, ou a
+   passada nem comeca. */
+async function idsVivos(guild) {
+  const todos = await guild.channels.fetch();
+  return new Set([...todos.filter(Boolean).keys()]);
+}
+
+async function sbDel(caminho) {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+    method: "DELETE",
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, Prefer: "return=minimal" },
+  });
+  if (!r.ok) throw new Error(`supabase ${r.status} ao apagar ${caminho}: ${(await r.text()).slice(0, 200)}`);
+}
+
 async function sbPatch(caminho, corpo) {
   const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
     method: "PATCH",
@@ -70,7 +98,7 @@ async function sbPatch(caminho, corpo) {
     },
     body: JSON.stringify(corpo),
   });
-  if (!r.ok) throw new Error(`supabase ${r.status}`);
+  if (!r.ok) throw new Error(`supabase ${r.status} em ${caminho}: ${(await r.text()).slice(0, 300)}`);
 }
 
 /* ---------------- quem e' o dono deste servidor ----------------
@@ -1160,10 +1188,21 @@ async function esconderOriginais(guild, servidorId, cargosComReplica) {
 
 /* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
    sala. Roda junto da sincronia das salas. */
-async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite) {
+async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite, vivos) {
   const existentes = (await sb(
     `discord_canal_idioma?servidor_id=eq.${servidorId}&select=idioma,tipo,canal_id`)) || [];
-  const porChave = new Map(existentes.map((r) => [`${r.idioma}|${r.tipo}`, r.canal_id]));
+
+  /* Replica apagada na mao e' o caso mais provavel de todos: alguem arruma a
+     barra lateral e leva um canal junto. A linha sai daqui e do mapa, entao o
+     laco logo abaixo trata como "nunca existiu" e cria de novo. */
+  const vistos = [];
+  for (const r of existentes) {
+    if (vivos.has(r.canal_id)) { vistos.push(r); continue; }
+    await sbDel(`discord_canal_idioma?canal_id=eq.${encodeURIComponent(r.canal_id)}`)
+      .catch((e) => console.error("idioma: nao consegui limpar replica sumida", e?.message || e));
+    console.log(`idioma: replica ${r.tipo} de ${r.idioma} sumiu, vai ser refeita`);
+  }
+  const porChave = new Map(vistos.map((r) => [`${r.idioma}|${r.tipo}`, r.canal_id]));
   const modelos = await modelosDeNome(guild, servidorId);
   const prontos = new Set();
 
@@ -1352,7 +1391,30 @@ async function sincronizarSalas() {
          cliente em trezentos canais. */
       const orcamento = { resta: limite.canais, avisou: false };
 
+      const vivos = await idsVivos(guild);
+
+      /* Fonte apagada na mao: sem ela nao ha o que replicar, entao a linha sai
+         e o reparo da instalacao recria o canal. */
+      for (const fonte of (await sb(`discord_fonte_replica?servidor_id=eq.${servidorId}&select=canal_id`)) || []) {
+        if (vivos.has(fonte.canal_id)) continue;
+        await sbDel(`discord_fonte_replica?canal_id=eq.${encodeURIComponent(fonte.canal_id)}`);
+        console.log(`idioma: canal-fonte ${fonte.canal_id} sumiu, linha removida pra ser refeita`);
+      }
+
       const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=id,canal_id,idioma,webhook,role_id,categoria_id`) || [];
+
+      /* Sala de conversa e categoria apagadas: esvazia a coluna em vez de
+         apagar a linha -- o IDIOMA continua existindo, com o cargo e as
+         pessoas dentro dele. So o canal precisa voltar. */
+      for (const sala of salas) {
+        const limpa = {};
+        if (sala.canal_id && !vivos.has(sala.canal_id)) { limpa.canal_id = null; limpa.webhook = null; }
+        if (sala.categoria_id && !vivos.has(sala.categoria_id)) limpa.categoria_id = null;
+        if (!Object.keys(limpa).length) continue;
+        await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`, limpa);
+        Object.assign(sala, limpa);
+        console.log(`idioma: ${sala.idioma} perdeu ${Object.keys(limpa).join(" e ")}, vai ser refeito`);
+      }
 
       /* So idioma que esta no seletor vira sala. Um valor estranho no banco
          nao pode virar canal no servidor de ninguem. */
@@ -1491,7 +1553,7 @@ async function sincronizarSalas() {
       }
       /* Depois dos cargos: a categoria e' fechada com o cargo do idioma, e
          sem ele nao ha como fechar porta nenhuma. */
-      await montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite);
+      await montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite, vivos);
 
       cacheEspelho.delete(servidorId); // a proxima mensagem le a lista nova
     } catch (e) {
@@ -1572,17 +1634,22 @@ async function garantirConvites() {
       if (!servidor) continue;
       const servidorId = servidor.id;
 
+      const vivos = await idsVivos(guild);
       const portas = await sb(
         `discord_convite_idioma?servidor_id=eq.${servidorId}&select=canal_id,tipo,mensagem_id`);
       if (!portas?.length) continue;
 
       for (const porta of portas) {
         try {
-          const canal = await guild.channels.fetch(porta.canal_id).catch(() => null);
-          if (!canal) {
-            console.error("portaria: canal", porta.canal_id, "nao existe mais");
+          if (!vivos.has(porta.canal_id)) {
+            /* Apagado na mao. Tira a linha; quem repoe e' o reparo da
+               instalacao, na proxima volta do relogio. */
+            await sbDel(`discord_convite_idioma?canal_id=eq.${encodeURIComponent(porta.canal_id)}`);
+            console.log(`portaria: canal ${porta.canal_id} sumiu, linha removida pra ser refeita`);
             continue;
           }
+          const canal = await guild.channels.fetch(porta.canal_id).catch(() => null);
+          if (!canal) continue;
 
           if (porta.tipo === "portao") await fecharPortao(canal);
 
