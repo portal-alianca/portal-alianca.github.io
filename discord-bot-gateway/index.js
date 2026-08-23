@@ -923,6 +923,14 @@ async function garantirCanalDeChat(guild, sala, categoriaId) {
    passada falhar, a proxima ainda pega. */
 const JANELA_RECENTE = 15 * 60 * 1000;
 
+/* Quanto a passada curta espera antes de remontar o mesmo servidor de novo.
+
+   Dois minutos e' mais que o suficiente pra parecer instantaneo pra quem
+   acabou de escolher, e curto o bastante pra nao virar espera de verdade se a
+   primeira tentativa falhar. */
+const ESPERA_REMONTAR = 2 * 60 * 1000;
+const ultimaMontagem = new Map(); // guildId -> quando
+
 async function sincronizarRecentes() {
   const desde = new Date(Date.now() - JANELA_RECENTE).toISOString();
   for (const [, guild] of client.guilds.cache) {
@@ -951,13 +959,33 @@ async function sincronizarRecentes() {
       const jaTem = new Set(salas.map((s) => s.idioma));
       const candidatos = recentes.filter((e) => !jaTem.has(e.idioma));
 
-      /* A lista de membros so' e' pedida quando ha candidato de verdade. Ela e'
-         cara e isto roda de minuto em minuto, em todo servidor: pedir sempre
-         seria pagar o preco da excecao o tempo todo. */
-      const novidade = candidatos.length
-        ? (await guild.members.fetch()).hasAny(...candidatos.map((e) => String(e.discord_user_id)))
-        : false;
+      /* Pergunta por UMA pessoa de cada vez, nao pela lista inteira.
+
+         Pedir a lista completa de membros e' opcode 8 no gateway, e o Discord
+         limita isso com força. Como esta passada roda de minuto em minuto e o
+         candidato continua candidato enquanto a sala nao existir, cada falha
+         garantia uma nova tentativa no minuto seguinte -- um laco que se
+         alimenta do proprio fracasso, e que travou os tres servidores ao mesmo
+         tempo com "rate limited, retry after 28s".
+
+         Buscar um membro pelo id vai por REST, que tem outro limite e e'
+         barato. Sao um ou dois candidatos por vez, quase sempre. */
+      let novidade = false;
+      for (const escolha of candidatos) {
+        const membro = await guild.members.fetch(String(escolha.discord_user_id)).catch(() => null);
+        if (membro && !membro.user.bot) { novidade = true; break; }
+      }
+
+      /* E mesmo havendo novidade, nao remonta o servidor inteiro toda hora.
+
+         A varredura completa lista os membros todos -- se ela falhar (e falhou,
+         por limite), o idioma continua faltando e o minuto seguinte tentaria de
+         novo. A espera transforma insistencia em tentativa espaçada. */
+      const agora = Date.now();
+      if (novidade && agora - (ultimaMontagem.get(guild.id) || 0) < ESPERA_REMONTAR) novidade = false;
+
       if (novidade) {
+        ultimaMontagem.set(guild.id, agora);
         console.log(`idioma: ${guild.name} tem idioma novo escolhido agora; montando sem esperar`);
         await sincronizarUmGuild(guild);
         return;
