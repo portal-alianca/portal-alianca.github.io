@@ -773,9 +773,18 @@ async function garantirIdioma(guild, servidorId, idioma) {
   });
 
   const linha = { servidor_id: servidorId, idioma, role_id: cargo.id };
-  await sbPost("discord_chat_espelho", linha);
+  /* Devolve a linha COM o id que o banco deu.
+
+     Montando o objeto na mao eu perdia o id, e quem recebe esse idioma na
+     mesma passada (a categoria, a sala de conversa) grava filtrando por ele.
+     Sem id, o filtro nao casa com nada, o categoria_id nunca fica gravado, e
+     a passada seguinte cria tudo de novo achando que nao existia. */
+  const gravada = await sbPost("discord_chat_espelho", linha);
+  const id = Array.isArray(gravada) ? gravada[0]?.id : gravada?.id;
+  if (!id) throw new Error(`gravei o idioma ${idioma} mas nao recebi o id de volta`);
+
   console.log(`idioma: ${idioma} agora existe neste servidor`);
-  return { ...linha, canal_id: null, webhook: null, categoria_id: null };
+  return { ...linha, id, canal_id: null, webhook: null, categoria_id: null };
 }
 
 /* A sala de conversa: privada, com modo lento, e o webhook por onde a fala
@@ -994,11 +1003,31 @@ function portasDaCategoria(guild, cargoId) {
   ];
 }
 
-async function garantirCategoria(guild, sala) {
+async function garantirCategoria(guild, sala, pistaCanal) {
   if (sala.categoria_id) {
     const achada = await guild.channels.fetch(sala.categoria_id).catch(() => null);
     if (achada) return achada;
   }
+
+  /* Sem categoria gravada, mas com canal deste idioma ja de pe: a categoria e'
+     onde esse canal mora. Adota em vez de criar outra.
+
+     Isto conserta a deriva que o filtro errado deixou -- categoria existindo no
+     Discord e nao no banco --, e vale como regra geral: se o canal esta dentro
+     de alguma categoria, aquela E' a categoria do idioma, tenha o banco
+     acompanhado ou nao. Criar uma nova ao lado seria acreditar mais no meu
+     registro do que no servidor de verdade. */
+  if (pistaCanal) {
+    const canal = await guild.channels.fetch(pistaCanal).catch(() => null);
+    if (canal?.parentId) {
+      await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`,
+        { categoria_id: canal.parentId });
+      sala.categoria_id = canal.parentId;
+      console.log(`idioma: categoria de ${sala.idioma} readotada (${canal.parent?.name ?? canal.parentId})`);
+      return canal.parent ?? await guild.channels.fetch(canal.parentId);
+    }
+  }
+
   if (!sala.role_id) return null; // sem cargo nao ha como fechar a porta
 
   const categoria = await guild.channels.create({
@@ -1007,7 +1036,17 @@ async function garantirCategoria(guild, sala) {
     permissionOverwrites: portasDaCategoria(guild, sala.role_id),
     reason: "categoria do idioma",
   });
-  await sbPatch(`discord_chat_espelho?canal_id=eq.${encodeURIComponent(sala.canal_id)}`,
+  /* Filtra pelo id da LINHA, nao pelo canal.
+
+     Filtrar por canal_id funcionava quando toda linha tinha um canal. Depois
+     que a linha passou a significar "este idioma existe" -- e no plano gratis
+     nao ha sala de conversa --, canal_id virou nulo, o filtro deixou de casar
+     com nada, e categoria_id nunca era gravado.
+
+     O estrago nao era uma coluna vazia: era a varredura achando, a cada dez
+     minutos, que a categoria nao existia, e criando OUTRA. Categoria nova de
+     dez em dez minutos, para sempre, ate o teto de canais segurar. */
+  await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`,
     { categoria_id: categoria.id });
   sala.categoria_id = categoria.id;
   console.log(`idioma: categoria criada para ${sala.idioma} (${categoria.name})`);
@@ -1130,8 +1169,13 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
 
   for (const sala of porIdioma.values()) {
     try {
-      if (!sala.categoria_id && !podeCriarCanal(orcamento, guild, limite)) continue;
-      const categoria = await garantirCategoria(guild, sala);
+      /* Pista de onde a categoria deste idioma esta: qualquer canal dele que
+         ja exista -- uma replica, ou a sala de conversa. */
+      const pistaCanal = REPLICAS.map((d) => porChave.get(`${sala.idioma}|${d.tipo}`))
+        .find(Boolean) || sala.canal_id || null;
+
+      if (!sala.categoria_id && !pistaCanal && !podeCriarCanal(orcamento, guild, limite)) continue;
+      const categoria = await garantirCategoria(guild, sala, pistaCanal);
       if (!categoria) continue;
 
       /* Categoria do idioma no topo da barra lateral. Cada pessoa enxerga
