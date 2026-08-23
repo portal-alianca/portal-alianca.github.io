@@ -282,29 +282,46 @@ client.on("guildMemberAdd", async (member) => {
    O teto e' parametro porque depende do destino: traducao que vai pro canal
    para em 800 (acima disso vira parede de texto), mas a que fica atras do
    seletor nao ocupa tela nenhuma, entao pode ir bem mais longe. */
-function vantajosoTraduzir(texto, teto = 800) {
-  /* O minimo subiu de 2 pra 12 porque agora TODA mensagem ganharia seletor,
-     nao so as de outro idioma. "ok", "kkkk", "sim", "boa" nao precisam de
-     tradutor -- e uma caixa embaixo de cada uma dessas encheria o canal de
-     coisa inutil. Doze caracteres e mais ou menos onde comeca a frase. */
-  if (texto.length < 12 || texto.length > teto) return false;
-  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(texto)) return false;
-  if (/^https?:\/\/\S+$/i.test(texto)) return false;
-  if (/^[\d\s.,:!?-]+$/.test(texto)) return false;
-  if (/^[/!.][a-z]/i.test(texto)) return false; // parece comando
-  /* So risadas e interjeicoes: "kkkkkk", "hahaha", "rsrsrs", "hehe". */
-  if (/^[kkhaeirs\s!?.]+$/i.test(texto)) return false;
+/* Palavras que atravessam qualquer idioma sem ajuda. Traduzir "ok" pra seis
+   linguas devolve "ok" seis vezes. */
+const UNIVERSAIS = new Set([
+  "ok", "okay", "okey", "k", "kk", "gg", "glhf", "wp", "lol", "lmao", "xd",
+  "wow", "hmm", "hm", "zzz", "brb", "afk", "gm", "gn",
+]);
+
+/* O piso MUDA conforme quem pergunta, e essa distincao custou uma mensagem
+   chegando em portugues na sala arabe.
+
+   Pro seletor de traducao, o piso alto e' economia visual: sem ele, cada "ok"
+   ganhava uma caixinha embaixo e o canal virava uma coluna de "Tradução /
+   Translation". Doze caracteres e' mais ou menos onde comeca a frase.
+
+   Pro espelho e pra replica, o piso alto e' um defeito: "obrigado", "bom dia"
+   e "sim" sao exatamente o que a pessoa do outro lado precisa ler, e nenhum
+   deles chega a doze letras. Ali o minimo e' dois, e quem segura o custo e' o
+   cache -- vocabulario curto se repete o tempo todo, entao "obrigado" se paga
+   uma vez e nunca mais. */
+function vantajosoTraduzir(texto, teto = 800, minimo = 12) {
+  const t = String(texto || "").trim();
+  if (t.length < minimo || t.length > teto) return false;
+
+  /* Sem a pontuacao do fim: "ok!" e "ok" sao a mesma coisa. */
+  if (UNIVERSAIS.has(t.toLowerCase().replace(/[!?.…\s]+$/u, ""))) return false;
+
+  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(t)) return false;
+  if (/^https?:\/\/\S+$/i.test(t)) return false;
+  if (/^[\d\s.,:!?-]+$/.test(t)) return false;
+  if (/^[/!.][a-z]/i.test(t)) return false; // parece comando
+
+  /* So risadas e interjeicoes: "kkkkkk", "hahaha", "rsrsrs", "hehe".
+
+     Exige quatro letras porque com o piso de dois esta regra passou a ser
+     perigosa: "se", "as", "ei", "ir" e "ha" sao palavras de verdade e caem
+     todas neste conjunto de letras. Risada de verdade nao tem duas letras. */
+  if (t.length >= 4 && /^[kkhaeirs\s!?.]+$/i.test(t)) return false;
+
   return true;
 }
-
-/* ---------------- seletor: o plano B da traducao ----------------
-
-   Usado so quando nao da pra criar o topico (ver traduzirEResponder). O
-   Discord atende o clique pelo top-discord (Supabase), ramo "traduzir-msg:",
-   e responde com a traducao numa mensagem efemera.
-
-   O texto vai pro banco porque o custom_id do Discord so cabe 100 caracteres,
-   e um aviso de evento passa disso facil. */
 
 const TEXTO_MAXIMO = 3500;  // teto do que o bot se propoe a traduzir
 
@@ -636,7 +653,7 @@ async function espelharMensagem(msg, lista, origem, texto) {
     if (destino.canal_id === origem.canal_id) continue;
 
     let corpo = texto;
-    if (texto && destino.idioma !== origem.idioma && vantajosoTraduzir(texto, 1200)) {
+    if (texto && destino.idioma !== origem.idioma && vantajosoTraduzir(texto, 1200, 2)) {
       /* Tradutor fora do ar nao pode calar a conversa: manda o original e
          deixa a pessoa se virar, que e' melhor do que a mensagem sumir.
 
@@ -1227,9 +1244,9 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
       /* Teto alto de proposito: aqui o texto longo e' o que MAIS precisa de
          traducao. O vantajosoTraduzir continua servindo pra nao pagar por
          emoji, link solto e "ok". */
-      const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO)
+      const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO, 2)
         ? (await traduzirLongo(titulo, destino.idioma)) || titulo : titulo;
-      const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO)
+      const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO, 2)
         ? (await traduzirLongo(corpo, destino.idioma)) || corpo : corpo;
 
       const carga = { username: nome, avatarURL: foto, files: arquivos, allowedMentions: { parse: [] } };
@@ -1242,9 +1259,9 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
         for (const campo of cru.fields || []) {
           campos.push({
             ...campo,
-            name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO)
+            name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO, 2)
               ? (await traduzirLongo(campo.name, destino.idioma)) || campo.name : campo.name,
-            value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO)
+            value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO, 2)
               ? (await traduzirLongo(campo.value, destino.idioma)) || campo.value : campo.value,
           });
         }
