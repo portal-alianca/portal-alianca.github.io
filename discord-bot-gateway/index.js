@@ -54,7 +54,10 @@ async function sbPost(caminho, corpo) {
     },
     body: JSON.stringify(corpo),
   });
-  if (!r.ok) throw new Error(`supabase ${r.status}`);
+  /* Com o motivo junto. "supabase 400" sozinho me custou meia hora caçando
+     uma instalacao que parava no meio: a resposta dizia exatamente qual
+     coluna estava reclamando, e eu estava jogando isso fora. */
+  if (!r.ok) throw new Error(`supabase ${r.status} em ${caminho}: ${(await r.text()).slice(0, 300)}`);
   return await r.json();
 }
 
@@ -1672,6 +1675,29 @@ async function instalarServidor(guild) {
   return servidor;
 }
 
+/* Instalacao que parou no meio se conserta sozinha.
+
+   O guildCreate dispara UMA vez. Se algo falhar ali -- e falhou: uma coluna
+   obrigatoria que eu esqueci de soltar --, o servidor fica com a linha criada
+   e nada montado, e nao ha segundo evento pra tentar de novo. A pessoa ve um
+   canal solto e conclui que o bot nao funciona.
+
+   Entao a varredura tenta de novo, mas SO onde a instalacao ja comecou. Rodar
+   em qualquer servidor onde o bot esteja criaria canal na casa de quem nunca
+   pediu -- inclusive nos que ja usavam o bot pra outra coisa antes disto
+   existir. */
+async function repararInstalacoes() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const ja = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guild.id)}&select=id`);
+      if (!ja?.length) continue;
+      await instalarServidor(guild);
+    } catch (e) {
+      console.error("instalar: reparo falhou em", guild.name, e?.message || e);
+    }
+  }
+}
+
 client.on("guildCreate", async (guild) => {
   try {
     console.log(`instalar: entrei em ${guild.name} (${guild.id})`);
@@ -1783,9 +1809,16 @@ client.once("clientReady", () => {
      ficar esperando dez minutos, e depois de tempos em tempos. */
   sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
   garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
+  repararInstalacoes().catch((e) => console.error("instalar: reparo inicial falhou:", e?.message || e));
   setInterval(() => {
-    sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
-    garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
+    /* Reparo primeiro: sem porta e sem fonte, as outras duas nao tem o que
+       montar nem onde postar. */
+    repararInstalacoes()
+      .catch((e) => console.error("instalar: reparo falhou:", e?.message || e))
+      .then(() => sincronizarSalas())
+      .catch((e) => console.error("espelho: sincronia falhou:", e?.message || e))
+      .then(() => garantirConvites())
+      .catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   }, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
