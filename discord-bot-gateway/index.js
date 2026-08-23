@@ -123,7 +123,7 @@ async function servidorDoGuild(guildId) {
   if (achado && Date.now() - achado.t < 5 * 60 * 1000) return achado.v;
   let v = null;
   try {
-    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
+    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,teste_ate,canal_config,msg_config,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
     v = r?.[0] ?? null;
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheServidor.set(guildId, { v, t: Date.now() });
@@ -745,9 +745,26 @@ async function espelharMensagem(msg, lista, origem, texto) {
    com trezentos canais -- e ja quase aconteceu duas vezes nesta semana, com a
    posicao e com o nome. */
 const PLANOS = {
-  gratis: { idiomas: 3,  canais: 20 },
-  pago:   { idiomas: 20, canais: 200 },
+  gratis: { idiomas: 3,  canais: 20,  fontes: 2 },
+  pago:   { idiomas: 20, canais: 200, fontes: 10 },
 };
+
+/* O plano que VALE agora, que nem sempre e' o que esta gravado.
+
+   Um teste de sete dias nao pode ser gravado como plano = 'pago': alguem
+   teria que lembrar de desfazer quando vencesse, e ninguem lembra. Fica numa
+   data, e o vencimento acontece sozinho -- na varredura seguinte o servidor ja
+   e' tratado como gratis, sem ninguem rodar nada.
+
+   Uma funcao so' pra isso porque "este servidor e' pago?" aparece em varios
+   lugares. Espalhar a regra seria garantir que um deles ficasse pra tras no
+   dia em que ela mudasse. */
+function planoDe(servidor) {
+  if (servidor?.plano === "pago") return "pago";
+  const ate = servidor?.teste_ate ? Date.parse(servidor.teste_ate) : 0;
+  if (ate && ate > Date.now()) return "pago";
+  return "gratis";
+}
 
 /* Um pedido de canal. Devolve false quando o orcamento acabou, e avisa uma
    vez so' -- repetir a mesma linha a cada canal recusado encheria o log e
@@ -762,10 +779,11 @@ function podeCriarCanal(orcamento, guild, limite) {
 }
 
 function limitesDo(servidor) {
-  const base = PLANOS[servidor?.plano] || PLANOS.gratis;
+  const base = PLANOS[planoDe(servidor)] || PLANOS.gratis;
   return {
     idiomas: servidor?.limite_idiomas ?? base.idiomas,
     canais: servidor?.limite_canais ?? base.canais,
+    fontes: base.fontes,
   };
 }
 
@@ -1393,7 +1411,7 @@ async function sincronizarSalas() {
       if (!servidor) continue;
       const servidorId = servidor.id;
 
-      const pago = servidor.plano === "pago";
+      const pago = planoDe(servidor) === "pago";
       const limite = limitesDo(servidor);
 
       /* Orcamento de canais desta passada.
@@ -1721,6 +1739,7 @@ async function garantirConvites() {
    Servidor recem-criado e' o caso mais facil justamente por estar vazio: nao
    ha canal antigo pra adivinhar. */
 
+const CANAL_CONFIG = "⚙️-cyron";
 const CANAL_PORTA = "🌐-idioma-language";
 const CANAL_FONTE = "📢-anuncios";
 
@@ -1788,6 +1807,20 @@ async function instalarServidor(guild) {
     console.log(`instalar: porta de entrada em #${porta.name}`);
   }
 
+  /* A sala de comando do dono.
+
+     Privada: negada pro @everyone, entao so quem tem Administrador enxerga --
+     e' o Discord que resolve isso, nao eu. Nao da' pra dar permissao a "quem
+     tem Gerenciar Servidor": permissao de canal se da' a cargo ou a pessoa, e
+     nem todo servidor tem um cargo de oficial pra apontar. */
+  if (!servidor.canal_config || !guild.channels.cache.has(servidor.canal_config)) {
+    const config = await canalPorNomeOuCria(guild, CANAL_CONFIG,
+      "Só administradores veem este canal. É aqui que você diz ao CYRON o que fazer.");
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { canal_config: config.id });
+    servidor.canal_config = config.id;
+    console.log(`instalar: sala de comando em #${config.name}`);
+  }
+
   /* A fonte. */
   const jaFonte = await sb(`discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id`);
   if (!jaFonte?.length) {
@@ -1819,20 +1852,159 @@ async function repararInstalacoes() {
     try {
       const ja = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guild.id)}&select=id`);
       if (!ja?.length) continue;
-      await instalarServidor(guild);
+      const servidor = await instalarServidor(guild);
+      /* O cartao mostra idioma, plano e canais -- tudo isso muda sozinho entre
+         uma passada e outra, entao ele e' reescrito junto. */
+      await cartaoDeConfig(guild, servidor).catch((e) =>
+        console.error("config: nao consegui atualizar o cartão:", e?.message || e));
     } catch (e) {
       console.error("instalar: reparo falhou em", guild.name, e?.message || e);
     }
   }
 }
 
+/* ---------------- a sala de comando do dono -------------------------------
+
+   O dono precisa dizer QUAIS canais o bot traduz, e precisa dizer de dentro do
+   Discord -- ninguem vai abrir um painel pra isso, e ate agora quem apontava
+   os canais era eu, na mao, no banco.
+
+   Escolhi mensagem com mencao de canal em vez de menu suspenso por um motivo
+   pratico: menu suspenso e' componente, componente vira interacao, e interacao
+   nao chega neste bot (o endereco de interacoes desliga a entrega pelo
+   gateway). Faria falta uma peca a mais na outra ponta.
+
+   E a mencao nao e' o pior dos mundos -- e' o mesmo seletor. Digitando "#" o
+   Discord abre a lista de canais do servidor e a pessoa escolhe clicando,
+   exatamente como num menu, so que na caixa de texto.
+
+   A lista mandada SUBSTITUI a anterior, nao soma. "Estes sao os meus canais"
+   e' uma frase que a pessoa consegue conferir olhando; "adicionei estes aos
+   que ja tinha" obriga a lembrar do que havia antes. */
+
+/* O nome do canal vira o rotulo da replica: "#🐻urso🐼" vira "urso". Sem
+   emoji, sem acento, sem pontuacao -- o rotulo entra no nome de outro canal
+   e o Discord tem opiniao sobre isso. */
+function rotuloDoCanal(nome) {
+  const limpo = String(nome)
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  return limpo.slice(0, 40) || "canal";
+}
+
+async function cartaoDeConfig(guild, servidor) {
+  const fontes = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
+  const idiomas = await sb(
+    `discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma`) || [];
+  const limite = limitesDo(servidor);
+  const teste = servidor.teste_ate ? Date.parse(servidor.teste_ate) : 0;
+  const emTeste = teste > Date.now()
+    ? new Date(teste).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
+    : null;
+
+  const lista = fontes.length
+    ? fontes.map((f) => `• <#${f.canal_id}>`).join("\n")
+    : "_nenhum ainda_";
+
+  const linhas = [
+    "## ⚙️ CYRON — configuração",
+    "",
+    "**Canais que eu traduzo**",
+    lista,
+    "",
+    "O que for postado neles sai traduzido numa cópia por idioma, dentro da categoria de quem escolheu aquele idioma.",
+    "",
+    "**Para mudar**, escreva aqui neste canal:",
+    "```",
+    "fonte #canal1 #canal2",
+    "```",
+    "Digite `#` e o Discord abre a lista de canais do servidor. A lista que você mandar substitui esta.",
+    "",
+    `**Plano:** ${planoDe(servidor)}${emTeste ? ` (teste até ${emTeste})` : ""} · ` +
+      `até ${limite.fontes} ${limite.fontes === 1 ? "canal traduzido" : "canais traduzidos"} · ` +
+      `${limite.idiomas} idiomas · ${limite.canais} canais no total`,
+    `**Idiomas com gente:** ${idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join(", ") : "_nenhum ainda_"}`,
+  ].join("\n");
+
+  const canal = await guild.channels.fetch(servidor.canal_config).catch(() => null);
+  if (!canal) return;
+
+  /* Edita o cartao em vez de postar outro: assim o canal nao vira um historico
+     de estados velhos, onde o de cima e' o unico verdadeiro e os de baixo
+     mentem. */
+  if (servidor.msg_config) {
+    const antiga = await canal.messages.fetch(servidor.msg_config).catch(() => null);
+    if (antiga) { await antiga.edit({ content: linhas }); return; }
+  }
+  const nova = await canal.send({ content: linhas, allowedMentions: { parse: [] } });
+  await nova.pin("cartão de configuração").catch(() => {});
+  await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_config: nova.id });
+  servidor.msg_config = nova.id;
+}
+
+/* "fonte #a #b" na sala de comando. */
+async function comandoDeConfig(msg, servidor) {
+  const texto = String(msg.content || "").trim().toLowerCase();
+  if (!texto.startsWith("fonte")) return false;
+
+  if (!msg.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await msg.reply("🔒 Só quem tem **Gerenciar Servidor** pode mudar isto.");
+    return true;
+  }
+
+  const escolhidos = [...msg.mentions.channels.values()]
+    .filter((c) => c.type === ChannelType.GuildText);
+  if (!escolhidos.length) {
+    await msg.reply("Escreva `fonte #canal` — digite `#` e escolha na lista que o Discord abre.");
+    return true;
+  }
+
+  const limite = limitesDo(servidor);
+  if (escolhidos.length > limite.fontes) {
+    await msg.reply(
+      `📦 No plano **${planoDe(servidor)}** eu traduzo até **${limite.fontes}** ` +
+      `${limite.fontes === 1 ? "canal" : "canais"}. Você mandou ${escolhidos.length}.\n` +
+      "Mande de novo com menos, ou suba de plano para liberar mais.");
+    return true;
+  }
+
+  /* A fonte do chat fica de fora desta conta: ela nao gera replica, so
+     empresta o nome, e nao e' o dono quem manda nela. */
+  const antigas = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
+  const querido = new Set(escolhidos.map((c) => c.id));
+
+  for (const velha of antigas) {
+    if (querido.has(velha.canal_id)) continue;
+    await sbDel(`discord_fonte_replica?canal_id=eq.${encodeURIComponent(velha.canal_id)}`);
+  }
+  for (const canal of escolhidos) {
+    if (antigas.some((a) => a.canal_id === canal.id)) continue;
+    await sbPost("discord_fonte_replica", {
+      servidor_id: servidor.id, canal_id: canal.id, tipo: rotuloDoCanal(canal.name),
+    });
+  }
+
+  cacheFontes.delete(servidor.id);
+  await msg.reply(
+    `✅ Agora eu traduzo ${escolhidos.map((c) => `<#${c.id}>`).join(", ")}.\n` +
+    "As cópias por idioma aparecem em até dez minutos. As de canais que saíram da lista eu deixo onde estão — apague na mão se não quiser mais.");
+  await cartaoDeConfig(msg.guild, servidor);
+  return true;
+}
+
 client.on("guildCreate", async (guild) => {
   try {
     console.log(`instalar: entrei em ${guild.name} (${guild.id})`);
-    await instalarServidor(guild);
+    const servidor = await instalarServidor(guild);
     /* Monta o que der na hora: quem adiciona o bot quer ver acontecer, nao
        quer esperar a proxima varredura. */
     await garantirConvites();
+    await cartaoDeConfig(guild, servidor).catch((e) =>
+      console.error("config: nao consegui pôr o cartão:", e?.message || e));
   } catch (e) {
     console.error("instalar: falhei em", guild.name, e?.message || e);
   }
@@ -1884,8 +2056,19 @@ client.on("messageCreate", async (msg) => {
     if (msg.author.bot) return;
 
     const servidor = await servidorDoGuild(msg.guild.id);
-    if (!servidor) return; // servidor sem /instalar
+    if (!servidor) return; // servidor sem instalacao
     const servidorId = servidor.id;
+
+    /* Sala de comando: sai por aqui em qualquer caso. Nada de espelho, de
+       replica nem de seletor de traducao -- e' conversa entre o dono e o bot
+       sobre o proprio bot, e nao interessa a mais ninguem. */
+    if (servidor.canal_config && msg.channel.id === servidor.canal_config) {
+      await comandoDeConfig(msg, servidor).catch((e) => {
+        console.error("config: comando falhou:", e?.message || e);
+        msg.reply("❌ Não consegui salvar agora. Tente de novo em instantes.").catch(() => {});
+      });
+      return;
+    }
 
     const texto = String(msg.content || "").trim();
 
@@ -1904,7 +2087,7 @@ client.on("messageCreate", async (msg) => {
        O corte na interface (esconder botao, nao oferecer) seria enfeite: o
        gasto acontece no momento em que a mensagem chega, entao e' aqui que ele
        tem que parar. */
-    const espelho = servidor.plano === "pago" ? await canaisEspelho(servidorId) : [];
+    const espelho = planoDe(servidor) === "pago" ? await canaisEspelho(servidorId) : [];
     const origem = espelho.find((c) => c.canal_id === msg.channel.id);
     if (origem) {
       /* Sem trava de quantidade aqui, de proposito.
