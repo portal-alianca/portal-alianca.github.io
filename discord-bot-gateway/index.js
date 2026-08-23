@@ -2174,17 +2174,116 @@ function corDoPainel(cheio, esperando) {
 
    Sem isto o cartao era reescrito a cada volta do relogio, pra sempre, mesmo
    sem nada ter mudado -- uma chamada por servidor a cada dez minutos e um
-   "(editado)" que nao correspondia a mudanca nenhuma. */
-function assinaturaDoCartao(embed) {
+   "(editado)" que nao correspondia a mudanca nenhuma.
+
+   Os botoes entram na assinatura junto com o embed. O estado deles E' estado:
+   o botao do tradutor muda de rotulo e de cor. Assinando so' o embed, ligar o
+   tradutor nao mudaria nada visivel no cartao ate' alguma outra coisa mudar --
+   o painel mentiria exatamente sobre o que a pessoa acabou de fazer.
+
+   O que esta' marcado no menu de canais fica FORA da assinatura de proposito.
+   Um lado dela vem do que o Discord devolve na mensagem, e eu nao tenho como
+   garantir daqui que ele devolve default_values do mesmo jeito que eu mandei;
+   se nao devolver, os dois lados nunca batem e o cartao passa a ser reescrito
+   a cada dez minutos pra sempre -- o defeito que a assinatura existe pra
+   evitar. Nao faz falta: a lista de canais tambem aparece num campo do embed,
+   entao mudou a fonte, mudou a assinatura, e o menu vai junto na edicao. */
+function assinaturaDoCartao(embed, componentes) {
   return JSON.stringify([
     embed.description,
     embed.color,
     (embed.fields || []).map((f) => [f.name, f.value]),
     embed.footer?.text,
+    (componentes || []).map((linha) => (linha.components || []).map((c) => [
+      c.custom_id, c.label, c.style, c.placeholder,
+    ])),
   ]);
 }
 
-async function cartaoDeConfig(guild, servidor) {
+/* Copias que ficaram sem origem.
+
+   Tirar um canal da lista de fontes apaga a linha, mas nao apaga os canais de
+   traducao que existiam por causa dele: eles continuam la', vazios, parecendo
+   canais de verdade. Com o menu isso deixou de ser raro -- tirar tres fontes
+   agora e' um clique, e antes era digitar tres vezes "remover".
+
+   Nao apago sozinho. Sao canais, e canal apagado nao volta; se eu errar a
+   conta de qual ficou sem origem, o estrago e' meu e o prejuizo e' de quem
+   nem sabia que eu ia mexer. Entao eles aparecem no painel, com um botao ao
+   lado -- o clique do administrador e' a confirmacao. */
+async function replicasOrfas(guild, servidor) {
+  const fontes = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=tipo`) || [];
+  const comOrigem = new Set(fontes.map((f) => f.tipo));
+  const replicas = await sb(
+    `discord_canal_idioma?servidor_id=eq.${servidor.id}&select=id,tipo,canal_id`) || [];
+  return replicas.filter((r) => !comOrigem.has(r.tipo) && guild.channels.cache.has(r.canal_id));
+}
+
+/* Os controles do painel.
+
+   O menu de canais e' o nativo do Discord (tipo 8): ele lista os canais do
+   servidor, filtra enquanto se digita e ja vem com os canais atuais marcados.
+   Isso resolve o defeito que sobrou do jeito escrito -- pra saber o que estava
+   configurado era preciso LER o cartao e comparar com o que se ia digitar. Aqui
+   o que esta marcado e' o que esta valendo, na mesma tela em que se muda.
+
+   Por ser um menu, a semantica e' de CONJUNTO: o que ficar marcado e' a lista
+   final. No jeito escrito eu tinha aprendido o contrario -- ali "somar" e' o
+   certo, porque quem digita `#recursos` nao esta' vendo os outros dois e nao
+   quis apaga-los. Aqui esta': os outros dois aparecem marcados na frente da
+   pessoa enquanto ela mexe. Mesma pergunta, respostas diferentes, porque o que
+   muda e' se o conjunto atual esta' visivel na hora de responder.
+
+   max_values vai no teto do Discord e nao no teto do plano de proposito. Cortar
+   em dois faria o menu simplesmente parar de aceitar cliques no plano gratis,
+   sem dizer por que -- o silencio de sempre. Deixando escolher e explicando na
+   hora, a pessoa fica sabendo que existe limite, qual e', e o que fazer. */
+function componentesDoPainel(servidor, fontes, limite, orfas) {
+  const marcados = fontes.slice(0, 25).map((f) => ({ id: f.canal_id, type: "channel" }));
+  return [
+    {
+      type: 1,
+      components: [{
+        type: 8,
+        custom_id: "cyron:fontes",
+        placeholder: `Canais que eu traduzo — até ${limite.fontes} no plano ${planoDe(servidor)}`,
+        channel_types: [ChannelType.GuildText],
+        min_values: 0,
+        max_values: 25,
+        default_values: marcados,
+      }],
+    },
+    {
+      type: 1,
+      components: [
+        {
+          type: 2,
+          custom_id: "cyron:tradutor",
+          style: servidor.tradutor_topico ? 3 : 2,
+          emoji: { name: "💬" },
+          label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
+        },
+        { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
+        { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
+        ...(orfas?.length
+          ? [{
+              type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
+              label: `Apagar ${orfas.length} ${orfas.length === 1 ? "cópia sem origem" : "cópias sem origem"}`,
+            }]
+          : []),
+      ],
+    },
+  ];
+}
+
+/* Desenha o painel sem escrever em lugar nenhum.
+
+   Separado do envio porque o mesmo desenho serve a dois destinos: a mensagem
+   fixada no canal de configuracao e a copia efemera que o /cyron abre onde a
+   pessoa estiver. Fossem duas montagens, elas iam divergir na primeira vez que
+   eu mexesse numa e esquecesse da outra. */
+async function montarPainel(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
   const idiomas = await sb(
@@ -2200,6 +2299,7 @@ async function cartaoDeConfig(guild, servidor) {
      esperando a proxima varredura limpar. */
   const vivas = fontes.filter((f) => guild.channels.cache.has(f.canal_id));
   const fila = esperando.get(servidor.id) || [];
+  const orfas = await replicasOrfas(guild, servidor);
 
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
@@ -2210,7 +2310,7 @@ async function cartaoDeConfig(guild, servidor) {
       name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
       value: vivas.length
         ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
-        : "_nenhum ainda — mande os canais aqui embaixo_",
+        : "_nenhum ainda — escolha no menu aqui embaixo_",
     },
     {
       name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
@@ -2221,7 +2321,7 @@ async function cartaoDeConfig(guild, servidor) {
       name: "💬 Tradutor por mensagem",
       value: servidor.tradutor_topico
         ? "🟢 **ligado**\nbotão de tradução em cada mensagem"
-        : "⚪ **desligado**\n`tradutor ligar` para ativar",
+        : "⚪ **desligado**\nligue no botão abaixo",
       inline: true,
     },
   ];
@@ -2234,17 +2334,21 @@ async function cartaoDeConfig(guild, servidor) {
     });
   }
 
-  campos.push({
-    name: "Como mudar",
-    value: [
-      "`#canal1 #canal2` — passo a traduzir esses canais",
-      "`remover #canal` — paro de traduzir",
-      "`tradutor ligar` / `tradutor desligar`",
-      "",
-      "_Digite `#` e o Discord abre a lista de canais._",
-    ].join("\n"),
-  });
+  if (orfas.length) {
+    campos.push({
+      name: `🗑️ Cópias sem origem — ${orfas.length}`,
+      value: orfas.slice(0, 15).map((o) => `<#${o.canal_id}>`).join("\n") +
+        (orfas.length > 15 ? `\n_…e mais ${orfas.length - 15}_` : "") +
+        "\n_O canal que alimentava estas cópias saiu da lista. Elas não recebem mais nada._",
+    });
+  }
 
+  /* O manual saiu do cartao e virou o botao de Ajuda.
+
+     O cartao tinha um campo "Como mudar" com cinco linhas de sintaxe. Com os
+     botoes ali do lado, essas cinco linhas passaram a ensinar o caminho mais
+     dificil pra fazer o que um clique faz -- e ocupavam a metade de baixo do
+     painel, empurrando o estado (que e' o que se olha todo dia) pra cima. */
   const embed = {
     title: "⚙️ CYRON",
     description: "O que for postado nos canais abaixo sai traduzido numa cópia por idioma, " +
@@ -2254,19 +2358,29 @@ async function cartaoDeConfig(guild, servidor) {
     footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${emTeste ? ` · teste até ${emTeste}` : ""}` },
   };
 
+  return { embed, componentes: componentesDoPainel(servidor, vivas, limite, orfas) };
+}
+
+async function cartaoDeConfig(guild, servidor) {
   const canal = await guild.channels.fetch(servidor.canal_config).catch(() => null);
   if (!canal) return;
+
+  const { embed, componentes } = await montarPainel(guild, servidor);
 
   if (servidor.msg_config) {
     const antiga = await canal.messages.fetch(servidor.msg_config).catch(() => null);
     if (antiga) {
-      const antes = antiga.embeds?.[0] ? assinaturaDoCartao(antiga.embeds[0].toJSON()) : null;
-      if (antes !== assinaturaDoCartao(embed)) await antiga.edit({ content: null, embeds: [embed] });
+      const antes = antiga.embeds?.[0]
+        ? assinaturaDoCartao(antiga.embeds[0].toJSON(), (antiga.components || []).map((l) => l.toJSON()))
+        : null;
+      if (antes !== assinaturaDoCartao(embed, componentes)) {
+        await antiga.edit({ content: null, embeds: [embed], components: componentes });
+      }
       return;
     }
   }
 
-  const nova = await canal.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  const nova = await canal.send({ embeds: [embed], components: componentes, allowedMentions: { parse: [] } });
   await nova.pin("painel do CYRON").catch(() => {});
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_config: nova.id });
   servidor.msg_config = nova.id;
@@ -2285,6 +2399,22 @@ async function cartaoDeConfig(guild, servidor) {
    sempre. */
 async function confirmado(msg) {
   await msg.react("✅").catch(() => {});
+}
+
+/* Todo canal em que o proprio bot escreve.
+
+   Serve pra barrar o laco: uma replica apontada como fonte faz o bot traduzir
+   a propria traducao. Aqui o laco nao chega a rodar solto -- o destino repete
+   o de origem e a coisa para --, mas enche o servidor de canal e traduz a
+   mesma frase varias vezes. O mesmo vale pro chat de idioma, pra sala de
+   comando e pra porta de entrada: nenhum e' lugar de conteudo original. */
+async function canaisMeus(servidor) {
+  const proprios = new Set();
+  for (const r of (await sb(`discord_canal_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
+  for (const r of (await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&canal_id=not.is.null&select=canal_id`)) || []) proprios.add(r.canal_id);
+  for (const r of (await sb(`discord_convite_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
+  if (servidor.canal_config) proprios.add(servidor.canal_config);
+  return proprios;
 }
 
 async function comandoDeConfig(msg, servidor) {
@@ -2357,12 +2487,7 @@ async function comandoDeConfig(msg, servidor) {
      A checagem vem antes de qualquer gravacao, porque o estrago aqui e' criar
      canal -- e canal criado por engano alguem tem que apagar na mao. */
   if (!removendo) {
-    const proprios = new Set();
-    for (const r of (await sb(`discord_canal_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
-    for (const r of (await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&canal_id=not.is.null&select=canal_id`)) || []) proprios.add(r.canal_id);
-    for (const r of (await sb(`discord_convite_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
-    if (servidor.canal_config) proprios.add(servidor.canal_config);
-
+    const proprios = await canaisMeus(servidor);
     const meus = escolhidos.filter((c) => proprios.has(c.id));
     if (meus.length) {
       await msg.reply(
@@ -2416,6 +2541,170 @@ async function comandoDeConfig(msg, servidor) {
   /* O cartao por ultimo: ele mostra o que a montagem acabou de fazer. */
   await cartaoDeConfig(msg.guild, servidor);
   return true;
+}
+
+/* ---------------- Os cliques do painel ----------------
+
+   Todo clique aqui comeca por deferUpdate. O Discord da' TRES segundos pra
+   acusar o recebimento, e "remontar" pode levar um minuto criando canal --
+   sem o defer o botao morre com "Esta interacao falhou" e a pessoa clica de
+   novo, disparando a mesma montagem duas vezes. Acusando primeiro, o trabalho
+   pode demorar o que precisar.
+
+   Recusa e limite viram followUp EFEMERO, nao mensagem no canal. Sao coisas
+   que so' interessam a quem clicou, e o canal de configuracao ja' foi um rolo
+   de confirmacoes velhas uma vez -- nao vai voltar a ser por causa dos
+   botoes. O que todo mundo precisa ver continua sendo o painel, que e'
+   editado no lugar. */
+
+async function refrescarPainel(inter, servidor) {
+  const { embed, componentes } = await montarPainel(inter.guild, servidor);
+  await inter.editReply({ embeds: [embed], components: componentes }).catch(() => {});
+  /* Se o clique veio da copia efemera do /cyron, o fixado ficou pra tras. */
+  if (inter.message?.id !== servidor.msg_config) {
+    await cartaoDeConfig(inter.guild, servidor).catch(() => {});
+  }
+}
+
+/* O menu manda o conjunto inteiro, entao a gravacao e' a diferenca. */
+async function definirFontes(guild, servidor, ids) {
+  const antigas = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
+  const atuais = new Set(antigas.map((a) => a.canal_id));
+  const querem = new Set(ids);
+
+  for (const id of atuais) {
+    if (!querem.has(id)) await sbDel(`discord_fonte_replica?canal_id=eq.${encodeURIComponent(id)}`);
+  }
+  for (const id of querem) {
+    if (atuais.has(id)) continue;
+    const canal = guild.channels.cache.get(id);
+    await sbPost("discord_fonte_replica", {
+      servidor_id: servidor.id, canal_id: id, tipo: rotuloDoCanal(canal?.name || "canal"),
+    });
+  }
+  cacheFontes.delete(servidor.id);
+}
+
+async function cliquePainel(inter) {
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) {
+    return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui. Tente de novo em um minuto." });
+  }
+
+  const acao = inter.customId.slice("cyron:".length);
+
+  if (acao === "ajuda") {
+    return inter.reply({
+      flags: 64,
+      embeds: [{
+        title: "❓ Como o CYRON funciona",
+        color: 0x2E8B7A,
+        description: [
+          "**1. Você escolhe os canais.** No menu do painel, marque os canais onde *vocês* escrevem — anúncios, geral, o que for.",
+          "",
+          "**2. Cada pessoa escolhe o idioma dela** no canal 🌐, uma vez só.",
+          "",
+          "**3. Eu monto uma cópia de cada canal por idioma**, dentro de uma categoria que só quem escolheu aquele idioma enxerga. O que for postado no canal original aparece traduzido lá.",
+          "",
+          "**Tradutor por mensagem** é outra coisa, e não precisa de canal nenhum: com ele ligado, qualquer pessoa pode traduzir uma mensagem solta pelo menu de contexto (botão direito → Apps → Translate).",
+          "",
+          "_Também dá para configurar escrevendo: `#canal1 #canal2` para somar, `remover #canal` para tirar._",
+        ].join("\n"),
+      }],
+    });
+  }
+
+  /* A sala e' da administracao, mas cargo muda e convidado entra. A checagem
+     e' no clique, nao na visibilidade do canal. */
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
+  }
+
+  await inter.deferUpdate();
+
+  if (acao === "tradutor") {
+    const ligar = !servidor.tradutor_topico;
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { tradutor_topico: ligar });
+    servidor.tradutor_topico = ligar;
+    cacheServidor.delete(inter.guildId);
+    return refrescarPainel(inter, servidor);
+  }
+
+  if (acao === "limpar") {
+    const orfas = await replicasOrfas(inter.guild, servidor);
+    if (!orfas.length) {
+      await inter.followUp({ flags: 64, content: "Não sobrou nenhuma cópia sem origem." });
+      return refrescarPainel(inter, servidor);
+    }
+    let apagadas = 0;
+    for (const o of orfas) {
+      const canal = inter.guild.channels.cache.get(o.canal_id);
+      if (canal) {
+        const foi = await canal.delete("cópia sem canal de origem, apagada pelo painel").then(() => true).catch(() => false);
+        /* Se o Discord recusou, a linha FICA. Apagar o registro de um canal
+           que continua existindo faria o canal virar invisivel pra mim: ele
+           some do painel, ninguem mais e' avisado dele, e ele fica no
+           servidor pra sempre sem ninguem saber de onde veio. */
+        if (!foi) continue;
+      }
+      await sbDel(`discord_canal_idioma?id=eq.${encodeURIComponent(o.id)}`);
+      apagadas++;
+    }
+    cacheReplicas.delete(servidor.id);
+    await inter.followUp({
+      flags: 64,
+      content: apagadas === orfas.length
+        ? `🗑️ Apaguei ${apagadas} ${apagadas === 1 ? "cópia" : "cópias"}.`
+        : `🗑️ Apaguei ${apagadas} de ${orfas.length}. Nas outras o Discord recusou — provavelmente falta permissão minha nelas.`,
+    });
+    return refrescarPainel(inter, servidor);
+  }
+
+  if (acao === "remontar") {
+    await sincronizarAgora(inter.guild);
+    await inter.followUp({ flags: 64, content: "🔄 Passei por tudo: canais, categorias e quem escolheu idioma." });
+    return refrescarPainel(inter, servidor);
+  }
+
+  if (acao === "fontes") {
+    const ids = inter.values || [];
+
+    const proprios = await canaisMeus(servidor);
+    const meus = ids.filter((id) => proprios.has(id));
+    if (meus.length) {
+      await inter.followUp({
+        flags: 64,
+        content: `🔁 ${meus.map((id) => `<#${id}>`).join(", ")} ${meus.length === 1 ? "é um canal meu" : "são canais meus"} — eu já escrevo neles.\n` +
+          "Traduzir um canal meu seria traduzir a minha própria tradução, e o servidor encheria de cópias. " +
+          "Marque os canais onde **vocês** escrevem.",
+      });
+      return refrescarPainel(inter, servidor);   // devolve as marcas ao que estava valendo
+    }
+
+    const limite = limitesDo(servidor);
+    if (ids.length > limite.fontes) {
+      const plano = planoDe(servidor);
+      await inter.followUp({
+        flags: 64,
+        content: [
+          `📦 Você marcou **${ids.length} canais**, e no plano **${plano}** eu traduzo até **${limite.fontes}**.`,
+          "",
+          "Não mudei nada — os canais de antes continuam valendo. Marque no máximo " +
+          `${limite.fontes} e mande de novo.`,
+          "",
+          plano === "gratis"
+            ? `_No plano pago são ${PLANOS.pago.fontes} canais e ${PLANOS.pago.idiomas} idiomas, com 7 dias de teste grátis._`
+            : "",
+        ].filter(Boolean).join("\n"),
+      });
+      return refrescarPainel(inter, servidor);
+    }
+
+    await definirFontes(inter.guild, servidor, ids);
+    await sincronizarAgora(inter.guild);
+    return refrescarPainel(inter, servidor);
+  }
 }
 
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
@@ -2911,6 +3200,25 @@ async function comandoDeInteracao(inter) {
   const idioma = await idiomaDoJogador(inter.user.id);
   const nome = inter.commandName;
 
+  /* O painel onde a pessoa estiver.
+
+     O canal de configuracao e' fixado e so' os administradores enxergam. O
+     /cyron abre a mesma tela em qualquer lugar, efemera -- pra quem tem o
+     cargo mas nao lembra onde fica a sala, e pra quem esta' no meio de outra
+     conversa e nao quer sair dela pra ligar uma coisa. E' o mesmo desenho e o
+     mesmo estado: mexer aqui atualiza o fixado tambem. */
+  if (nome === "cyron") {
+    if (!inter.guildId) {
+      return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
+    }
+    const servidor = await servidorDoGuild(inter.guildId);
+    if (!servidor) {
+      return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui. Tente de novo em um minuto." });
+    }
+    const { embed, componentes } = await montarPainel(inter.guild, servidor);
+    return inter.reply({ flags: 64, embeds: [embed], components: componentes });
+  }
+
   if (nome === "mylanguage") {
     const novo = inter.options.getString("language");
     if (!LINGUAS_MENU.some(([c]) => c === novo)) {
@@ -3005,6 +3313,11 @@ async function comandoDeInteracao(inter) {
 
 client.on("interactionCreate", async (inter) => {
   try {
+    /* Painel: botao e menu nativo de canais. */
+    if (inter.isButton() || inter.isChannelSelectMenu()) {
+      if (inter.customId.startsWith("cyron:")) return await cliquePainel(inter);
+      return;
+    }
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
@@ -3029,7 +3342,10 @@ client.on("interactionCreate", async (inter) => {
     /* Erro sem resposta vira "Esta interação falhou", que nao diz nada a
        ninguem. Uma frase honesta e' melhor que o aviso generico do Discord. */
     const aviso = { content: "❌ Algo falhou aqui do meu lado. Tente de novo em instantes.", flags: 64 };
-    if (inter.deferred || inter.replied) await inter.editReply(aviso).catch(() => {});
+    /* Num clique de painel o defer foi deferUpdate: editReply ali apagaria o
+       painel e poria o erro no lugar dele. O aviso vai por followUp. */
+    if (inter.isMessageComponent?.() && inter.deferred) await inter.followUp(aviso).catch(() => {});
+    else if (inter.deferred || inter.replied) await inter.editReply(aviso).catch(() => {});
     else await inter.reply(aviso).catch(() => {});
   }
 });
@@ -3222,7 +3538,7 @@ client.on("messageCreate", async (msg) => {
    publicado e mudo de lugar. Reescrever a mao seria arriscar perder uma opcao,
    uma descricao traduzida, um tipo de campo -- coisas que ja estao certas e
    que eu nao teria como conferir sem testar comando por comando. */
-const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate"]);
+const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron"]);
 
 async function separarComandos() {
   try {
@@ -3305,6 +3621,29 @@ async function soltarAsInteracoes() {
   }
 }
 
+/* Publica o /cyron se ele ainda nao existir.
+
+   Global e restrito a Gerenciar Servidor: quem nao tem o cargo nem ve o
+   comando na lista, entao a recusa nao precisa ser explicada pra maioria --
+   ela simplesmente nao aparece. A checagem no clique continua existindo
+   mesmo assim, porque cargo muda depois do comando publicado. */
+async function garantirComandoCyron() {
+  if (!umaVezPorProcesso("comando-cyron")) return;
+  try {
+    const globais = await client.application.commands.fetch();
+    if ([...globais.values()].some((c) => c.name === "cyron")) return;
+    await client.application.commands.create({
+      name: "cyron",
+      description: "Abrir o painel de configuração do CYRON",
+      defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+      dmPermission: false,
+    });
+    console.log("comandos: /cyron publicado");
+  } catch (e) {
+    console.error("comandos: não consegui publicar o /cyron:", e?.message || e);
+  }
+}
+
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
   /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
@@ -3312,7 +3651,7 @@ client.once("clientReady", () => {
   sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
   garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
   repararInstalacoes().catch((e) => console.error("instalar: reparo inicial falhou:", e?.message || e));
-  separarComandos();
+  separarComandos().then(() => garantirComandoCyron());
   soltarAsInteracoes();
   setInterval(() => {
     /* Reparo primeiro: sem porta e sem fonte, as outras duas nao tem o que
