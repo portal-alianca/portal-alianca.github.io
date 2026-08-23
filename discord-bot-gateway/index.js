@@ -1964,9 +1964,13 @@ async function cartaoDeConfig(guild, servidor) {
     ? new Date(teste).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
     : null;
 
-  const lista = fontes.length
-    ? fontes.map((f) => `• <#${f.canal_id}>`).join("\n")
-    : "_nenhum ainda_";
+  /* Canal apagado nao entra no cartao. O Discord desenha "#desconhecido" pra
+     id que nao existe mais, e isso no cartao de configuracao parece defeito --
+     e' so' uma linha esperando a proxima varredura limpar. */
+  const vivas = fontes.filter((f) => guild.channels.cache.has(f.canal_id));
+  const lista = vivas.length
+    ? vivas.map((f) => `• <#${f.canal_id}>`).join("\n")
+    : "_nenhum ainda — mande os canais aqui embaixo_";
 
   const linhas = [
     "## ⚙️ CYRON — configuração",
@@ -1976,11 +1980,11 @@ async function cartaoDeConfig(guild, servidor) {
     "",
     "O que for postado neles sai traduzido numa cópia por idioma, dentro da categoria de quem escolheu aquele idioma.",
     "",
-    "**Para mudar**, escreva aqui neste canal:",
+    "**Para mudar**, mande os canais aqui neste canal:",
     "```",
-    "fonte #canal1 #canal2",
+    "#canal1 #canal2",
     "```",
-    "Digite `#` e o Discord abre a lista de canais do servidor. A lista que você mandar substitui esta.",
+    "Digite `#` e o Discord abre a lista de canais do servidor — é só clicar nos que você quer. A lista que você mandar substitui esta.",
     "",
     `**Plano:** ${planoDe(servidor)}${emTeste ? ` (teste até ${emTeste})` : ""} · ` +
       `até ${limite.fontes} ${limite.fontes === 1 ? "canal traduzido" : "canais traduzidos"} · ` +
@@ -2004,20 +2008,34 @@ async function cartaoDeConfig(guild, servidor) {
   servidor.msg_config = nova.id;
 }
 
-/* "fonte #a #b" na sala de comando. */
+/* Mandar canais na sala de comando E' o comando.
+
+   Eu tinha exigido a palavra "fonte" na frente. Na primeira vez que alguem
+   usou, a pessoa fez o obvio -- digitou "#", escolheu os canais na lista que o
+   Discord abre, e mandou -- e o bot ficou calado. Duas vezes errado: exigir uma
+   palavra magica que nao protege de nada, e nao dizer nada quando ela falta.
+
+   Nesta sala nao ha outra coisa a fazer. Mensagem com canal dentro so pode
+   significar "sao estes". A palavra continua aceita, pra quem leu o cartao,
+   mas nao e' mais obrigatoria. */
 async function comandoDeConfig(msg, servidor) {
+  const escolhidos = [...msg.mentions.channels.values()]
+    .filter((c) => c.type === ChannelType.GuildText);
   const texto = String(msg.content || "").trim().toLowerCase();
-  if (!texto.startsWith("fonte")) return false;
+
+  if (!escolhidos.length) {
+    /* Sem canal nenhum: so responde se parecia uma tentativa. A sala e' da
+       administracao, e duas pessoas conversando ali nao querem um bot
+       corrigindo cada frase. */
+    if (/^fonte\b|^canais?\b/.test(texto)) {
+      await msg.reply("Não vi canal nenhum na mensagem. Digite `#` e escolha na lista que o Discord abre.");
+      return true;
+    }
+    return false;
+  }
 
   if (!msg.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) {
     await msg.reply("🔒 Só quem tem **Gerenciar Servidor** pode mudar isto.");
-    return true;
-  }
-
-  const escolhidos = [...msg.mentions.channels.values()]
-    .filter((c) => c.type === ChannelType.GuildText);
-  if (!escolhidos.length) {
-    await msg.reply("Escreva `fonte #canal` — digite `#` e escolha na lista que o Discord abre.");
     return true;
   }
 
