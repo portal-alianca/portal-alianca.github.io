@@ -1775,6 +1775,76 @@ async function canalPorNomeOuCria(guild, nome, topico) {
   });
 }
 
+/* Quem pode mandar no bot: o proprio bot, e todo cargo que ja manda no
+   servidor. Ninguem mais enxerga.
+
+   Nao da' pra escrever "quem tem Gerenciar Servidor" numa permissao de canal
+   -- o Discord so aceita cargo ou pessoa. Entao eu procuro os cargos que TEM
+   essa permissao e abro pra cada um. Sem isso, so quem fosse Administrador
+   entraria (Administrador passa por cima de tudo), e um oficial com permissoes
+   picadas ficaria de fora justamente do canal que existe pra ele. */
+function portasDaAdministracao(guild) {
+  const portas = [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    {
+      id: client.user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages],
+    },
+  ];
+  for (const [, cargo] of guild.roles.cache) {
+    if (cargo.id === guild.roles.everyone.id) continue;
+    if (!cargo.permissions.has(PermissionFlagsBits.ManageGuild) &&
+        !cargo.permissions.has(PermissionFlagsBits.Administrator)) continue;
+    portas.push({
+      id: cargo.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.ReadMessageHistory],
+    });
+  }
+  return portas;
+}
+
+async function garantirCanalDeConfig(guild, servidor) {
+  let canal = servidor.canal_config
+    ? await guild.channels.fetch(servidor.canal_config).catch(() => null)
+    : null;
+
+  if (!canal) {
+    canal = guild.channels.cache.find(
+      (c) => c.type === ChannelType.GuildText && c.name === CANAL_CONFIG) || null;
+  }
+
+  if (!canal) {
+    canal = await guild.channels.create({
+      name: CANAL_CONFIG,
+      type: ChannelType.GuildText,
+      topic: "Só a administração vê este canal. É aqui que você diz ao CYRON o que fazer.",
+      permissionOverwrites: portasDaAdministracao(guild),
+      reason: "sala de comando do CYRON",
+    });
+    console.log(`instalar: sala de comando em #${canal.name}`);
+  } else {
+    /* Conserta o canal que nasceu aberto. Eu tinha negado so a escrita, nao a
+       visibilidade -- o servidor inteiro enxergava a configuracao do bot.
+
+       So mexe quando esta errado, e a condicao e' exatamente o defeito: se o
+       @everyone ja nao ve, nao ha o que fazer, e reescrever as permissoes a
+       cada passada apagaria qualquer ajuste que o dono tenha feito na mao. */
+    const doTodos = canal.permissionOverwrites.cache.get(guild.roles.everyone.id);
+    if (!doTodos?.deny.has(PermissionFlagsBits.ViewChannel)) {
+      await canal.permissionOverwrites.set(portasDaAdministracao(guild), "sala de comando é só da administração");
+      console.log(`instalar: #${canal.name} fechado — só a administração vê`);
+    }
+  }
+
+  if (servidor.canal_config !== canal.id) {
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { canal_config: canal.id });
+    servidor.canal_config = canal.id;
+  }
+  return canal;
+}
+
 async function instalarServidor(guild) {
   /* Ja instalado: sair no comeco. Isto roda tambem na varredura, pra consertar
      instalacao que parou no meio -- e uma instalacao completa nao pode ser
@@ -1807,19 +1877,8 @@ async function instalarServidor(guild) {
     console.log(`instalar: porta de entrada em #${porta.name}`);
   }
 
-  /* A sala de comando do dono.
-
-     Privada: negada pro @everyone, entao so quem tem Administrador enxerga --
-     e' o Discord que resolve isso, nao eu. Nao da' pra dar permissao a "quem
-     tem Gerenciar Servidor": permissao de canal se da' a cargo ou a pessoa, e
-     nem todo servidor tem um cargo de oficial pra apontar. */
-  if (!servidor.canal_config || !guild.channels.cache.has(servidor.canal_config)) {
-    const config = await canalPorNomeOuCria(guild, CANAL_CONFIG,
-      "Só administradores veem este canal. É aqui que você diz ao CYRON o que fazer.");
-    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { canal_config: config.id });
-    servidor.canal_config = config.id;
-    console.log(`instalar: sala de comando em #${config.name}`);
-  }
+  /* A sala de comando: quem manda no servidor manda no bot. */
+  await garantirCanalDeConfig(guild, servidor);
 
   /* A fonte. */
   const jaFonte = await sb(`discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id`);
