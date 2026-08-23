@@ -12,7 +12,7 @@
  */
 
 import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType } from "discord.js";
-import { createHash } from "node:crypto";
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -592,23 +592,174 @@ async function doCache(chave) {
 
    O hash tambem serve pra tabela nao virar um arquivo do que a alianca
    conversa: o que fica guardado e' a traducao, nao o original. */
-async function traduzirComCache(texto, alvo) {
-  if (texto.length > MAX_CACHE) return await traduzir(texto, alvo);
+/* ---------------- O tradutor de cada servidor ----------------
 
-  const chave = createHash("sha256").update(`${alvo} ${texto}`).digest("hex").slice(0, 40);
+   Ate aqui todo mundo dividia o mesmo endpoint gratuito do Google, sem chave.
+   Funciona -- e ja devolveu 429 uma vez com cinco servidores. O problema nao
+   e' a falha: e' que o teto e' COMPARTILHADO. Quanto mais gente usa, pior fica
+   pra todo mundo, e quem traduz muito nao tem como pagar mais pra traduzir
+   mais, porque o custo nao e' dele, e' de quem hospeda.
+
+   Com chave por servidor o teto vem junto com o cliente. O Azure da 2 milhoes
+   de caracteres por mes POR CONTA -- entao cada cliente traz o proprio limite
+   gratuito, e a conta cresce junto com a base em vez de bater num muro.
+
+   A chave e' de quem contratou, nao minha. Fica cifrada, e o segredo mora numa
+   variavel de ambiente do bot: o banco vazado sozinho nao usa a chave de
+   ninguem. Se o segredo nao existir, eu me RECUSO a guardar chave -- guardar
+   em texto puro "por enquanto" e' o tipo de coisa que fica pra sempre. */
+
+const SEGREDO = process.env.CYRON_SEGREDO || "";
+
+function chaveDeCifra() {
+  if (!SEGREDO) return null;
+  return createHash("sha256").update(SEGREDO).digest();  // 32 bytes
+}
+
+function cifrar(texto) {
+  const k = chaveDeCifra();
+  if (!k) return null;
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", k, iv);
+  const dados = Buffer.concat([c.update(texto, "utf8"), c.final()]);
+  return [iv, c.getAuthTag(), dados].map((b) => b.toString("base64")).join(".");
+}
+
+function decifrar(guardado) {
+  const k = chaveDeCifra();
+  if (!k || !guardado) return null;
+  try {
+    const [iv, tag, dados] = guardado.split(".").map((p) => Buffer.from(p, "base64"));
+    const d = createDecipheriv("aes-256-gcm", k, iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(dados), d.final()]).toString("utf8");
+  } catch {
+    /* Segredo trocado, ou linha mexida na mao. Nao da' pra usar, e insistir
+       so' geraria erro de autenticacao no tradutor -- que apareceria como
+       "a traducao parou" e mandaria alguem procurar no lugar errado. */
+    console.error("tradutor: nao consegui decifrar a chave deste servidor");
+    return null;
+  }
+}
+
+/* Cada tradutor chama os idiomas do seu jeito. */
+const AZURE_IDIOMA = { "zh-CN": "zh-Hans", tl: "fil" };
+const DEEPL_IDIOMA = { pt: "PT-BR", en: "EN-US", "zh-CN": "ZH" };
+
+const MOTORES = {
+  azure: {
+    nome: "Azure Translator",
+    /* 2 milhoes de caracteres/mes no plano F0, por conta. */
+    async traduzir(texto, alvo, cfg) {
+      const r = await fetch(
+        `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=${AZURE_IDIOMA[alvo] || alvo}`,
+        {
+          method: "POST",
+          headers: {
+            "Ocp-Apim-Subscription-Key": cfg.chave,
+            ...(cfg.regiao ? { "Ocp-Apim-Subscription-Region": cfg.regiao } : {}),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify([{ Text: texto }]),
+          signal: AbortSignal.timeout(8000),
+        });
+      if (!r.ok) throw new Error(`azure ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const j = await r.json();
+      return j?.[0]?.translations?.[0]?.text || "";
+    },
+  },
+  deepl: {
+    nome: "DeepL",
+    /* Chave terminada em :fx e' da conta gratuita, e o endereco dela e' outro.
+       Errar isto devolve 403 -- que parece chave invalida e nao e'. */
+    async traduzir(texto, alvo, cfg) {
+      const base = cfg.chave.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+      const r = await fetch(`${base}/v2/translate`, {
+        method: "POST",
+        headers: { Authorization: `DeepL-Auth-Key ${cfg.chave}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: [texto], target_lang: DEEPL_IDIOMA[alvo] || alvo.toUpperCase() }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) throw new Error(`deepl ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const j = await r.json();
+      return j?.translations?.[0]?.text || "";
+    },
+  },
+};
+
+/* Qual tradutor este servidor usa. Cache curto: e' lido a cada mensagem. */
+const cacheMotor = new Map();
+const MOTOR_AUTO = { tipo: "auto" };
+
+/* O motor a partir do guild, pros lugares que so tem a interacao na mao. */
+async function motorDoGuild(guildId) {
+  if (!guildId) return MOTOR_AUTO;
+  return motorDe(await servidorDoGuild(guildId).catch(() => null));
+}
+
+function motorDe(servidor) {
+  if (!servidor) return MOTOR_AUTO;
+  const guardado = cacheMotor.get(servidor.id);
+  if (guardado && guardado.quando > Date.now() - 5 * 60 * 1000) return guardado.motor;
+
+  let motor = MOTOR_AUTO;
+  if (servidor.tradutor_motor && servidor.tradutor_motor !== "auto" && servidor.tradutor_chave) {
+    const chave = decifrar(servidor.tradutor_chave);
+    if (chave) motor = { tipo: servidor.tradutor_motor, chave, regiao: servidor.tradutor_regiao || null, servidorId: servidor.id };
+  }
+  cacheMotor.set(servidor.id, { motor, quando: Date.now() });
+  return motor;
+}
+
+async function traduzirComCache(texto, alvo, motor = MOTOR_AUTO) {
+  if (texto.length > MAX_CACHE) return await traduzir(texto, alvo, motor);
+
+  /* O motor entra na chave do cache.
+
+     Ela era so (idioma, texto), e o cache e' de todos os servidores juntos --
+     entao quem esta pagando DeepL receberia a traducao que o Google guardou
+     pra outro servidor. Barato e desonesto: a pessoa contratou a qualidade do
+     motor que escolheu, nao a de quem passou ali antes. */
+  const chave = createHash("sha256").update(`${motor.tipo} ${alvo} ${texto}`).digest("hex").slice(0, 40);
   const guardado = await doCache(chave);
   if (guardado) return guardado;
 
-  const novo = await traduzir(texto, alvo);
+  const novo = await traduzir(texto, alvo, motor);
   if (novo) {
     /* Sem await: a conversa nao espera o banco pra seguir. */
-    sbPost("discord_traducao_cache", { chave, idioma: alvo, traduzido: novo })
+    sbPost("discord_traducao_cache", { chave, idioma: alvo, traduzido: novo, motor: motor.tipo })
       .catch(() => { /* ja traduzido; guardar e' bonus */ });
   }
   return novo;
 }
 
-async function traduzir(texto, alvo) {
+/* A ultima falha do tradutor de cada servidor, pra aparecer no painel.
+
+   Chave errada nao pode calar o servidor: se o motor do cliente recusa, eu
+   caio no gratuito e a conversa segue. So que assim a falha fica invisivel --
+   ele continua achando que usa o DeepL que pagou, e o log fica aqui comigo.
+   Guardando a falha, o painel dele conta. */
+const falhaDoMotor = new Map();
+
+async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
+  const escolhido = MOTORES[motor.tipo];
+  if (escolhido && motor.chave) {
+    try {
+      const saiu = await escolhido.traduzir(texto, alvo, motor);
+      if (saiu) {
+        if (motor.servidorId) falhaDoMotor.delete(motor.servidorId);
+        return saiu;
+      }
+      throw new Error("resposta vazia");
+    } catch (e) {
+      const porque = String(e?.message || e).slice(0, 160);
+      console.error(`tradutor: ${motor.tipo} falhou:`, porque);
+      if (motor.servidorId) falhaDoMotor.set(motor.servidorId, { quando: Date.now(), porque });
+      /* Cai no gratuito em vez de devolver nada: mensagem sem traducao ainda
+         chega; mensagem nenhuma some da conversa. */
+    }
+  }
+
   const tentativas = [
     {
       url: `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${alvo}&q=${encodeURIComponent(texto)}`,
@@ -671,7 +822,7 @@ async function baixarAnexos(msg) {
   return { arquivos, links };
 }
 
-async function espelharMensagem(msg, lista, origem, texto) {
+async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -691,7 +842,7 @@ async function espelharMensagem(msg, lista, origem, texto) {
          O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
          um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
          isso seria gastar seis chamadas pra devolver a mesma palavra. */
-      corpo = (await traduzirComCache(texto, destino.idioma)) || texto;
+      corpo = (await traduzirComCache(texto, destino.idioma, motor)) || texto;
     }
 
     /* A mencao vai junto pra dar de volta o que o webhook tira: identidade
@@ -1023,8 +1174,8 @@ async function sincronizarRecentes() {
    partiria uma frase no meio e as duas metades chegariam sem sentido. */
 const PEDACO_TRADUCAO = 1500;
 
-async function traduzirLongo(texto, alvo) {
-  if (texto.length <= PEDACO_TRADUCAO) return await traduzirComCache(texto, alvo);
+async function traduzirLongo(texto, alvo, motor = MOTOR_AUTO) {
+  if (texto.length <= PEDACO_TRADUCAO) return await traduzirComCache(texto, alvo, motor);
 
   const pedacos = [];
   let atual = "";
@@ -1042,7 +1193,7 @@ async function traduzirLongo(texto, alvo) {
 
   const saiu = [];
   for (const pedaco of pedacos) {
-    const t = await traduzirComCache(pedaco, alvo);
+    const t = await traduzirComCache(pedaco, alvo, motor);
     if (!t) return null; // meia traducao e' pior que nenhuma
     saiu.push(t);
   }
@@ -1489,7 +1640,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
    mensagem: se veio embed, sai embed com titulo e texto traduzidos e a imagem
    intacta. Traduzir so o texto e jogar fora a moldura faria o aviso do urso
    chegar sem o urso. */
-async function replicarPorIdioma(msg, servidorId, tipo) {
+async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
   const destinos = (await replicasDoIdioma(servidorId)).filter((r) => r.tipo === tipo);
   if (!destinos.length) return;
 
@@ -1511,9 +1662,9 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
          traducao. O vantajosoTraduzir continua servindo pra nao pagar por
          emoji, link solto e "ok". */
       const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO, 2)
-        ? (await traduzirLongo(titulo, destino.idioma)) || titulo : titulo;
+        ? (await traduzirLongo(titulo, destino.idioma, motor)) || titulo : titulo;
       const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO, 2)
-        ? (await traduzirLongo(corpo, destino.idioma)) || corpo : corpo;
+        ? (await traduzirLongo(corpo, destino.idioma, motor)) || corpo : corpo;
 
       const carga = { username: nome, avatarURL: foto, files: arquivos, allowedMentions: { parse: [] } };
       if (emb) {
@@ -1526,9 +1677,9 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
           campos.push({
             ...campo,
             name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO, 2)
-              ? (await traduzirLongo(campo.name, destino.idioma)) || campo.name : campo.name,
+              ? (await traduzirLongo(campo.name, destino.idioma, motor)) || campo.name : campo.name,
             value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO, 2)
-              ? (await traduzirLongo(campo.value, destino.idioma)) || campo.value : campo.value,
+              ? (await traduzirLongo(campo.value, destino.idioma, motor)) || campo.value : campo.value,
           });
         }
         carga.embeds = [{
@@ -2293,6 +2444,7 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
         emoji: { name: "💬" },
         label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
       },
+      { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
       { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
       ...(orfas?.length
@@ -2352,6 +2504,25 @@ async function canaisElegiveis(guild, servidor, fontes) {
   return [...dentro, ...fora].slice(0, 25).sort((a, b) => a.rawPosition - b.rawPosition);
 }
 
+/* O que o painel diz sobre o tradutor.
+
+   Tres estados, e o terceiro e' o que importa: motor do cliente FALHANDO. Sem
+   ele, chave vencida vira "a qualidade piorou" -- eu caio no gratuito, a
+   conversa continua, e ninguem liga uma coisa a outra por dias. */
+function comoEstaOMotor(servidor) {
+  const tipo = servidor.tradutor_motor;
+  if (!tipo || tipo === "auto" || !servidor.tradutor_chave) {
+    return "⚪ **Google grátis**\ncompartilhado — pode ficar lento em pico";
+  }
+  const nome = MOTORES[tipo]?.nome || tipo;
+  const falha = falhaDoMotor.get(servidor.id);
+  if (falha) {
+    const quando = new Date(falha.quando).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `🔴 **${nome}** recusou\n\`${falha.porque.slice(0, 90)}\`\n_${quando} — estou traduzindo pelo grátis. Refaça a chave no botão 🌐._`;
+  }
+  return `🟢 **${nome}**\nchave deste servidor`;
+}
+
 /* Desenha o painel sem escrever em lugar nenhum.
 
    Separado do envio porque o mesmo desenho serve a dois destinos: a mensagem
@@ -2376,6 +2547,7 @@ async function montarPainel(guild, servidor) {
   const fila = esperando.get(servidor.id) || [];
   const orfas = await replicasOrfas(guild, servidor);
   const elegiveis = await canaisElegiveis(guild, servidor, vivas);
+  const motorUsado = comoEstaOMotor(servidor);
 
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
@@ -2393,6 +2565,11 @@ async function montarPainel(guild, servidor) {
     {
       name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
       value: idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join("\n") : "_ninguém escolheu ainda_",
+      inline: true,
+    },
+    {
+      name: "🌐 Motor de tradução",
+      value: motorUsado,
       inline: true,
     },
     {
@@ -2739,6 +2916,10 @@ async function cliquePainel(inter) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
   }
 
+  /* showModal so' vale em interacao ainda nao respondida -- por isso vem
+     antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
+  if (acao === "motor") return inter.showModal(janelaDoMotor(servidor));
+
   await inter.deferUpdate();
 
   if (acao === "tradutor") {
@@ -2847,6 +3028,129 @@ async function cliquePainel(inter) {
   }
 }
 
+/* A janela onde a chave e' digitada.
+
+   Chave de API nao pode ser digitada no canal. Mesmo sendo sala da
+   administracao, a mensagem fica no historico, entra em backup, aparece pra
+   quem entrar depois -- e apagar depois nao desfaz quem ja leu. O modal do
+   Discord e' o unico lugar em que o texto vai do teclado da pessoa direto pro
+   bot, sem passar por canal nenhum.
+
+   Isso so' passou a ser possivel agora: enquanto as interacoes iam pra funcao
+   HTTP, o bot nao tinha como abrir modal nenhum. */
+function janelaDoMotor(servidor) {
+  return {
+    custom_id: "cyron:motor",
+    title: "Tradutor deste servidor",
+    components: [
+      { type: 1, components: [{
+        type: 4, custom_id: "motor", style: 1, required: true, max_length: 10,
+        label: "Motor: azure, deepl ou google",
+        placeholder: "azure",
+        ...(servidor.tradutor_motor && servidor.tradutor_motor !== "auto"
+          ? { value: servidor.tradutor_motor } : {}),
+      }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "chave", style: 1, required: false, max_length: 300,
+        label: "Chave da API (vazio em google)",
+        placeholder: "cole aqui a chave da sua conta",
+      }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "regiao", style: 1, required: false, max_length: 40,
+        label: "Região — só Azure",
+        placeholder: "brazilsouth",
+        ...(servidor.tradutor_regiao ? { value: servidor.tradutor_regiao } : {}),
+      }] },
+    ],
+  };
+}
+
+/* Guarda a chave -- se ela funcionar.
+
+   Testo antes de gravar, e gravo so' o que passou. Chave errada guardada e'
+   um servidor que parece configurado e traduz pelo gratuito sem ninguem
+   saber; o erro so' apareceria dias depois, como "a qualidade piorou". Aqui a
+   pessoa descobre no segundo seguinte, com a frase de teste na frente. */
+async function salvarMotor(inter) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
+  }
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui." });
+
+  await inter.deferReply({ flags: 64 });
+
+  const tipo = String(inter.fields.getTextInputValue("motor") || "").trim().toLowerCase();
+  const chave = String(inter.fields.getTextInputValue("chave") || "").trim();
+  const regiao = String(inter.fields.getTextInputValue("regiao") || "").trim() || null;
+
+  /* Voltar pro gratuito e' um caminho de primeira classe, nao um esquecimento.
+     Quem cancelou a conta do Azure precisa conseguir sair sem ficar com uma
+     chave morta gravada. */
+  if (!tipo || tipo === "google" || tipo === "auto" || tipo === "gratis" || tipo === "grátis") {
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
+      { tradutor_motor: "auto", tradutor_chave: null, tradutor_regiao: null });
+    cacheServidor.delete(inter.guildId);
+    cacheMotor.delete(servidor.id);
+    falhaDoMotor.delete(servidor.id);
+    await inter.editReply("🌐 Voltei para o **Google grátis**, compartilhado com os outros servidores.");
+    return atualizarUmCartao(inter.guild);
+  }
+
+  if (!MOTORES[tipo]) {
+    return inter.editReply(
+      `Não conheço o motor **${tipo}**. Os que eu sei usar são **azure** e **deepl** — ` +
+      "ou **google** para voltar ao gratuito.");
+  }
+  if (!chave) {
+    return inter.editReply(`O **${MOTORES[tipo].nome}** precisa de uma chave. Abra de novo e cole a sua.`);
+  }
+  if (!SEGREDO) {
+    /* Sem segredo eu nao guardo. Texto puro "por enquanto" fica pra sempre, e
+       a chave e' de quem contratou, nao minha pra arriscar. */
+    console.error("tradutor: CYRON_SEGREDO não está definido; recusei guardar uma chave");
+    return inter.editReply(
+      "🔒 Não consigo guardar a chave com segurança agora — falta uma configuração do meu lado. " +
+      "Não gravei nada. Avise quem cuida do bot.");
+  }
+
+  const teste = { tipo, chave, regiao, servidorId: servidor.id };
+  let saiu;
+  try {
+    saiu = await MOTORES[tipo].traduzir("Bom dia, tudo bem?", "en", teste);
+  } catch (e) {
+    return inter.editReply([
+      `❌ O **${MOTORES[tipo].nome}** recusou a chave.`,
+      "```", String(e?.message || e).slice(0, 400), "```",
+      "Não gravei nada — o que estava valendo continua valendo.",
+      tipo === "azure" ? "_No Azure, chave sem a região certa dá 401. A região aparece na página do recurso._" : "",
+    ].filter(Boolean).join("\n"));
+  }
+  if (!saiu) {
+    return inter.editReply(`❌ O **${MOTORES[tipo].nome}** respondeu vazio. Não gravei nada.`);
+  }
+
+  await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
+    { tradutor_motor: tipo, tradutor_chave: cifrar(chave), tradutor_regiao: regiao });
+  cacheServidor.delete(inter.guildId);
+  cacheMotor.delete(servidor.id);
+  falhaDoMotor.delete(servidor.id);
+
+  await inter.editReply([
+    `✅ **${MOTORES[tipo].nome}** ligado, e testado agora:`,
+    `> "Bom dia, tudo bem?" → **${saiu}**`,
+    "",
+    "A chave fica cifrada aqui. A partir de agora toda tradução deste servidor passa por ela — " +
+    "o limite é o da sua conta, não mais o compartilhado.",
+  ].join("\n"));
+  return atualizarUmCartao(inter.guild);
+}
+
+async function atualizarUmCartao(guild) {
+  const servidor = await servidorDoGuild(guild.id);
+  if (servidor?.canal_config) await cartaoDeConfig(guild, servidor).catch(() => {});
+}
+
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
 
    Ele mostra o que a varredura acabou de decidir -- quantos idiomas couberam,
@@ -2940,11 +3244,11 @@ const FONTE_JOGO = "https://kingshotstats.com";
 
    Em portugues nao mexe: e' o idioma em que todo o conteudo ja e' escrito, e
    traduzir pt->pt seria pagar por devolver o mesmo texto. */
-async function traduzirEmbed(embed, idioma) {
+async function traduzirEmbed(embed, idioma, motor = MOTOR_AUTO) {
   if (!idioma || idioma === "pt") return embed;
   const campo = async (t) => {
     if (typeof t !== "string" || !t.trim()) return t;
-    return (await traduzirComCache(t, idioma)) || t;
+    return (await traduzirComCache(t, idioma, motor)) || t;
   };
   const novo = { ...embed };
   if (novo.title) novo.title = await campo(novo.title);
@@ -3247,7 +3551,7 @@ async function comandoSettings(inter) {
 /* Responder ja traduzido pro idioma de quem clicou. */
 async function responder(inter, embed, { efemera = true, idioma } = {}) {
   const alvo = idioma ?? await idiomaDoJogador(inter.user.id);
-  const final = await traduzirEmbed(embed, alvo);
+  const final = await traduzirEmbed(embed, alvo, await motorDoGuild(inter.guildId));
   const carga = { embeds: [{ color: COR, ...final }] };
   if (inter.deferred || inter.replied) return inter.editReply(carga);
   return inter.reply({ ...carga, flags: efemera ? 64 : undefined });
@@ -3276,7 +3580,7 @@ async function cliqueEscolherIdioma(inter) {
   }
 
   if (ehBoasVindas) {
-    const traduzido = await traduzirEmbed(embedOriginal, idioma);
+    const traduzido = await traduzirEmbed(embedOriginal, idioma, await motorDoGuild(inter.guildId));
     await inter.message.edit({ embeds: [traduzido] }).catch(() => {});
   }
 
@@ -3319,7 +3623,7 @@ async function cliqueTraduzirMsg(inter) {
     return naEfemera ? inter.editReply(carga) : inter.editReply(carga);
   }
 
-  const traduzido = await traduzirLongo(texto, idioma);
+  const traduzido = await traduzirLongo(texto, idioma, await motorDoGuild(inter.guildId));
   const carga = traduzido
     ? {
         embeds: [{
@@ -3378,7 +3682,7 @@ async function comandoDeInteracao(inter) {
       return responder(inter, { title: "🤔 Mensagem vazia",
         description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma });
     }
-    const t = await traduzirLongo(texto, idioma);
+    const t = await traduzirLongo(texto, idioma, await motorDoGuild(inter.guildId));
     return responder(inter, t
       ? { title: `🌐 ${nomeDoIdioma(idioma)}`, description: t.slice(0, 3800),
           footer: { text: "Quer mudar o idioma? Use /mylanguage" } }
@@ -3460,6 +3764,10 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
       return await cliquePainel(inter);
     }
+    if (inter.isModalSubmit()) {
+      if (inter.customId === "cyron:motor") return await salvarMotor(inter);
+      return;
+    }
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
@@ -3514,7 +3822,7 @@ client.on("messageCreate", async (msg) => {
          pra cada idioma. Nao e' um "return" -- o canal publico continua
          servindo quem nunca escolheu idioma, com o tradutor de sempre. */
       const fonte = (await fontesReplica(servidorId)).get(msg.channel.id);
-      if (fonte) await replicarPorIdioma(msg, servidorId, fonte);
+      if (fonte) await replicarPorIdioma(msg, servidorId, fonte, motorDe(servidor));
 
       /* Boas-vindas ganham as duas coisas: o convite pra escolher idioma e o
          tradutor. Antes parava no seletor, com a ideia de que a mensagem era
@@ -3601,7 +3909,7 @@ client.on("messageCreate", async (msg) => {
        conversa, nunca os dois. */
     const fonteAqui = (await fontesReplica(servidorId)).get(msg.channel.id);
     if (fonteAqui) {
-      await replicarPorIdioma(msg, servidorId, fonteAqui);
+      await replicarPorIdioma(msg, servidorId, fonteAqui, motorDe(servidor));
       return;
     }
 
@@ -3615,7 +3923,7 @@ client.on("messageCreate", async (msg) => {
          no espelho a mensagem descartada nao e' uma caixinha a menos -- e' uma
          FALA que some. A pessoa do outro lado ve a conversa com buraco e nao
          tem como saber. Vale mais deixar passar. */
-      await espelharMensagem(msg, espelho, origem, texto);
+      await espelharMensagem(msg, espelho, origem, texto, motorDe(servidor));
       return;
     }
 
