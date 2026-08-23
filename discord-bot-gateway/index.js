@@ -1590,13 +1590,20 @@ async function sincronizarAgora(guild) {
   }
 }
 
+/* A varredura do relogio passa pela MESMA porta que os botoes.
+
+   Ela chamava sincronizarUmGuild direto, por fora do controle que impede duas
+   montagens ao mesmo tempo no mesmo servidor. Enquanto so' o relogio montava,
+   isso nunca doeu: era uma passada de cada vez. Agora nao e' -- o menu de
+   canais e o "Remontar agora" disparam montagem na hora, e um clique no minuto
+   errado poe as duas pra criar os mesmos canais lado a lado. Foi assim que
+   apareceram quatro recursos-en iguais uma vez.
+
+   Passando por aqui, quem chegar depois nao monta em paralelo: marca que
+   precisa refazer, e quem esta' montando refaz ao terminar. */
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
-    try {
-      await sincronizarUmGuild(guild);
-    } catch (e) {
-      console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
-    }
+    await sincronizarAgora(guild);
   }
 }
 
@@ -3644,27 +3651,34 @@ async function garantirComandoCyron() {
   }
 }
 
+/* Uma volta completa: reparo, montagem, portaria e painel.
+
+   A ordem importa e nao e' arbitraria. Reparo primeiro porque sem porta e sem
+   fonte as outras nao tem o que montar nem onde postar. Painel por ultimo
+   porque ele mostra o que as tres acabaram de decidir -- desenhado antes,
+   seria sempre o retrato da passada anterior, e um painel atrasado e' pior
+   que painel nenhum: a pessoa confia nele.
+
+   A mesma funcao serve a partida e ao relogio. Na partida elas rodavam soltas
+   e em paralelo, e o painel nao rodava de jeito nenhum -- entao, depois de
+   cada reinicio, o cartao ficava ate' dez minutos mostrando o estado velho.
+   Isso apareceu na hora errada: subi os botoes e fui conferir se tinham
+   chegado, e o painel ainda era o de antes. */
+async function umaPassada() {
+  await repararInstalacoes().catch((e) => console.error("instalar: reparo falhou:", e?.message || e));
+  await sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
+  await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
+  await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
+}
+
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
-  /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
-     ficar esperando dez minutos, e depois de tempos em tempos. */
-  sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
-  garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
-  repararInstalacoes().catch((e) => console.error("instalar: reparo inicial falhou:", e?.message || e));
   separarComandos().then(() => garantirComandoCyron());
   soltarAsInteracoes();
-  setInterval(() => {
-    /* Reparo primeiro: sem porta e sem fonte, as outras duas nao tem o que
-       montar nem onde postar. */
-    repararInstalacoes()
-      .catch((e) => console.error("instalar: reparo falhou:", e?.message || e))
-      .then(() => sincronizarSalas())
-      .catch((e) => console.error("espelho: sincronia falhou:", e?.message || e))
-      .then(() => garantirConvites())
-      .catch((e) => console.error("portaria: passada falhou:", e?.message || e))
-      .then(() => atualizarCartoes())
-      .catch((e) => console.error("config: cartões falharam:", e?.message || e));
-  }, INTERVALO_SINCRONIA);
+  /* Uma vez ao subir, pra quem mexeu em algo com o bot fora do ar nao ficar
+     esperando dez minutos, e depois de tempos em tempos. */
+  umaPassada();
+  setInterval(umaPassada, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
   }, 60 * 1000);
