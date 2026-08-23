@@ -2479,6 +2479,561 @@ async function orientarNaReplica(msg, servidor, replica) {
   await msg.reply({ content: linhas.join("\n"), allowedMentions: { repliedUser: false } }).catch(() => {});
 }
 
+/* ================= INTERACOES =================================================
+
+   Clique, comando, menu e formulario chegam aqui.
+
+   Ate agora nao chegavam: o aplicativo tinha um "endereco de interacoes"
+   configurado, e configurar esse endereco faz o Discord PARAR de entregar
+   interacao pelo gateway. Tudo ia por HTTP pra uma funcao no Supabase, que
+   nao conhece canal, cargo nem membro -- ela tinha que perguntar tudo pela API
+   REST a cada clique.
+
+   Isso partia o bot em dois pela metade errada. "Criar um canal quando alguem
+   aperta um botao" e' uma frase simples que virava um problema de arquitetura,
+   porque quem via o botao nao era quem sabia criar canal.
+
+   Com o endereco removido, a interacao volta pelo gateway e cai aqui dentro,
+   onde o guild, os canais e os cargos ja estao na mao. O que era impossivel
+   vira uma linha.
+
+   Os tratadores abaixo nascem dormentes: enquanto o endereco existir, nenhuma
+   interacao chega neles. E' de proposito -- assim eu publico primeiro e libero
+   depois, sem um segundo sequer em que o Discord entregue algo que ninguem
+   sabe responder. */
+
+const COR = 0xF5A623;
+const COR_OK = 0x5EBB83;
+const PORTAL = "https://portal-alianca.github.io/";
+const FONTE_JOGO = "https://kingshotstats.com";
+
+/* Traduz o embed inteiro pro idioma de quem pediu.
+
+   Em portugues nao mexe: e' o idioma em que todo o conteudo ja e' escrito, e
+   traduzir pt->pt seria pagar por devolver o mesmo texto. */
+async function traduzirEmbed(embed, idioma) {
+  if (!idioma || idioma === "pt") return embed;
+  const campo = async (t) => {
+    if (typeof t !== "string" || !t.trim()) return t;
+    return (await traduzirComCache(t, idioma)) || t;
+  };
+  const novo = { ...embed };
+  if (novo.title) novo.title = await campo(novo.title);
+  if (novo.description) novo.description = await campo(novo.description);
+  if (novo.footer?.text) novo.footer = { ...novo.footer, text: await campo(novo.footer.text) };
+  if (Array.isArray(novo.fields)) {
+    novo.fields = [];
+    for (const f of embed.fields) {
+      novo.fields.push({ ...f, name: await campo(f.name), value: await campo(f.value) });
+    }
+  }
+  return novo;
+}
+
+async function idiomaDoJogador(userId) {
+  try {
+    const r = await sb(`discord_idioma_jogador?discord_user_id=eq.${userId}&select=idioma`);
+    return r?.[0]?.idioma || "en"; // quem nunca escolheu le em ingles
+  } catch {
+    return "en";
+  }
+}
+
+async function salvarIdiomaJogador(userId, idioma) {
+  const r = await fetch(`${SB_URL}/rest/v1/discord_idioma_jogador`, {
+    method: "POST",
+    headers: {
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify({ discord_user_id: userId, idioma, atualizado_em: new Date().toISOString() }),
+  });
+  if (!r.ok) throw new Error(`salvar idioma ${r.status}`);
+}
+
+function fmtPoder(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2).replace(".", ",") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "").replace(".", ",") + "M";
+  if (n >= 1e3) return Math.round(n / 1e3) + "K";
+  return String(n);
+}
+
+function proximaOcorrencia(horaUtc, diaSemana) {
+  const [h, m] = String(horaUtc).split(":").map(Number);
+  const agora = new Date();
+  for (let d = 0; d < 8; d++) {
+    const t = new Date(Date.UTC(
+      agora.getUTCFullYear(), agora.getUTCMonth(), agora.getUTCDate() + d, h, m || 0, 0));
+    if (t.getTime() <= agora.getTime()) continue;
+    if (diaSemana === null || diaSemana === undefined || t.getUTCDay() === diaSemana) return t;
+  }
+  return null;
+}
+
+async function aliancaCompleta(guildId) {
+  if (!guildId) return null;
+  const r = await sb(
+    `alianca_discord?guild_id=eq.${encodeURIComponent(guildId)}&select=alianca_id,aliancas(id,tag,nome,servidor)`);
+  return r?.[0] || null;
+}
+
+function tagBonita(a) {
+  if (!a?.tag) return "Aliança";
+  return /^\[.*\]$/.test(a.tag) ? a.tag : `[${a.tag}]`;
+}
+
+/* ---------------- os comandos do portal do Kingshot ------------------------
+
+   Mesma logica que estava na funcao HTTP, com uma diferenca boa: aqui nao
+   preciso montar PATCH pra webhook de resposta nem contar os tres segundos na
+   mao -- deferReply e editReply do discord.js fazem isso. */
+
+async function embedEventos(aliancaId, tag) {
+  /* Dois modelos de agenda convivem: proxima_em guarda a data exata da proxima
+     vez (o Urso recarrega em ~47h30 e o dia anda pelo calendario), e
+     hora_utc/dia_semana cobrem o que e' mesmo semanal. Tendo as duas, a data
+     exata manda. */
+  const evs = await sb(
+    `top_eventos?alianca_id=eq.${aliancaId}&ativa=eq.true&select=titulo,hora_utc,dia_semana,proxima_em&order=ordem`);
+  const agora = Date.now();
+  const proximos = (evs || [])
+    .map((e) => ({
+      titulo: e.titulo,
+      quando: e.proxima_em ? new Date(e.proxima_em)
+        : (e.hora_utc ? proximaOcorrencia(e.hora_utc, e.dia_semana) : null),
+    }))
+    /* Data marcada que ja passou some em vez de aparecer como se fosse futura:
+       ate o oficial remarcar, nao ha o que prometer. */
+    .filter((e) => e.quando && e.quando.getTime() > agora)
+    .sort((a, b) => a.quando - b.quando)
+    .slice(0, 8);
+
+  if (!proximos.length) {
+    return { title: "📅 Agenda da aliança",
+      description: `Nenhum evento com horário marcado ainda.\nOs oficiais marcam no [portal](${PORTAL}).` };
+  }
+  return {
+    title: `📅 Próximos eventos — ${tag}`,
+    description: proximos.map((e) => {
+      const s = Math.floor(e.quando.getTime() / 1000);
+      return `**${e.titulo}**\n<t:${s}:R> · <t:${s}:t>`;
+    }).join("\n\n"),
+    footer: { text: "O horário aparece no seu fuso automaticamente" },
+  };
+}
+
+async function rankingDoJogo(reino, sigla, quantos, tag) {
+  const slug = String(sigla || "").replace(/[^a-zA-Z0-9]/g, "");
+  const kid = parseInt(String(reino || ""), 10);
+  if (!kid || !slug) return null;
+  const r = await fetch(`${FONTE_JOGO}/api/alliances/lookup?kid=${kid}&slug=${encodeURIComponent(slug)}`,
+    { signal: AbortSignal.timeout(12000) });
+  if (!r.ok) return null;
+  const d = await r.json();
+  const membros = d?.members || [];
+  if (!membros.length) return null;
+
+  const ord = membros.slice().sort((a, b) => (b.power || 0) - (a.power || 0));
+  const medalha = ["🥇", "🥈", "🥉"];
+  const mostra = ord.slice(0, quantos);
+  const total = ord.reduce((soma, m) => soma + (Number(m.power) || 0), 0);
+  return {
+    title: `⚡ Ranking da aliança — ${tag}`,
+    description: mostra.map((m, i) =>
+      `${medalha[i] || `**${i + 1}**`} ${m.nick_name} — \`${fmtPoder(m.power)}\``).join("\n"),
+    footer: { text: `Mostrando ${mostra.length} de ${ord.length} membros · Poder total ${fmtPoder(total)}` +
+      (ord.length > mostra.length ? ` · use /ranking amount:${Math.min(ord.length, 100)} pra ver todos` : "") },
+  };
+}
+
+async function rankingDoPortal(aliancaId, tag) {
+  const ms = await sb(
+    `top_membros?alianca_id=eq.${aliancaId}&poder=gt.0&status=neq.saiu&select=nome,poder,castelo&order=poder.desc&limit=25`);
+  if (!ms?.length) {
+    return { title: "⚡ Ranking de poder",
+      description: `Não consegui a lista agora, e ninguém tem poder registrado no [portal](${PORTAL}) ainda.` };
+  }
+  const medalha = ["🥇", "🥈", "🥉"];
+  return {
+    title: `⚡ Ranking de poder — ${tag}`,
+    description: ms.map((m, i) =>
+      `${medalha[i] || `**${i + 1}**`} ${m.nome} — \`${fmtPoder(m.poder)}\`${m.castelo ? ` · CV${m.castelo}` : ""}`).join("\n"),
+    footer: { text: "Lista do portal (a do jogo não respondeu agora)" },
+  };
+}
+
+async function embedJogador(fid) {
+  try {
+    const r = await fetch(`${FONTE_JOGO}/api/search?q=${encodeURIComponent(fid)}&limit=5&live=1`,
+      { signal: AbortSignal.timeout(10000) });
+    const d = await r.json();
+    const m = (d?.results || []).find((x) => String(x.fid) === fid);
+    if (!m) {
+      return { title: "🤔 Não achei esse ID",
+        description: `Nada encontrado para \`${fid}\`. Confira o número no perfil do jogo.` };
+    }
+    return {
+      title: `👤 ${m.nick_name}`,
+      thumbnail: m.avatar_url ? { url: m.avatar_url } : undefined,
+      fields: [
+        { name: "Poder", value: fmtPoder(m.power), inline: true },
+        { name: "Castelo", value: String(m.stove_lv ?? m.town_center_level ?? "—"), inline: true },
+        { name: "Reino", value: String(m.kid ?? "—"), inline: true },
+        { name: "Aliança", value: m.alliance_abbr ? `[${m.alliance_abbr}] ${m.alliance_name ?? ""}` : "—", inline: true },
+      ],
+    };
+  } catch {
+    return { title: "❌ Deu ruim na consulta",
+      description: "Não consegui buscar esse jogador agora. Tente de novo em instantes." };
+  }
+}
+
+/* Toda imagem vira arquivo nosso, venha de anexo ou de link.
+
+   Dois motivos ja vistos na pratica: o Discord nao carrega imagem do Tenor
+   dentro de embed (testado lado a lado, so a do nosso dominio apareceu), e a
+   URL de anexo do Discord vem assinada e caduca em poucas horas -- guardar o
+   link faria a imagem sumir sozinha depois. */
+const BALDE = "top-midia";
+const MAX_MIDIA = 20 * 1024 * 1024;
+
+async function reHospedar(url, prefixo) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  if (!r.ok) throw new Error("baixar");
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (buf.length > MAX_MIDIA) throw new Error("grande");
+  const base = decodeURIComponent(url.split("?")[0].split("/").pop() || "midia")
+    .replace(/[^a-zA-Z0-9._-]/g, "-").slice(-60);
+  const caminho = `${prefixo}-${Date.now()}-${base}`;
+  const up = await fetch(`${SB_URL}/storage/v1/object/${BALDE}/${caminho}`, {
+    method: "POST",
+    headers: {
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": r.headers.get("content-type") || "application/octet-stream",
+    },
+    body: buf,
+  });
+  if (!up.ok) throw new Error("subir");
+  return `${SB_URL}/storage/v1/object/public/${BALDE}/${caminho}`;
+}
+
+async function midiaDaOpcao(inter, prefixo) {
+  const anexo = inter.options.getAttachment("file");
+  if (anexo) {
+    if (Number(anexo.size) > MAX_MIDIA) throw new Error("grande");
+    return await reHospedar(anexo.url, prefixo);
+  }
+  const link = String(inter.options.getString("link") || "").trim();
+  if (!link) return null;
+  if (!/^https:\/\/\S+$/i.test(link)) throw new Error("link");
+  if (link.startsWith(`${SB_URL}/storage/`)) return link;  // ja e' nosso
+  return await reHospedar(link, prefixo);
+}
+
+async function rpc(fn, corpo) {
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(corpo),
+  });
+  if (!r.ok) throw new Error(`rpc ${fn} ${r.status}`);
+  return await r.json();
+}
+
+async function comandoSettings(inter) {
+  const guild = inter.guildId;
+  const sub = inter.options.getSubcommand();
+
+  if (sub === "server") {
+    const r = await rpc("discord_ligar_servidor", { p_guild: guild, p_codigo: String(inter.options.getString("code") || "") });
+    return r?.ok
+      ? { color: COR_OK, title: "🔗 Servidor ligado!",
+          description: `Este Discord agora responde pela **${r.tag ?? ""} ${r.nome ?? ""}**.\nJá pode usar \`/ranking\` e \`/events\`.` }
+      : { title: "❌ Não deu", description: {
+            codigo: "Esse código de oficial não confere com nenhuma aliança.",
+            guild: "Não consegui identificar este servidor.",
+            guild_usado: "Este servidor já está ligado a outra aliança.",
+          }[r?.erro] ?? "Tente de novo em instantes." };
+  }
+
+  if (sub === "event-gif") {
+    const titulo = String(inter.options.getString("event") || "").trim();
+    const url = await midiaDaOpcao(inter, "evento");
+    const r = await rpc("discord_gif_evento", { p_guild: guild, p_titulo: titulo, p_url: url });
+    return r?.ok
+      ? { color: COR_OK, title: url ? "🖼️ GIF definido!" : "🧹 GIF removido",
+          description: `**${titulo}**` + (url ? "\nVai aparecer no aviso deste evento." : "\nO aviso volta a ser só texto."),
+          ...(url ? { image: { url } } : {}) }
+      : { title: "❌ Não deu", description: {
+            sem_vinculo: "Este servidor ainda não está ligado a uma aliança. Use `/settings server` primeiro.",
+            evento: `Não achei um evento chamado **${titulo}** nesta aliança.`,
+          }[r?.erro] ?? "Tente de novo em instantes." };
+  }
+
+  if (sub === "welcome-gif") {
+    const limpar = inter.options.getBoolean("clear") === true;
+    const url = limpar ? null : await midiaDaOpcao(inter, "boasvindas");
+    if (!limpar && !url) {
+      return { title: "🤔 Faltou a imagem",
+        description: "Mande um **arquivo** ou um **link**. Ou use `clear: true` pra apagar os atuais." };
+    }
+    const r = await rpc("discord_gif_boas_vindas", { p_guild: guild, p_url: url, p_limpar: limpar });
+    if (!r?.ok) {
+      return { title: "❌ Não deu", description: r?.erro === "sem_vinculo"
+        ? "Este servidor ainda não está ligado a uma aliança. Use `/settings server` primeiro."
+        : "Tente de novo em instantes." };
+    }
+    return limpar
+      ? { color: COR_OK, title: "🧹 GIFs de boas-vindas apagados", description: "As boas-vindas passam a ser só texto." }
+      : { color: COR_OK, title: "🎉 GIF de boas-vindas somado!",
+          description: `Agora são **${r.total}** no sorteio.`, image: { url } };
+  }
+
+  /* view */
+  const v = await aliancaCompleta(guild);
+  if (!v) {
+    return { title: "🔗 Servidor não ligado",
+      description: "Use `/settings server code:<código de oficial>` pra começar." };
+  }
+  const a = v.aliancas || {};
+  const evs = await sb(`top_eventos?alianca_id=eq.${v.alianca_id}&ativa=eq.true&select=titulo,gif_url&order=ordem`);
+  const gifs = await sb(`discord_gifs?uso=eq.boas_vindas&ativo=eq.true&select=id`);
+  const cfg = await sb(`alianca_discord?guild_id=eq.${encodeURIComponent(guild)}&select=webhook,webhook_boas_vindas`);
+  const comGif = (evs || []).filter((e) => e.gif_url);
+  return {
+    title: `⚙️ Configuração — ${a.tag ?? ""} ${a.nome ?? ""}`,
+    fields: [
+      { name: "Canal de avisos", value: cfg?.[0]?.webhook ? "✅ ligado" : "❌ sem webhook", inline: true },
+      { name: "Canal de boas-vindas", value: cfg?.[0]?.webhook_boas_vindas ? "✅ ligado" : "— usa o de avisos", inline: true },
+      { name: "GIFs de boas-vindas", value: String((gifs || []).length), inline: true },
+      { name: "Eventos com GIF", value: `${comGif.length} de ${(evs || []).length}` },
+      { name: "Quais têm GIF", value: comGif.length ? comGif.map((e) => `• ${e.titulo}`).join("\n").slice(0, 1000) : "—" },
+    ],
+  };
+}
+
+/* ---------------- quem atende cada interacao ------------------------------ */
+
+/* Responder ja traduzido pro idioma de quem clicou. */
+async function responder(inter, embed, { efemera = true, idioma } = {}) {
+  const alvo = idioma ?? await idiomaDoJogador(inter.user.id);
+  const final = await traduzirEmbed(embed, alvo);
+  const carga = { embeds: [{ color: COR, ...final }] };
+  if (inter.deferred || inter.replied) return inter.editReply(carga);
+  return inter.reply({ ...carga, flags: efemera ? 64 : undefined });
+}
+
+/* Seletor de idioma: no hall de entrada, nas boas-vindas e no convite. */
+async function cliqueEscolherIdioma(inter) {
+  const idioma = String(inter.values?.[0] || "");
+  if (!nomeDoIdioma(idioma) || !LINGUAS_MENU.some(([c]) => c === idioma)) {
+    return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
+  }
+
+  /* No cartao de boas-vindas a propria mensagem e' reescrita no idioma
+     escolhido: ela e' publica e e' sobre uma pessoa so, entao faz sentido. Num
+     aviso fixado seria estranho -- aquele e' de todo mundo. */
+  const embedOriginal = inter.message?.embeds?.[0]?.toJSON?.();
+  const ehBoasVindas = String(embedOriginal?.title || "").includes("Boas-vindas");
+
+  await inter.deferReply({ flags: 64 });
+  try {
+    await salvarIdiomaJogador(inter.user.id, idioma);
+  } catch (e) {
+    console.error("idioma: nao consegui salvar:", e?.message || e);
+    return responder(inter, { title: "❌ Não deu",
+      description: "Não consegui salvar agora. Tente de novo em instantes." }, { idioma: "pt" });
+  }
+
+  if (ehBoasVindas) {
+    const traduzido = await traduzirEmbed(embedOriginal, idioma);
+    await inter.message.edit({ embeds: [traduzido] }).catch(() => {});
+  }
+
+  await responder(inter, {
+    color: COR_OK,
+    title: "🌐 Idioma salvo!",
+    description: `A partir de agora o servidor fala com você em **${nomeDoIdioma(idioma)}**. ` +
+      "Sua categoria aparece em até um minuto.",
+  }, { idioma });
+
+  /* Monta a categoria dele agora, com a pessoa olhando -- e' o momento em que
+     ela decide se o bot funciona. */
+  if (inter.guild) sincronizarAgora(inter.guild).catch(() => {});
+}
+
+/* Seletor pendurado num aviso: traduz aquele texto so pra quem clicou. */
+async function cliqueTraduzirMsg(inter) {
+  const id = inter.customId.slice("traduzir-msg:".length);
+  const idioma = String(inter.values?.[0] || "");
+  if (!LINGUAS_MENU.some(([c]) => c === idioma)) {
+    return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
+  }
+
+  /* Clique vindo da propria resposta efemera edita ela no lugar; vindo da
+     mensagem publica, cria uma nova. Sem isso, trocar de idioma empurrava uma
+     mensagem nova pro fim do canal e obrigava a rolar de volta. */
+  const naEfemera = (Number(inter.message?.flags?.bitfield ?? 0) & 64) !== 0;
+  if (naEfemera) await inter.deferUpdate();
+  else await inter.deferReply({ flags: 64 });
+
+  salvarIdiomaJogador(inter.user.id, idioma).catch(() => {});
+
+  const r = await sb(`discord_msg_traducao?id=eq.${id}&select=texto,link`).catch(() => null);
+  const texto = r?.[0]?.texto;
+  const link = r?.[0]?.link;
+
+  if (!texto) {
+    const carga = { embeds: [{ color: COR, title: "🤔 Não encontrei mais essa mensagem",
+      description: "Ela pode ter expirado. Tente de novo pelo **Translate** (clique direito → Apps)." }] };
+    return naEfemera ? inter.editReply(carga) : inter.editReply(carga);
+  }
+
+  const traduzido = await traduzirLongo(texto, idioma);
+  const carga = traduzido
+    ? {
+        embeds: [{
+          color: COR,
+          title: `${LINGUAS_MENU.find(([c]) => c === idioma)?.[2] ?? "🌐"} ${nomeDoIdioma(idioma)}`,
+          description: traduzido.slice(0, 3800) + (link ? `\n\n[⤴ Voltar / Back](${link})` : ""),
+          footer: { text: "Só você está vendo isto · troque o idioma abaixo" },
+        }],
+        components: menuTraduzir(id),
+      }
+    : { embeds: [{ color: COR, title: "❌ Não deu",
+        description: "Não consegui traduzir agora. Tente de novo em instantes." }] };
+
+  await inter.editReply(carga);
+}
+
+async function comandoDeInteracao(inter) {
+  const idioma = await idiomaDoJogador(inter.user.id);
+  const nome = inter.commandName;
+
+  if (nome === "mylanguage") {
+    const novo = inter.options.getString("language");
+    if (!LINGUAS_MENU.some(([c]) => c === novo)) {
+      return responder(inter, { title: "🤔 Idioma não reconhecido",
+        description: "Escolha uma das opções da lista." }, { idioma });
+    }
+    await inter.deferReply({ flags: 64 });
+    await salvarIdiomaJogador(inter.user.id, novo);
+    return responder(inter, { color: COR_OK, title: "🌐 Idioma salvo!",
+      description: `A partir de agora tudo aparece em **${nomeDoIdioma(novo)}**.` }, { idioma: novo });
+  }
+
+  if (nome === "Translate") {
+    const texto = String(inter.targetMessage?.content || "").trim();
+    await inter.deferReply({ flags: 64 });
+    if (!texto) {
+      return responder(inter, { title: "🤔 Mensagem vazia",
+        description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma });
+    }
+    const t = await traduzirLongo(texto, idioma);
+    return responder(inter, t
+      ? { title: `🌐 ${nomeDoIdioma(idioma)}`, description: t.slice(0, 3800),
+          footer: { text: "Quer mudar o idioma? Use /mylanguage" } }
+      : { title: "❌ Não deu", description: "Não consegui traduzir agora." }, { idioma: "pt" });
+  }
+
+  if (nome === "portal") {
+    return responder(inter, { title: "🏰 Portal da Aliança",
+      description: `Agenda no seu fuso, tutoriais dos eventos e ranking.\n\n${PORTAL}` },
+      { efemera: false, idioma });
+  }
+
+  if (nome === "player") {
+    const fid = String(inter.options.getString("id") || "").trim();
+    if (!/^\d{5,15}$/.test(fid)) {
+      return responder(inter, { title: "🤔 ID estranho",
+        description: "O ID do jogo é só números. Veja no seu perfil dentro do jogo." }, { idioma });
+    }
+    await inter.deferReply();
+    return responder(inter, await embedJogador(fid), { idioma });
+  }
+
+  if (nome === "settings") {
+    await inter.deferReply({ flags: 64 });   // so quem mandou ve
+    let embed;
+    try {
+      embed = await comandoSettings(inter);
+    } catch (e) {
+      const m = String(e?.message || "");
+      embed = { title: "❌ Não deu", description:
+        m === "grande" ? "Esse arquivo passa de 20 MB. Mande um menor ou use um link."
+        : m === "link" ? "O link precisa começar com `https://`."
+        : m === "baixar" ? "Não consegui baixar essa imagem. Confira se o link abre direto no arquivo."
+        : m === "subir" ? "Baixei o arquivo mas não consegui guardar. Tente de novo."
+        : "Algo falhou. Tente de novo em instantes." };
+    }
+    return responder(inter, embed, { idioma });
+  }
+
+  /* Daqui pra baixo precisa de alianca ligada. */
+  const vinculo = await aliancaCompleta(inter.guildId);
+  if (!vinculo) {
+    return responder(inter, {
+      title: "🔗 Falta ligar este servidor à aliança",
+      description: "Um oficial resolve aqui mesmo:\n\n`/settings server code:<código de oficial>`\n\n" +
+        `O código está no [portal](${PORTAL}), em **Painel do oficial → Minha aliança**.`,
+    }, { idioma });
+  }
+  const tag = tagBonita(vinculo.aliancas || {});
+
+  if (nome === "events") {
+    await inter.deferReply();
+    return responder(inter, await embedEventos(vinculo.alianca_id, tag), { idioma });
+  }
+
+  if (nome === "ranking") {
+    let quantos = inter.options.getInteger("amount") ?? 15;
+    quantos = Math.max(1, Math.min(100, quantos));
+    await inter.deferReply();
+    const a = vinculo.aliancas || {};
+    let embed = null;
+    try { embed = await rankingDoJogo(a.servidor, a.tag, quantos, tag); } catch { /* reserva abaixo */ }
+    if (!embed) {
+      try { embed = await rankingDoPortal(vinculo.alianca_id, tag); }
+      catch { embed = { title: "❌ Algo falhou", description: "Não consegui montar o ranking agora." }; }
+    }
+    return responder(inter, embed, { idioma });
+  }
+
+  return responder(inter, { title: "🤷 Não conheço esse comando" }, { idioma });
+}
+
+client.on("interactionCreate", async (inter) => {
+  try {
+    if (inter.isStringSelectMenu()) {
+      if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
+      if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
+      return;
+    }
+    /* Autocompletar do nome do evento: sem isto o oficial teria que digitar
+       "Urso (Bear Trap) 1" exatamente igual, acentos e parenteses inclusive. */
+    if (inter.isAutocomplete()) {
+      const digitado = String(inter.options.getFocused() || "").toLowerCase();
+      const evs = await rpc("discord_eventos_do_guild", { p_guild: inter.guildId }).catch(() => []);
+      return inter.respond((evs || [])
+        .filter((e) => !digitado || String(e.titulo).toLowerCase().includes(digitado))
+        .slice(0, 25)
+        .map((e) => ({ name: (e.tem_gif ? "🖼️ " : "") + e.titulo, value: e.titulo })));
+    }
+
+    if (inter.isChatInputCommand() || inter.isMessageContextMenuCommand()) {
+      return await comandoDeInteracao(inter);
+    }
+  } catch (e) {
+    console.error("interacao: falhou:", e?.message || e);
+    /* Erro sem resposta vira "Esta interação falhou", que nao diz nada a
+       ninguem. Uma frase honesta e' melhor que o aviso generico do Discord. */
+    const aviso = { content: "❌ Algo falhou aqui do meu lado. Tente de novo em instantes.", flags: 64 };
+    if (inter.deferred || inter.replied) await inter.editReply(aviso).catch(() => {});
+    else await inter.reply(aviso).catch(() => {});
+  }
+});
+
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
@@ -2704,6 +3259,52 @@ async function separarComandos() {
   }
 }
 
+/* ---------------- Tirar a trava de HTTP ----------------
+
+   Enquanto o aplicativo tem um "interactions endpoint URL" configurado, o
+   Discord NAO entrega interacao nenhuma pelo gateway: clique, comando e menu
+   viram POST pra aquela URL. Foi por isso que este processo, que ve tudo o
+   que acontece no chat, era cego pra qualquer botao -- e por isso que metade
+   do CYRON morava numa Edge Function separada, com dois deploys, dois lugares
+   pra procurar bug e o limite de 3 segundos de resposta HTTP.
+
+   Os tratadores ja estao neste arquivo (interactionCreate acima). Enquanto a
+   URL existir, eles nascem dormindo: nada chega. Limpando a URL aqui, no
+   mesmo processo que os carrega, nao existe janela em que o Discord entrega
+   pra ninguem -- quem apaga e' exatamente quem passa a atender.
+
+   Faco isso uma vez por partida e so' se ainda estiver setado. Se o PATCH
+   falhar, digo alto: o sintoma de falhar em silencio seria "todos os comandos
+   pararam" horas depois, sem nada obvio ligando uma coisa a outra. */
+const API = "https://discord.com/api/v10";
+
+async function soltarAsInteracoes() {
+  if (!umaVezPorProcesso("soltar-interacoes")) return;
+  const cabecalho = { Authorization: `Bot ${TOKEN}`, "Content-Type": "application/json" };
+  try {
+    const r = await fetch(`${API}/applications/@me`, { headers: cabecalho });
+    if (!r.ok) throw new Error(`GET ${r.status} ${(await r.text()).slice(0, 200)}`);
+    const app = await r.json();
+
+    if (!app.interactions_endpoint_url) {
+      console.log("interações: já chegam pelo gateway (nenhum endpoint HTTP configurado)");
+      return;
+    }
+
+    console.log(`interações: tirando a trava de HTTP (${app.interactions_endpoint_url})`);
+    const p = await fetch(`${API}/applications/@me`, {
+      method: "PATCH",
+      headers: cabecalho,
+      body: JSON.stringify({ interactions_endpoint_url: null }),
+    });
+    if (!p.ok) throw new Error(`PATCH ${p.status} ${(await p.text()).slice(0, 300)}`);
+    console.log("interações: trava removida; comandos e botões agora vêm direto pro bot");
+  } catch (e) {
+    console.error("interações: NÃO consegui limpar o endpoint HTTP:", e?.message || e);
+    console.error("interações: os comandos continuam indo pra Edge Function. Nada quebrou, mas o bot segue cego pra botão.");
+  }
+}
+
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
   /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
@@ -2712,6 +3313,7 @@ client.once("clientReady", () => {
   garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
   repararInstalacoes().catch((e) => console.error("instalar: reparo inicial falhou:", e?.message || e));
   separarComandos();
+  soltarAsInteracoes();
   setInterval(() => {
     /* Reparo primeiro: sem porta e sem fonte, as outras duas nao tem o que
        montar nem onde postar. */
