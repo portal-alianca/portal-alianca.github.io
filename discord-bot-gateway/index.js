@@ -2304,6 +2304,34 @@ client.on("guildCreate", async (guild) => {
   }
 });
 
+const jaOrientado = new Map(); // `${canal}:${pessoa}` -> quando
+const ESPERA_ORIENTAR = 10 * 60 * 1000;
+
+async function orientarNaReplica(msg, servidor, replica) {
+  const chave = `${msg.channel.id}:${msg.author.id}`;
+  const ultima = jaOrientado.get(chave) || 0;
+  if (Date.now() - ultima < ESPERA_ORIENTAR) return;
+  jaOrientado.set(chave, Date.now());
+
+  const linhas = ["📖 Este canal é uma **cópia traduzida** — o que você escrever aqui não vai para ninguém."];
+
+  /* Onde ele deveria escrever depende do que o servidor tem. */
+  const sala = (await sb(
+    `discord_chat_espelho?servidor_id=eq.${servidor.id}&idioma=eq.${encodeURIComponent(replica.idioma)}` +
+    `&canal_id=not.is.null&select=canal_id`))?.[0];
+  if (sala) {
+    linhas.push(`💬 Para conversar e ser lido em todos os idiomas: <#${sala.canal_id}>`);
+  }
+
+  const fonte = [...(await fontesReplica(servidor.id))]
+    .find(([, tipo]) => tipo === replica.tipo);
+  if (fonte) {
+    linhas.push(`✍️ Para publicar algo que apareça traduzido aqui: <#${fonte[0]}>`);
+  }
+
+  await msg.reply({ content: linhas.join("\n"), allowedMentions: { repliedUser: false } }).catch(() => {});
+}
+
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
@@ -2381,6 +2409,21 @@ client.on("messageCreate", async (msg) => {
        O corte na interface (esconder botao, nao oferecer) seria enfeite: o
        gasto acontece no momento em que a mensagem chega, entao e' aqui que ele
        tem que parar. */
+    /* Gente escrevendo numa REPLICA nao aciona nada -- replica e' destino, nao
+       origem. E o dono do servidor passa por cima do so-leitura, entao pra ele
+       o canal parece um chat normal: ele digita, a mensagem aparece, e nada
+       acontece do outro lado. Silencio de novo, e do pior tipo: parece que
+       funcionou.
+
+       Entao o bot diz onde e' o lugar certo. Uma vez a cada dez minutos por
+       pessoa e canal -- repetir a cada frase seria trocar um silencio ruim por
+       um papagaio. */
+    const aqui = (await replicasDoIdioma(servidorId)).find((r) => r.canal_id === msg.channel.id);
+    if (aqui) {
+      await orientarNaReplica(msg, servidor, aqui);
+      return;
+    }
+
     const espelho = planoDe(servidor) === "pago" ? await canaisEspelho(servidorId) : [];
     const origem = espelho.find((c) => c.canal_id === msg.channel.id);
     if (origem) {
