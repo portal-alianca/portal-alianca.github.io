@@ -2155,6 +2155,35 @@ function rotuloDoCanal(nome) {
   return limpo.slice(0, 40) || "canal";
 }
 
+/* O painel do servidor.
+
+   Antes era um bloco de texto que misturava estado com manual de instrucoes, e
+   pra saber quantos idiomas cabiam voce lia um paragrafo. Agora o estado vem
+   primeiro, em campos que se leem de relance, e o manual vira uma linha no pe.
+
+   Embed em vez de texto puro por um motivo pratico, nao estetico: campo de
+   embed alinha em grade e aceita uma cor. "1 de 2" ao lado de "2 de 3" com uma
+   faixa amarela na lateral diz num piscar o que tres paragrafos diriam lendo. */
+function corDoPainel(cheio, esperando) {
+  if (esperando) return 0xB4534A;   // alguem ficou de fora
+  if (cheio) return 0xB08A2E;       // no teto
+  return 0x2E8B7A;                  // com folga
+}
+
+/* A assinatura do que esta desenhado. Se nao mudou, nao edita.
+
+   Sem isto o cartao era reescrito a cada volta do relogio, pra sempre, mesmo
+   sem nada ter mudado -- uma chamada por servidor a cada dez minutos e um
+   "(editado)" que nao correspondia a mudanca nenhuma. */
+function assinaturaDoCartao(embed) {
+  return JSON.stringify([
+    embed.description,
+    embed.color,
+    (embed.fields || []).map((f) => [f.name, f.value]),
+    embed.footer?.text,
+  ]);
+}
+
 async function cartaoDeConfig(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
@@ -2166,79 +2195,98 @@ async function cartaoDeConfig(guild, servidor) {
     ? new Date(teste).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
     : null;
 
-  /* Canal apagado nao entra no cartao. O Discord desenha "#desconhecido" pra
-     id que nao existe mais, e isso no cartao de configuracao parece defeito --
-     e' so' uma linha esperando a proxima varredura limpar. */
+  /* Canal apagado nao entra no painel. O Discord desenha "#desconhecido" pra id
+     que nao existe mais, e isso aqui parece defeito -- e' so' uma linha
+     esperando a proxima varredura limpar. */
   const vivas = fontes.filter((f) => guild.channels.cache.has(f.canal_id));
   const fila = esperando.get(servidor.id) || [];
 
-  /* Um sinal antes do numero, pra dar pra ler sem contar: cheio grita, quase
-     cheio avisa, com folga nao chama atencao. */
+  /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
+  const noTeto = vivas.length >= limite.fontes || idiomas.length >= limite.idiomas;
 
-  const lista = vivas.length
-    ? vivas.map((f) => `• <#${f.canal_id}>`).join("\n")
-    : "_nenhum ainda — mande os canais aqui embaixo_";
+  const campos = [
+    {
+      name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
+      value: vivas.length
+        ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
+        : "_nenhum ainda — mande os canais aqui embaixo_",
+    },
+    {
+      name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
+      value: idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join("\n") : "_ninguém escolheu ainda_",
+      inline: true,
+    },
+    {
+      name: "💬 Tradutor por mensagem",
+      value: servidor.tradutor_topico
+        ? "🟢 **ligado**\nbotão de tradução em cada mensagem"
+        : "⚪ **desligado**\n`tradutor ligar` para ativar",
+      inline: true,
+    },
+  ];
 
-  const linhas = [
-    "## ⚙️ CYRON — configuração",
-    "",
-    "**Canais que eu traduzo**",
-    lista,
-    "",
-    "O que for postado neles sai traduzido numa cópia por idioma, dentro da categoria de quem escolheu aquele idioma.",
-    "",
-    `**Tradutor por mensagem:** ${servidor.tradutor_topico ? "🟢 ligado" : "⚪ desligado"} ` +
-      "— botão de tradução em cada mensagem dos canais comuns. `tradutor ligar` / `tradutor desligar`",
-    "",
-    "**Para adicionar**, mande os canais aqui neste canal:",
-    "```",
-    "#canal1 #canal2",
-    "```",
-    "**Para tirar:** `remover #canal`",
-    "",
-    "Digite `#` e o Discord abre a lista de canais do servidor — é só clicar nos que você quer.",
-    "",
-    "---",
-    `**Plano ${planoDe(servidor).toUpperCase()}**${emTeste ? ` — teste até ${emTeste}` : ""}`,
-    "",
-    `${marca(vivas.length, limite.fontes)} **Canais traduzidos:** ${vivas.length} de ${limite.fontes}`,
-    `${marca(idiomas.length, limite.idiomas)} **Idiomas:** ${idiomas.length} de ${limite.idiomas}` +
-      (idiomas.length ? ` — ${idiomas.map((i) => nomeDoIdioma(i.idioma)).join(", ")}` : ""),
-    ...(fila.length
-      ? ["",
-         "⚠️ **Escolheram e não couberam:**",
-         ...fila.map((f) => `• ${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`),
-         "_Para essas pessoas o bot parece não ter funcionado: elas escolheram o idioma e não receberam canal nenhum._"]
-      : []),
-  ].join("\n");
+  if (fila.length) {
+    campos.push({
+      name: "⚠️ Escolheram um idioma e não couberam",
+      value: fila.map((f) => `${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`).join("\n") +
+        "\n_Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum._",
+    });
+  }
+
+  campos.push({
+    name: "Como mudar",
+    value: [
+      "`#canal1 #canal2` — passo a traduzir esses canais",
+      "`remover #canal` — paro de traduzir",
+      "`tradutor ligar` / `tradutor desligar`",
+      "",
+      "_Digite `#` e o Discord abre a lista de canais._",
+    ].join("\n"),
+  });
+
+  const embed = {
+    title: "⚙️ CYRON",
+    description: "O que for postado nos canais abaixo sai traduzido numa cópia por idioma, " +
+      "dentro da categoria de quem escolheu aquele idioma.",
+    color: corDoPainel(noTeto, fila.length > 0),
+    fields: campos,
+    footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${emTeste ? ` · teste até ${emTeste}` : ""}` },
+  };
 
   const canal = await guild.channels.fetch(servidor.canal_config).catch(() => null);
   if (!canal) return;
 
-  /* Edita o cartao em vez de postar outro: assim o canal nao vira um historico
-     de estados velhos, onde o de cima e' o unico verdadeiro e os de baixo
-     mentem. */
   if (servidor.msg_config) {
     const antiga = await canal.messages.fetch(servidor.msg_config).catch(() => null);
-    if (antiga) { await antiga.edit({ content: linhas }); return; }
+    if (antiga) {
+      const antes = antiga.embeds?.[0] ? assinaturaDoCartao(antiga.embeds[0].toJSON()) : null;
+      if (antes !== assinaturaDoCartao(embed)) await antiga.edit({ content: null, embeds: [embed] });
+      return;
+    }
   }
-  const nova = await canal.send({ content: linhas, allowedMentions: { parse: [] } });
-  await nova.pin("cartão de configuração").catch(() => {});
+
+  const nova = await canal.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  await nova.pin("painel do CYRON").catch(() => {});
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_config: nova.id });
   servidor.msg_config = nova.id;
 }
 
-/* Mandar canais na sala de comando E' o comando.
+/* Mudanca que deu certo nao vira mensagem nova.
 
-   Eu tinha exigido a palavra "fonte" na frente. Na primeira vez que alguem
-   usou, a pessoa fez o obvio -- digitou "#", escolheu os canais na lista que o
-   Discord abre, e mandou -- e o bot ficou calado. Duas vezes errado: exigir uma
-   palavra magica que nao protege de nada, e nao dizer nada quando ela falta.
+   O painel e' o cartao fixado, e ele e' EDITADO. Se cada ajuste tambem
+   respondesse por escrito, o canal viraria um rolo de confirmacoes velhas onde
+   so a de cima e' verdade -- que e' exatamente o defeito que o cartao editavel
+   existe pra evitar.
 
-   Nesta sala nao ha outra coisa a fazer. Mensagem com canal dentro so pode
-   significar "sao estes". A palavra continua aceita, pra quem leu o cartao,
-   mas nao e' mais obrigatoria. */
+   Entao o retorno de sucesso e' um ✅ na propria mensagem de quem pediu, e o
+   resultado aparece no cartao. Erro, recusa e limite continuam sendo resposta
+   escrita: essas a pessoa precisa LER, e sumir com elas seria o silencio de
+   sempre. */
+async function confirmado(msg) {
+  await msg.react("✅").catch(() => {});
+}
+
 async function comandoDeConfig(msg, servidor) {
   const escolhidos = [...msg.mentions.channels.values()]
     .filter((c) => c.type === ChannelType.GuildText);
@@ -2264,11 +2312,7 @@ async function comandoDeConfig(msg, servidor) {
     servidor.tradutor_topico = ligar;
     cacheServidor.delete(msg.guild.id);
 
-    await msg.reply(ligar
-      ? "✅ Tradutor por mensagem **ligado**. Cada mensagem dos canais comuns ganha um botão de tradução — " +
-        "quem clicar lê na língua dele, e só quem clica custa tradução.\n" +
-        "_Se achar intrusivo, `tradutor desligar` desfaz._"
-      : "✅ Tradutor por mensagem **desligado**. As cópias por idioma continuam funcionando normalmente.");
+    await confirmado(msg);
     await cartaoDeConfig(msg.guild, servidor);
     return true;
   }
@@ -2361,12 +2405,7 @@ async function comandoDeConfig(msg, servidor) {
   /* A resposta mostra a lista INTEIRA, nao so o que mudou. Confirmar apenas o
      ultimo canal foi o que deixou a pessoa achar que tinha tres: ela lia
      "agora eu traduzo #recursos" como "somei o #recursos". */
-  const lista = [...atuais].map((id) => `<#${id}>`).join(", ") || "_nenhum_";
-  await msg.reply(
-    `✅ Agora eu traduzo: ${lista}\n` +
-    (removendo
-      ? "As cópias do que saiu eu deixo onde estão — apague na mão se não quiser mais."
-      : "Montando as cópias por idioma agora…"));
+  await confirmado(msg);
 
   /* Monta na hora, com a pessoa olhando. Esperar a volta do relogio era o que
      matava a primeira impressao: quem acabou de apontar os canais fica dez
