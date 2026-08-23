@@ -894,9 +894,16 @@ async function garantirCanalDeChat(guild, sala, categoriaId) {
     reason: "sala de conversa do idioma",
   });
 
-  const webhook = await canal.createWebhook({ name: "CYRON espelho" });
-  await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`,
-    { canal_id: canal.id, webhook: webhook.url });
+  /* Mesma regra da replica: se nao ficou gravado, nao pode ficar de pe. */
+  let webhook;
+  try {
+    webhook = await canal.createWebhook({ name: "CYRON espelho" });
+    await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(sala.id)}`,
+      { canal_id: canal.id, webhook: webhook.url });
+  } catch (e) {
+    await canal.delete("não consegui registrar a sala; desfazendo").catch(() => {});
+    throw new Error(`sala de ${sala.idioma} desfeita: ${e?.message || e}`);
+  }
 
   sala.canal_id = canal.id;
   sala.webhook = webhook.url;
@@ -1187,11 +1194,28 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     reason: "replica do canal no idioma",
   });
 
-  const webhook = await canal.createWebhook({ name: "CYRON" });
-  await sbPost("discord_canal_idioma", {
-    servidor_id: servidorId, idioma: sala.idioma, tipo: def.tipo,
-    canal_id: canal.id, webhook: webhook.url,
-  });
+  /* Se a linha nao gravar, o canal VOLTA.
+
+     Sem isto, uma falha ao gravar deixa um canal que o bot nao conhece. A
+     varredura seguinte olha o banco, nao acha a replica, e cria outra -- e
+     outra, e outra, uma por passada, ate o teto de canais segurar. Foi
+     exatamente o que aconteceu: quatro canais iguais lado a lado porque um
+     CHECK no banco recusava o tipo depois de o canal ja existir.
+
+     Criar no Discord e gravar no banco nao podem ser feitos numa transacao so.
+     Como nao da' pra garantir que os dois aconteçam, garanto que nenhum
+     sobreviva sozinho. */
+  let webhook;
+  try {
+    webhook = await canal.createWebhook({ name: "CYRON" });
+    await sbPost("discord_canal_idioma", {
+      servidor_id: servidorId, idioma: sala.idioma, tipo: def.tipo,
+      canal_id: canal.id, webhook: webhook.url,
+    });
+  } catch (e) {
+    await canal.delete("não consegui registrar a réplica; desfazendo").catch(() => {});
+    throw new Error(`replica ${def.tipo}/${sala.idioma} desfeita: ${e?.message || e}`);
+  }
   console.log(`idioma: #${canal.name} criado`);
 }
 
@@ -2150,6 +2174,35 @@ async function comandoDeConfig(msg, servidor) {
      Somar e' o padrao que perdoa: o pior caso e' um canal a mais, que se tira
      com "remover #canal". Substituir sem querer apaga trabalho em silencio. */
   const removendo = /^(remover|remove|tirar|tira)\b/.test(texto);
+
+  /* Canal do proprio bot nao pode virar fonte.
+
+     Uma replica como fonte e' um laco: o bot escreve nela, ela alimenta a
+     replica dela, que ele escreve, que alimenta... Aqui o laco nao chega a
+     rodar solto -- o destino repete o de origem e a coisa para --, mas ele
+     enche o servidor de canal e traduz a mesma frase varias vezes. O mesmo
+     vale pro chat de idioma, pra sala de comando e pra porta de entrada:
+     nenhum deles e' lugar de conteudo original.
+
+     A checagem vem antes de qualquer gravacao, porque o estrago aqui e' criar
+     canal -- e canal criado por engano alguem tem que apagar na mao. */
+  if (!removendo) {
+    const proprios = new Set();
+    for (const r of (await sb(`discord_canal_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
+    for (const r of (await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&canal_id=not.is.null&select=canal_id`)) || []) proprios.add(r.canal_id);
+    for (const r of (await sb(`discord_convite_idioma?servidor_id=eq.${servidor.id}&select=canal_id`)) || []) proprios.add(r.canal_id);
+    if (servidor.canal_config) proprios.add(servidor.canal_config);
+
+    const meus = escolhidos.filter((c) => proprios.has(c.id));
+    if (meus.length) {
+      await msg.reply(
+        `🔁 ${meus.map((c) => `<#${c.id}>`).join(", ")} ${meus.length === 1 ? "é um canal meu" : "são canais meus"} — ` +
+        "eu já escrevo neles.\n" +
+        "Apontar um canal meu como fonte faria eu traduzir a minha própria tradução, e o servidor encheria de cópias. " +
+        "Escolha os canais onde **vocês** escrevem.");
+      return true;
+    }
+  }
 
   const antigas = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
