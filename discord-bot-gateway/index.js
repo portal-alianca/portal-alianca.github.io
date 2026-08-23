@@ -652,7 +652,7 @@ async function espelharMensagem(msg, lista, origem, texto) {
    varredura periodica faz o mesmo e ainda conserta o que sair do lugar
    sozinho -- cargo removido na mao, gente que entrou depois. */
 
-const PREFIXO_SALA = "teste-chat-";  // enquanto e' teste; depois vira "chat-"
+const PREFIXO_SALA = "chat-";
 const INTERVALO_SINCRONIA = 10 * 60 * 1000;
 
 /* Modo lento do proprio Discord, cinco segundos entre falas da mesma pessoa.
@@ -805,16 +805,28 @@ async function sincronizarSalas() {
         }
       }
 
-      /* Modo lento nas salas que nasceram antes dele. */
+      /* Conserta o que saiu do lugar nas salas ja existentes: nome e modo
+         lento. A sala e' achada pelo id guardado no banco, nunca pelo nome,
+         entao renomear e' seguro -- e precisa ser automatico porque as
+         primeiras salas nasceram com nome de teste e ninguem ia querer
+         renomear sete canais na mao a cada vez que o prefixo mudasse. */
       for (const sala of porIdioma.values()) {
         try {
           const canal = await guild.channels.fetch(sala.canal_id);
-          if (canal && canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
+          if (!canal) continue;
+
+          const nomeQuerido = `${PREFIXO_SALA}${sala.idioma.toLowerCase()}`;
+          if (canal.name !== nomeQuerido) {
+            await canal.setName(nomeQuerido, "nome padrao da sala de idioma");
+            console.log(`espelho: sala de ${sala.idioma} renomeada para #${nomeQuerido}`);
+          }
+
+          if (canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
             await canal.setRateLimitPerUser(SEGUNDOS_ENTRE_FALAS, "modo lento do chat espelhado");
             console.log(`espelho: modo lento de ${SEGUNDOS_ENTRE_FALAS}s na sala de ${sala.idioma}`);
           }
         } catch (e) {
-          console.error("espelho: nao consegui pôr modo lento em", sala.idioma, e?.message || e);
+          console.error("espelho: nao consegui acertar a sala de", sala.idioma, e?.message || e);
         }
       }
 
@@ -839,6 +851,118 @@ async function sincronizarSalas() {
       cacheEspelho.delete(aliancaId); // a proxima mensagem le a lista nova
     } catch (e) {
       console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
+    }
+  }
+}
+
+/* ---------------- portaria: o convite pro idioma nos canais publicos ----------
+
+   O hall de entrada so pega quem CHEGA agora. Quem ja estava no servidor
+   antes do seletor existir nunca passou por ele -- e e' justamente a maioria.
+   Entao o convite tem que ir aonde essas pessoas ja estao: nos canais que elas
+   abrem todo dia.
+
+   Sao dois papeis, na mesma tabela:
+
+   - "portao": o canal fecha pra escrita e ganha a mensagem de escolha. E' o
+     caso do chat geral. A ideia nao e' calar ninguem: e' que quem for falar
+     de de cara com o seletor, escolha, e caia na sala do proprio idioma --
+     onde a fala dele chega traduzida pros outros. Ler continua liberado, e a
+     conversa antiga continua ali.
+
+   - "convite": o canal segue publico e igual, so ganha a mensagem fixada
+     dizendo que agora da' pra receber o conteudo ja traduzido.
+
+   Em qualquer um dos dois a mensagem tem que sair PELO BOT, nao por webhook:
+   webhook comum nao carrega componente, e sem componente nao ha seletor.
+
+   O id da mensagem fica guardado. Se ela ainda existe, nao se posta de novo --
+   e' isso que deixa esta funcao rodar de dez em dez minutos sem entulhar o
+   canal. Se alguem apagar, a proxima passada repoe. */
+
+const CONVITE = {
+  portao: [
+    "🌐 **Selecione seu idioma / Select your language**",
+    "",
+    "🇧🇷 Este chat agora é traduzido. Escolha seu idioma abaixo e você entra na sala da aliança no seu próprio idioma.",
+    "🇬🇧 This chat is now translated. Pick your language below and you'll join the alliance room in your own language.",
+    "🇸🇦 أصبحت هذه الدردشة مترجمة. اختر لغتك أدناه وستنضم إلى غرفة التحالف بلغتك.",
+    "🇪🇸 Este chat ahora está traducido. Elige tu idioma abajo y entrarás en la sala de la alianza en tu idioma.",
+    "🇨🇳 此聊天现已支持翻译。在下方选择你的语言，即可进入你所用语言的联盟聊天室。",
+    "",
+    "👉 O que você escrever lá chega traduzido para todo mundo — e o que os outros escreverem chega traduzido para você.",
+    "👉 What you write there reaches everyone translated — and what they write reaches you translated.",
+  ].join("\n"),
+  convite: [
+    "🌐 **Agora dá para ler tudo no seu idioma / Now you can read this in your language**",
+    "",
+    "🇧🇷 Escolha seu idioma abaixo e a aliança passa a falar com você no seu idioma.",
+    "🇬🇧 Pick your language below and the alliance starts speaking to you in your own language.",
+    "🇸🇦 اختر لغتك أدناه وسيبدأ التحالف بالتحدث معك بلغتك.",
+    "🇪🇸 Elige tu idioma abajo y la alianza empezará a hablarte en tu idioma.",
+    "🇨🇳 在下方选择你的语言，联盟将用你的语言与你交流。",
+  ].join("\n"),
+};
+
+/* Fechar o portao e' tirar SO o direito de falar, e tirar os tres jeitos de
+   falar -- mensagem, topico novo e resposta dentro de topico. Deixar qualquer
+   um deles aberto seria fechar a porta da frente e esquecer a janela. */
+async function fecharPortao(canal) {
+  const todos = canal.guild.roles.everyone.id;
+  const atual = canal.permissionOverwrites.cache.get(todos);
+  if (atual?.deny.has(PermissionFlagsBits.SendMessages)) return;
+  await canal.permissionOverwrites.edit(todos, {
+    SendMessages: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+  }, { reason: "chat geral virou hall de escolha de idioma" });
+  console.log(`portaria: #${canal.name} fechado pra escrita`);
+}
+
+async function garantirConvites() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const aliancaId = await aliancaDoGuild(guild.id);
+      if (!aliancaId) continue;
+
+      const portas = await sb(
+        `discord_convite_idioma?alianca_id=eq.${aliancaId}&select=canal_id,tipo,mensagem_id`);
+      if (!portas?.length) continue;
+
+      for (const porta of portas) {
+        try {
+          const canal = await guild.channels.fetch(porta.canal_id).catch(() => null);
+          if (!canal) {
+            console.error("portaria: canal", porta.canal_id, "nao existe mais");
+            continue;
+          }
+
+          if (porta.tipo === "portao") await fecharPortao(canal);
+
+          if (porta.mensagem_id) {
+            const viva = await canal.messages.fetch(porta.mensagem_id).catch(() => null);
+            if (viva) continue; // ja esta la, nao posta de novo
+          }
+
+          const posta = await canal.send({
+            content: CONVITE[porta.tipo] || CONVITE.convite,
+            components: menuIdioma(),
+            allowedMentions: { parse: [] },
+          });
+          await posta.pin("convite de idioma").catch((e) =>
+            console.error("portaria: nao consegui fixar em", canal.name, e?.message || e));
+
+          await sbPatch(
+            `discord_convite_idioma?alianca_id=eq.${aliancaId}&canal_id=eq.${encodeURIComponent(porta.canal_id)}`,
+            { mensagem_id: posta.id });
+          console.log(`portaria: convite posto em #${canal.name} (${porta.tipo})`);
+        } catch (e) {
+          console.error("portaria: falhei no canal", porta.canal_id, e?.message || e);
+        }
+      }
+    } catch (e) {
+      console.error("portaria: falhei no servidor", guild.id, e?.message || e);
     }
   }
 }
@@ -915,8 +1039,10 @@ client.once("clientReady", () => {
   /* Uma vez ao subir, pra quem trocou de idioma com o bot fora do ar nao
      ficar esperando dez minutos, e depois de tempos em tempos. */
   sincronizarSalas().catch((e) => console.error("espelho: sincronia inicial falhou:", e?.message || e));
+  garantirConvites().catch((e) => console.error("portaria: passada inicial falhou:", e?.message || e));
   setInterval(() => {
     sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
+    garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   }, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
