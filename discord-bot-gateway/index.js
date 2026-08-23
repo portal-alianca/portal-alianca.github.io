@@ -813,13 +813,28 @@ const REPLICAS = [
   { tipo: "game",   prefixo: "game-",   assunto: "Recados do jogo" },
 ];
 
+/* A replica se chama como o canal que ela copia, mais o codigo do idioma:
+   "🎯-event-guide📢" vira "🎯-event-guide📢-pt". Nome inventado ("evento-pt")
+   obriga cada pessoa a aprender um vocabulario novo pra achar o mesmo canal de
+   sempre; copiando o original ela reconhece de primeira.
+
+   O nome vem do Discord, nao de uma constante daqui: se o oficial renomear o
+   canal original, as sete replicas seguem atras sozinhas.
+
+   Se a fonte sumir, o prefixo simples serve de rede -- e' feio, mas e' melhor
+   do que nao criar o canal. */
+function nomeDaReplica(modelo, def, idioma) {
+  const base = modelo || def.prefixo.replace(/-$/, "");
+  return `${base}-${idioma}`.toLowerCase().slice(0, 100);
+}
+
 const cacheFontes = new Map(); // aliancaId -> { v: Map(canal_id -> tipo), t }
 async function fontesReplica(aliancaId) {
   const achado = cacheFontes.get(aliancaId);
   if (achado && Date.now() - achado.t < 60 * 1000) return achado.v;
   let v = new Map();
   try {
-    const r = await sb(`discord_fonte_replica?alianca_id=eq.${aliancaId}&select=canal_id,tipo`) || [];
+    const r = await sb(`discord_fonte_replica?alianca_id=eq.${aliancaId}&select=canal_id,tipo&order=criado_em.asc`) || [];
     v = new Map(r.map((f) => [f.canal_id, f.tipo]));
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheFontes.set(aliancaId, { v, t: Date.now() });
@@ -871,9 +886,9 @@ async function garantirCategoria(guild, sala) {
   return categoria;
 }
 
-async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao) {
+async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao, nome) {
   const canal = await guild.channels.create({
-    name: `${def.prefixo}${sala.idioma.toLowerCase()}`,
+    name: nome,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
@@ -898,38 +913,155 @@ async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao) 
   console.log(`idioma: #${canal.name} criado`);
 }
 
+/* Arrumar posicao e nome sao as duas coisas aqui que podem virar briga sem
+   fim, e as duas pelo mesmo motivo: eu peco um estado que o Discord pode nao
+   me devolver igual.
+
+   Posicao: so UMA categoria cabe na posicao zero. Pedir zero pras sete a cada
+   passada faria seis delas continuarem "erradas" pra sempre -- seis chamadas
+   de dez em dez minutos, embaralhando a barra lateral de quem estivesse
+   olhando. O que se quer nao e' "todas na zero", e' "todas acima do resto", e
+   isso se consegue empurrando cada uma pro topo UMA vez.
+
+   Nome: o Discord normaliza o que recebe. Se ele devolver o nome diferente do
+   que pedi -- e com emoji e sequencia ZWJ no meio isso e' bem possivel -- a
+   comparacao nunca casa e eu renomearia pra sempre, ate estourar o limite de
+   duas trocas de nome a cada dez minutos.
+
+   Nos dois casos a saida e' a mesma: tentar uma vez por partida do bot. Se
+   deu certo, nao precisa de novo; se nao deu, nao adianta insistir a cada dez
+   minutos -- adianta aparecer no log e alguem olhar. */
+const jaTentado = new Set();
+function umaVezPorProcesso(chave) {
+  if (jaTentado.has(chave)) return false;
+  jaTentado.add(chave);
+  return true;
+}
+
+/* Qual canal original empresta o nome pra cada tipo de replica. Dois canais
+   podem alimentar o mesmo tipo (evento vem do event-guide E do hunting-trap):
+   quem empresta e' o primeiro cadastrado, por isso a consulta vem ordenada. */
+async function modelosDeNome(guild, aliancaId) {
+  const modelos = new Map();
+  for (const [canalId, tipo] of await fontesReplica(aliancaId)) {
+    if (modelos.has(tipo)) continue;
+    const canal = await guild.channels.fetch(canalId).catch(() => null);
+    if (canal) modelos.set(tipo, canal.name);
+  }
+  return modelos;
+}
+
+/* Some com o canal original pra quem ja escolheu idioma.
+
+   E' o passo que faz a mudanca valer: sem ele a pessoa fica com o dobro de
+   canais -- o antigo em ingles e a replica na lingua dela -- e o aviso do urso
+   aparece duas vezes, uma que ela entende e outra que nao. Escolher um idioma
+   tem que SIMPLIFICAR a barra lateral, nao dobrar.
+
+   Esconde so onde existe substituto: a regra e' "some com o original apenas
+   se a replica daquele idioma existir pra receber o conteudo". Canal sem
+   replica (photos-art, welcome) fica visivel pra todo mundo.
+
+   Quem ainda nao escolheu continua vendo tudo como antes -- o cargo do idioma
+   e' a chave, e quem nao tem cargo nao e' afetado. E quem perder o cargo volta
+   a enxergar sozinho, sem ninguem precisar desfazer nada. */
+async function esconderOriginais(guild, aliancaId, cargosComReplica) {
+  if (!cargosComReplica.size) return;
+
+  const fontes = [...(await fontesReplica(aliancaId)).keys()];
+  let portoes = [];
+  try {
+    portoes = ((await sb(
+      `discord_convite_idioma?alianca_id=eq.${aliancaId}&tipo=eq.portao&select=canal_id`)) || [])
+      .map((p) => p.canal_id);
+  } catch { /* sem portao a lista so fica menor */ }
+
+  for (const canalId of new Set([...fontes, ...portoes])) {
+    const canal = await guild.channels.fetch(canalId).catch(() => null);
+    if (!canal) continue;
+    for (const cargo of cargosComReplica) {
+      try {
+        const atual = canal.permissionOverwrites.cache.get(cargo);
+        if (atual?.deny.has(PermissionFlagsBits.ViewChannel)) continue;
+        await canal.permissionOverwrites.edit(cargo, { ViewChannel: false },
+          { reason: "quem escolheu idioma le a replica, nao o original" });
+        console.log(`idioma: #${canal.name} escondido de quem tem o cargo ${cargo}`);
+      } catch (e) {
+        console.error("idioma: nao consegui esconder", canal.name, e?.message || e);
+      }
+    }
+  }
+}
+
 /* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
    sala. Roda junto da sincronia das salas. */
 async function montarCategorias(guild, aliancaId, porIdioma) {
-  const jaTem = new Set(
-    ((await sb(`discord_canal_idioma?alianca_id=eq.${aliancaId}&select=idioma,tipo,canal_id`)) || [])
-      .map((r) => `${r.idioma}|${r.tipo}`));
+  const existentes = (await sb(
+    `discord_canal_idioma?alianca_id=eq.${aliancaId}&select=idioma,tipo,canal_id`)) || [];
+  const porChave = new Map(existentes.map((r) => [`${r.idioma}|${r.tipo}`, r.canal_id]));
+  const modelos = await modelosDeNome(guild, aliancaId);
+  const prontos = new Set();
 
   for (const sala of porIdioma.values()) {
     try {
       const categoria = await garantirCategoria(guild, sala);
       if (!categoria) continue;
 
+      /* Categoria do idioma no topo da barra lateral. Cada pessoa enxerga
+         so a sua, entao pra ela isso e' "o meu servidor primeiro, o resto
+         depois" -- que e' o ponto. */
+      if (categoria.position !== 0 && umaVezPorProcesso(`topo:${categoria.id}`)) {
+        await categoria.setPosition(0)
+          .then(() => console.log(`idioma: categoria de ${sala.idioma} subiu pro topo`))
+          .catch((e) => console.error("idioma: nao consegui subir a categoria de", sala.idioma, e?.message || e));
+      }
+
       for (let i = 0; i < REPLICAS.length; i++) {
         const def = REPLICAS[i];
-        if (jaTem.has(`${sala.idioma}|${def.tipo}`)) continue;
-        await garantirReplica(guild, aliancaId, sala, categoria, def, i);
+        const nome = nomeDaReplica(modelos.get(def.tipo), def, sala.idioma);
+        const jaExiste = porChave.get(`${sala.idioma}|${def.tipo}`);
+
+        if (!jaExiste) {
+          await garantirReplica(guild, aliancaId, sala, categoria, def, i, nome);
+          continue;
+        }
+        /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
+           replica nasceu com o nome antigo, inventado). */
+        const canal = await guild.channels.fetch(jaExiste).catch(() => null);
+        if (canal && canal.name !== nome && umaVezPorProcesso(`nome:${canal.id}:${nome}`)) {
+          console.log(`idioma: #${canal.name} vira #${nome}`);
+          await canal.setName(nome, "replica segue o nome do canal original");
+        }
       }
 
       /* O chat entra por ultimo na lista: ler o aviso vem antes de responder
-         a ele. E ele ja existia solto no topo, entao aqui e' mudanca de lugar,
+         a ele. Ele ja existia solto no topo, entao aqui e' mudanca de lugar,
          nao criacao -- as permissoes dele sao proprias e ficam como estao. */
       const chat = await guild.channels.fetch(sala.canal_id).catch(() => null);
-      if (chat && chat.parentId !== categoria.id) {
-        await chat.setParent(categoria.id, { lockPermissions: false, reason: "chat vai pra categoria do idioma" });
-        await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
-        console.log(`idioma: #${chat.name} movido pra ${categoria.name}`);
+      if (chat) {
+        const nomeChat = nomeDaReplica(modelos.get("chat"), { prefixo: PREFIXO_SALA }, sala.idioma);
+        if (chat.name !== nomeChat && umaVezPorProcesso(`nome:${chat.id}:${nomeChat}`)) {
+          console.log(`idioma: chat de ${sala.idioma} vira #${nomeChat}`);
+          await chat.setName(nomeChat, "chat segue o nome do canal original");
+        }
+        if (chat.parentId !== categoria.id) {
+          await chat.setParent(categoria.id, { lockPermissions: false, reason: "chat vai pra categoria do idioma" });
+          await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
+          console.log(`idioma: chat de ${sala.idioma} movido pra ${categoria.name}`);
+        }
       }
+
+      if (sala.role_id) prontos.add(sala.role_id);
     } catch (e) {
       console.error("idioma: nao consegui montar a categoria de", sala.idioma, e?.message || e);
     }
   }
+
   cacheReplicas.delete(aliancaId);
+
+  /* So depois de tudo montado: esconder o original de quem ainda nao tem pra
+     onde ir deixaria a pessoa sem canal nenhum. */
+  await esconderOriginais(guild, aliancaId, prontos);
 }
 
 /* Leva o aviso do canal publico pra replica de cada idioma.
@@ -1050,21 +1182,17 @@ async function sincronizarSalas() {
         }
       }
 
-      /* Conserta o que saiu do lugar nas salas ja existentes: nome e modo
-         lento. A sala e' achada pelo id guardado no banco, nunca pelo nome,
-         entao renomear e' seguro -- e precisa ser automatico porque as
-         primeiras salas nasceram com nome de teste e ninguem ia querer
-         renomear sete canais na mao a cada vez que o prefixo mudasse. */
+      /* Modo lento nas salas que nasceram antes dele.
+
+         O NOME da sala nao se decide mais aqui: quem manda nele e' o canal
+         original que a replica copia (ver montarCategorias). Duas partes do
+         codigo querendo nomes diferentes renomeariam o canal de dez em dez
+         minutos, cada uma desfazendo a outra, ate estourar o limite de duas
+         trocas de nome a cada dez minutos que o Discord impoe. */
       for (const sala of porIdioma.values()) {
         try {
           const canal = await guild.channels.fetch(sala.canal_id);
           if (!canal) continue;
-
-          const nomeQuerido = `${PREFIXO_SALA}${sala.idioma.toLowerCase()}`;
-          if (canal.name !== nomeQuerido) {
-            await canal.setName(nomeQuerido, "nome padrao da sala de idioma");
-            console.log(`espelho: sala de ${sala.idioma} renomeada para #${nomeQuerido}`);
-          }
 
           if (canal.rateLimitPerUser !== SEGUNDOS_ENTRE_FALAS) {
             await canal.setRateLimitPerUser(SEGUNDOS_ENTRE_FALAS, "modo lento do chat espelhado");
