@@ -2307,6 +2307,23 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
   return linhas;
 }
 
+/* Canais que ja' tem outro papel no CYRON.
+
+   Uma linha de fonte com gera_replica=false nao produz copia nenhuma: ela
+   existe pra EMPRESTAR O NOME. Na [TOP] e' o #general-chat, de quem as salas
+   de conversa por idioma tiram general-chat-pt, general-chat-ar e o resto.
+
+   Ele aparecia no menu desmarcado, e era um convite pra clicar. Marcar dava
+   erro (a linha dele ja existe, e o canal e' unico na tabela) e, se nao
+   desse, seria pior: as copias nasceriam com o mesmo nome das salas de
+   conversa, duas coisas diferentes chamadas general-chat-pt no mesmo
+   servidor. */
+async function fontesDeOutroPapel(servidor) {
+  const linhas = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.false&select=canal_id`) || [];
+  return new Set(linhas.map((l) => l.canal_id));
+}
+
 /* Quais canais podem virar fonte.
 
    O menu nativo do Discord (tipo 8) lista TODOS os canais e nao aceita lista
@@ -2323,9 +2340,10 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
 async function canaisElegiveis(guild, servidor, fontes) {
   const proprios = await canaisMeus(servidor);
   const escolhidos = new Set(fontes.map((f) => f.canal_id));
+  const comOutroPapel = await fontesDeOutroPapel(servidor);
 
   const candidatos = [...guild.channels.cache.values()]
-    .filter((c) => c.type === ChannelType.GuildText && !proprios.has(c.id))
+    .filter((c) => c.type === ChannelType.GuildText && !proprios.has(c.id) && !comOutroPapel.has(c.id))
     .sort((a, b) => a.rawPosition - b.rawPosition);
 
   if (candidatos.length <= 25) return candidatos;
@@ -2344,7 +2362,7 @@ async function montarPainel(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
   const idiomas = await sb(
-    `discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma`) || [];
+    `discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,canal_id`) || [];
   const limite = limitesDo(servidor);
   const teste = servidor.teste_ate ? Date.parse(servidor.teste_ate) : 0;
   const emTeste = teste > Date.now()
@@ -2391,6 +2409,25 @@ async function montarPainel(guild, servidor) {
       name: "⚠️ Escolheram um idioma e não couberam",
       value: fila.map((f) => `${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`).join("\n") +
         "\n_Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum._",
+    });
+  }
+
+  /* As salas de conversa aparecem no painel, e nao apareciam.
+
+     O painel dizia "Canais que eu traduzo -- 4" e o servidor mostrava CINCO
+     grupos de canais por idioma. O quinto sao as salas de conversa, que nao
+     sao copia de canal nenhum: sao o lugar onde cada idioma fala, e o que se
+     escreve numa sai traduzido nas outras. Elas so' tomam emprestado o nome
+     de um canal.
+
+     Nao contar elas fazia a conta do painel bater com o banco e nao bater com
+     a tela -- e quem confere e' a tela. */
+  const salas = idiomas.filter((i) => i.canal_id && guild.channels.cache.has(i.canal_id));
+  if (salas.length) {
+    campos.push({
+      name: `💬 Salas de conversa — ${salas.length}`,
+      value: salas.map((i) => `<#${i.canal_id}>`).join(" ") +
+        "\n_Uma por idioma. Não são cópias: é onde cada idioma conversa, e o que se escreve numa aparece traduzido nas outras._",
     });
   }
 
@@ -2558,6 +2595,16 @@ async function comandoDeConfig(msg, servidor) {
      A checagem vem antes de qualquer gravacao, porque o estrago aqui e' criar
      canal -- e canal criado por engano alguem tem que apagar na mao. */
   if (!removendo) {
+    const outroPapel = await fontesDeOutroPapel(servidor);
+    const emprestando = escolhidos.filter((c) => outroPapel.has(c.id));
+    if (emprestando.length) {
+      await msg.reply(
+        `🏷️ ${emprestando.map((c) => `<#${c.id}>`).join(", ")} já tem outro papel aqui: ` +
+        "é dele que as salas de conversa por idioma tiram o nome.\n" +
+        "Se eu também traduzisse ele, as cópias nasceriam com o mesmo nome das salas — duas coisas diferentes chamadas igual no mesmo servidor.");
+      return true;
+    }
+
     const proprios = await canaisMeus(servidor);
     const meus = escolhidos.filter((c) => proprios.has(c.id));
     if (meus.length) {
