@@ -1178,6 +1178,28 @@ async function garantirCategoria(guild, sala, pistaCanal) {
 }
 
 async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome) {
+  /* Ja existe um canal com este nome nesta categoria? Adota.
+
+     Mesma regra da categoria: o Discord manda, nao o meu registro. Um canal
+     com o nome exato, dentro da categoria daquele idioma, E' a replica --
+     tenha o banco acompanhado ou nao.
+
+     Sem isto, todo canal que ficou orfao (criado e nao gravado) vira um
+     duplicado permanente ao lado do bom, e quem olha a barra lateral ve quatro
+     canais iguais sem saber qual funciona. */
+  const antigo = categoria.children?.cache?.find(
+    (c) => c.type === ChannelType.GuildText && c.name === nome);
+  if (antigo) {
+    const webhooks = await antigo.fetchWebhooks().catch(() => null);
+    const webhook = webhooks?.find((w) => w.token) || await antigo.createWebhook({ name: "CYRON" });
+    await sbPost("discord_canal_idioma", {
+      servidor_id: servidorId, idioma: sala.idioma, tipo: def.tipo,
+      canal_id: antigo.id, webhook: webhook.url,
+    });
+    console.log(`idioma: #${antigo.name} adotado (já existia)`);
+    return;
+  }
+
   const canal = await guild.channels.create({
     name: nome,
     type: ChannelType.GuildText,
