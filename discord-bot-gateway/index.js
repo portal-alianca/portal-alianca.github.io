@@ -807,8 +807,13 @@ async function traduzirLongo(texto, alvo) {
    escreve cinco vezes, e o canal publico segue servindo quem nao escolheu
    idioma nenhum. */
 
+/* A ordem daqui e' a ordem na barra lateral. O urso vem logo depois dos
+   eventos porque e' o que mais se olha, e ANTES de tudo o mais porque ele tem
+   canal proprio de proposito: cair junto dos eventos e' o que a alianca pediu
+   pra nao acontecer. */
 const REPLICAS = [
   { tipo: "evento", prefixo: "evento-", assunto: "Avisos de evento" },
+  { tipo: "urso",   prefixo: "urso-",   assunto: "Caçada ao Urso" },
   { tipo: "dica",   prefixo: "dica-",   assunto: "Dicas e alertas" },
   { tipo: "game",   prefixo: "game-",   assunto: "Recados do jogo" },
 ];
@@ -852,6 +857,24 @@ async function replicasDoIdioma(aliancaId) {
   cacheReplicas.set(aliancaId, { v, t: Date.now() });
   return v;
 }
+
+/* Negar "mandar mensagem" nao basta pra fazer um canal de so-leitura.
+
+   Faltando as tres portas de tópico, o Discord entende o canal como "canal de
+   tópicos apenas" e troca a caixa de escrever por um botao "Criar tópico" --
+   ou seja, a pessoa continua podendo falar, so que por outro caminho, e cada
+   fala dessas viraria um tópico solto num canal que existe pra ler aviso.
+
+   Sao as mesmas tres portas do portao do chat geral: mensagem, tópico novo e
+   resposta dentro de tópico. Fechar uma e esquecer as outras e' trancar a
+   porta da frente e deixar a janela aberta. */
+const SO_LEITURA = {
+  SendMessages: false,
+  AddReactions: false,
+  CreatePublicThreads: false,
+  CreatePrivateThreads: false,
+  SendMessagesInThreads: false,
+};
 
 /* Quem enxerga a categoria enxerga tudo que esta dentro: o cargo do idioma e'
    a chave, e as portas de dentro herdam esta. */
@@ -899,9 +922,7 @@ async function garantirReplica(guild, aliancaId, sala, categoria, def, posicao, 
        Tudo do cargo numa entrada so: dois overwrites com o mesmo id fazem o
        Discord ficar com um deles, e qual dos dois vira sorte. */
     permissionOverwrites: portasDaCategoria(guild, sala.role_id).map((p) =>
-      p.id === sala.role_id
-        ? { ...p, deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions] }
-        : p),
+      p.id === sala.role_id ? { ...p, deny: Object.keys(SO_LEITURA).map((k) => PermissionFlagsBits[k]) } : p),
     reason: "replica do canal no idioma",
   });
 
@@ -1028,9 +1049,26 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
            replica nasceu com o nome antigo, inventado). */
         const canal = await guild.channels.fetch(jaExiste).catch(() => null);
-        if (canal && canal.name !== nome && umaVezPorProcesso(`nome:${canal.id}:${nome}`)) {
+        if (!canal) continue;
+        if (canal.name !== nome && umaVezPorProcesso(`nome:${canal.id}:${nome}`)) {
           console.log(`idioma: #${canal.name} vira #${nome}`);
           await canal.setName(nome, "replica segue o nome do canal original");
+        }
+        /* Canal novo no meio da lista empurra os de baixo. Mesma guarda do
+           nome: uma tentativa por partida, porque a posicao que o Discord
+           devolve pode nao ser a que eu pedi e eu ficaria reordenando pra
+           sempre. */
+        /* Replica que nasceu antes de eu perceber a janela do tópico. */
+        const doCargo = canal.permissionOverwrites.cache.get(sala.role_id);
+        if (sala.role_id && !doCargo?.deny.has(PermissionFlagsBits.CreatePublicThreads)) {
+          await canal.permissionOverwrites.edit(sala.role_id, SO_LEITURA,
+            { reason: "replica e' so leitura, tópico tambem nao" });
+          console.log(`idioma: #${canal.name} fechado pra tópico`);
+        }
+
+        if (canal.position !== i && umaVezPorProcesso(`pos:${canal.id}:${i}`)) {
+          await canal.setPosition(i).catch((e) =>
+            console.error("idioma: nao consegui ordenar", canal.name, e?.message || e));
         }
       }
 
@@ -1046,8 +1084,11 @@ async function montarCategorias(guild, aliancaId, porIdioma) {
         }
         if (chat.parentId !== categoria.id) {
           await chat.setParent(categoria.id, { lockPermissions: false, reason: "chat vai pra categoria do idioma" });
-          await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
           console.log(`idioma: chat de ${sala.idioma} movido pra ${categoria.name}`);
+        }
+        /* O chat fecha a categoria: ler o aviso vem antes de responder a ele. */
+        if (chat.position !== REPLICAS.length && umaVezPorProcesso(`pos:${chat.id}:${REPLICAS.length}`)) {
+          await chat.setPosition(REPLICAS.length).catch(() => { /* posicao e' capricho */ });
         }
       }
 
