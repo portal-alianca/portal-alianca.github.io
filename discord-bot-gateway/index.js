@@ -881,12 +881,37 @@ async function sincronizarRecentes() {
       if (!servidor) continue;
       const servidorId = servidor.id;
 
-      const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=idioma,role_id`);
-      if (!salas?.length) continue;
+      /* Sem "salas vazias, sai fora" aqui: o servidor recem-instalado tem ZERO
+         idiomas, e e' justamente a primeira pessoa a escolher que nao pode
+         esperar. */
+      const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidorId}&select=idioma,role_id`) || [];
 
       const recentes = await sb(
         `discord_idioma_jogador?atualizado_em=gte.${encodeURIComponent(desde)}&select=discord_user_id,idioma`);
       if (!recentes?.length) continue;
+
+      /* Idioma escolhido agora e que ainda nao existe aqui: nao da' pra so
+         distribuir cargo, porque nao ha cargo. Chama a varredura completa
+         DESTE servidor -- e' cara (lista os membros todos), mas so roda quando
+         alguem de fato trouxe uma lingua nova, o que e' raro.
+
+         Sem isso a pessoa clicava, nao acontecia nada por ate dez minutos, e
+         concluia que o bot nao funciona. Foi o que aconteceu no primeiro teste
+         com gente de verdade. */
+      const jaTem = new Set(salas.map((s) => s.idioma));
+      const candidatos = recentes.filter((e) => !jaTem.has(e.idioma));
+
+      /* A lista de membros so' e' pedida quando ha candidato de verdade. Ela e'
+         cara e isto roda de minuto em minuto, em todo servidor: pedir sempre
+         seria pagar o preco da excecao o tempo todo. */
+      const novidade = candidatos.length
+        ? (await guild.members.fetch()).hasAny(...candidatos.map((e) => String(e.discord_user_id)))
+        : false;
+      if (novidade) {
+        console.log(`idioma: ${guild.name} tem idioma novo escolhido agora; montando sem esperar`);
+        await sincronizarUmGuild(guild);
+        return;
+      }
 
       const porIdioma = new Map(salas.map((s) => [s.idioma, s.role_id]).filter(([, r]) => r));
       const cargosDeSala = new Set(porIdioma.values());
@@ -1407,8 +1432,23 @@ async function replicarPorIdioma(msg, servidorId, tipo) {
 async function sincronizarSalas() {
   for (const [, guild] of client.guilds.cache) {
     try {
+      await sincronizarUmGuild(guild);
+    } catch (e) {
+      console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
+    }
+  }
+}
+
+/* A varredura de um servidor so'.
+
+   Existe separada porque a passada curta precisa chamar ela: quem acabou de
+   escolher um idioma que ainda nao existe aqui nao pode esperar dez minutos
+   olhando pra uma barra lateral que nao mudou. Ele clica, nao acontece nada, e
+   conclui que o bot nao funciona -- que foi exatamente o que aconteceu no
+   primeiro teste com gente de verdade. */
+async function sincronizarUmGuild(guild) {
       const servidor = await servidorDoGuild(guild.id);
-      if (!servidor) continue;
+      if (!servidor) return;
       const servidorId = servidor.id;
 
       const pago = planoDe(servidor) === "pago";
@@ -1591,10 +1631,6 @@ async function sincronizarSalas() {
       await montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite, vivos);
 
       cacheEspelho.delete(servidorId); // a proxima mensagem le a lista nova
-    } catch (e) {
-      console.error("espelho: sincronia falhou em", guild.id, e?.message || e);
-    }
-  }
 }
 
 /* ---------------- portaria: o convite pro idioma nos canais publicos ----------
@@ -1980,11 +2016,13 @@ async function cartaoDeConfig(guild, servidor) {
     "",
     "O que for postado neles sai traduzido numa cópia por idioma, dentro da categoria de quem escolheu aquele idioma.",
     "",
-    "**Para mudar**, mande os canais aqui neste canal:",
+    "**Para adicionar**, mande os canais aqui neste canal:",
     "```",
     "#canal1 #canal2",
     "```",
-    "Digite `#` e o Discord abre a lista de canais do servidor — é só clicar nos que você quer. A lista que você mandar substitui esta.",
+    "**Para tirar:** `remover #canal`",
+    "",
+    "Digite `#` e o Discord abre a lista de canais do servidor — é só clicar nos que você quer.",
     "",
     `**Plano:** ${planoDe(servidor)}${emTeste ? ` (teste até ${emTeste})` : ""} · ` +
       `até ${limite.fontes} ${limite.fontes === 1 ? "canal traduzido" : "canais traduzidos"} · ` +
@@ -2027,7 +2065,7 @@ async function comandoDeConfig(msg, servidor) {
     /* Sem canal nenhum: so responde se parecia uma tentativa. A sala e' da
        administracao, e duas pessoas conversando ali nao querem um bot
        corrigindo cada frase. */
-    if (/^fonte\b|^canais?\b/.test(texto)) {
+    if (/^(fonte|canais?|remover|remove|tirar|tira)\b/.test(texto)) {
       await msg.reply("Não vi canal nenhum na mensagem. Digite `#` e escolha na lista que o Discord abre.");
       return true;
     }
@@ -2039,31 +2077,55 @@ async function comandoDeConfig(msg, servidor) {
     return true;
   }
 
-  const limite = limitesDo(servidor);
-  if (escolhidos.length > limite.fontes) {
-    await msg.reply(
-      `📦 No plano **${planoDe(servidor)}** eu traduzo até **${limite.fontes}** ` +
-      `${limite.fontes === 1 ? "canal" : "canais"}. Você mandou ${escolhidos.length}.\n` +
-      "Mande de novo com menos, ou suba de plano para liberar mais.");
-    return true;
-  }
+  /* SOMA, nao substitui.
 
-  /* A fonte do chat fica de fora desta conta: ela nao gera replica, so
-     empresta o nome, e nao e' o dono quem manda nela. */
+     Eu tinha feito o contrario, com um argumento que parecia bom: "estes sao
+     os meus canais" e' uma frase que da' pra conferir olhando. Na pratica a
+     primeira pessoa a usar mandou tres canais em TRES mensagens, uma de cada
+     vez -- que e' o jeito natural de fazer -- e cada uma apagou a anterior. Ela
+     terminou achando que tinha tres e tendo um.
+
+     Somar e' o padrao que perdoa: o pior caso e' um canal a mais, que se tira
+     com "remover #canal". Substituir sem querer apaga trabalho em silencio. */
+  const removendo = /^(remover|remove|tirar|tira)\b/.test(texto);
+
   const antigas = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
-  const querido = new Set(escolhidos.map((c) => c.id));
+  const atuais = new Set(antigas.map((a) => a.canal_id));
 
-  for (const velha of antigas) {
-    if (querido.has(velha.canal_id)) continue;
-    await sbDel(`discord_fonte_replica?canal_id=eq.${encodeURIComponent(velha.canal_id)}`);
+  if (removendo) {
+    for (const canal of escolhidos) {
+      if (!atuais.has(canal.id)) continue;
+      await sbDel(`discord_fonte_replica?canal_id=eq.${encodeURIComponent(canal.id)}`);
+      atuais.delete(canal.id);
+    }
+  } else {
+    const limite = limitesDo(servidor);
+    const novos = escolhidos.filter((c) => !atuais.has(c.id));
+    if (atuais.size + novos.length > limite.fontes) {
+      await msg.reply(
+        `📦 No plano **${planoDe(servidor)}** eu traduzo até **${limite.fontes}** ` +
+        `${limite.fontes === 1 ? "canal" : "canais"}, e você já tem ${atuais.size}.\n` +
+        "Tire um com `remover #canal`, ou suba de plano para liberar mais.");
+      return true;
+    }
+    for (const canal of novos) {
+      await sbPost("discord_fonte_replica", {
+        servidor_id: servidor.id, canal_id: canal.id, tipo: rotuloDoCanal(canal.name),
+      });
+      atuais.add(canal.id);
+    }
   }
-  for (const canal of escolhidos) {
-    if (antigas.some((a) => a.canal_id === canal.id)) continue;
-    await sbPost("discord_fonte_replica", {
-      servidor_id: servidor.id, canal_id: canal.id, tipo: rotuloDoCanal(canal.name),
-    });
-  }
+
+  /* A resposta mostra a lista INTEIRA, nao so o que mudou. Confirmar apenas o
+     ultimo canal foi o que deixou a pessoa achar que tinha tres: ela lia
+     "agora eu traduzo #recursos" como "somei o #recursos". */
+  const lista = [...atuais].map((id) => `<#${id}>`).join(", ") || "_nenhum_";
+  await msg.reply(
+    `✅ Agora eu traduzo: ${lista}\n` +
+    (removendo
+      ? "As cópias do que saiu eu deixo onde estão — apague na mão se não quiser mais."
+      : "As cópias por idioma aparecem em até um minuto."));
 
   cacheFontes.delete(servidor.id);
   await msg.reply(
