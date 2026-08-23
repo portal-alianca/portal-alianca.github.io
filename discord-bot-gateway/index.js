@@ -766,6 +766,49 @@ function planoDe(servidor) {
   return "gratis";
 }
 
+/* Idiomas que alguem escolheu e que nao couberam no plano.
+
+   Mora em memoria de proposito: e' um retrato do momento, recalculado a cada
+   varredura. Guardar no banco criaria uma segunda verdade pra manter em dia --
+   e a primeira coisa que ficaria velha seria justamente esta. */
+const esperando = new Map(); // servidorId -> [{ idioma, quantos }]
+
+/* Avisa a administracao que alguem ficou de fora.
+
+   O aviso vai pra sala de comando, nao pra pessoa que escolheu: quem pode
+   resolver e' quem manda no servidor. Dizer pra ela "seu idioma nao cabe"
+   seria dar um problema que ela nao tem como resolver.
+
+   Uma vez por partida do bot, por idioma. Repetir de dez em dez minutos
+   transformaria o aviso em barulho, e barulho a gente aprende a ignorar --
+   inclusive quando ele passa a ser importante. */
+async function avisarDoTeto(guild, servidor, naoCoube, limite) {
+  if (!servidor.canal_config) return;
+  const novos = naoCoube.filter(([idioma]) => umaVezPorProcesso(`teto:${servidor.id}:${idioma}`));
+  if (!novos.length) return;
+
+  const canal = await guild.channels.fetch(servidor.canal_config).catch(() => null);
+  if (!canal) return;
+
+  const quem = novos
+    .map(([idioma, quantos]) => `• ${nomeDoIdioma(idioma)} — ${quantos} ${quantos === 1 ? "pessoa" : "pessoas"}`)
+    .join("\n");
+
+  await canal.send({
+    content: [
+      `⚠️ **Alguém escolheu um idioma que não cabe no plano ${planoDe(servidor)}.**`,
+      "",
+      quem,
+      "",
+      `Você está usando **${limite.idiomas} de ${limite.idiomas}** idiomas. Essas pessoas escolheram o idioma delas ` +
+      "e não receberam canal nenhum — para elas parece que o bot não funcionou.",
+      "",
+      "Para resolver: suba de plano, ou peça a elas que escolham um dos idiomas que já existem aqui.",
+    ].join("\n"),
+    allowedMentions: { parse: [] },
+  }).catch((e) => console.error("limite: nao consegui avisar:", e?.message || e));
+}
+
 /* Um pedido de canal. Devolve false quando o orcamento acabou, e avisa uma
    vez so' -- repetir a mesma linha a cada canal recusado encheria o log e
    esconderia o resto. */
@@ -1574,9 +1617,18 @@ async function sincronizarUmGuild(guild) {
         .filter(([idioma]) => !porIdioma.has(idioma))
         .sort((a, b) => b[1] - a[1]);
 
-      if (restam <= 0 && querem.length) {
-        console.log(`limite: ${guild.name} está no teto de ${limite.idiomas} idiomas (plano ${servidor.plano}); ` +
-          `${querem.length} esperando: ${querem.map(([i, n]) => `${i}(${n})`).join(", ")}`);
+      /* Quem escolheu e nao coube. Guardado pra aparecer no cartao e pra virar
+         aviso -- ate agora isto so ia pro log, e a pessoa que escolhia o quarto
+         idioma via exatamente o mesmo que veria se o bot estivesse quebrado:
+         nada. */
+      const naoCoube = querem.slice(Math.max(0, restam));
+      if (naoCoube.length) {
+        esperando.set(servidorId, naoCoube.map(([idioma, quantos]) => ({ idioma, quantos })));
+        console.log(`limite: ${guild.name} está no teto de ${limite.idiomas} idiomas (plano ${planoDe(servidor)}); ` +
+          `${naoCoube.length} esperando: ${naoCoube.map(([i, n]) => `${i}(${n})`).join(", ")}`);
+        await avisarDoTeto(guild, servidor, naoCoube, limite);
+      } else {
+        esperando.delete(servidorId);
       }
 
       for (const [idioma] of querem.slice(0, Math.max(0, restam))) {
@@ -1947,11 +1999,7 @@ async function repararInstalacoes() {
     try {
       const ja = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guild.id)}&select=id`);
       if (!ja?.length) continue;
-      const servidor = await instalarServidor(guild);
-      /* O cartao mostra idioma, plano e canais -- tudo isso muda sozinho entre
-         uma passada e outra, entao ele e' reescrito junto. */
-      await cartaoDeConfig(guild, servidor).catch((e) =>
-        console.error("config: nao consegui atualizar o cartão:", e?.message || e));
+      await instalarServidor(guild);
     } catch (e) {
       console.error("instalar: reparo falhou em", guild.name, e?.message || e);
     }
@@ -2004,6 +2052,12 @@ async function cartaoDeConfig(guild, servidor) {
      id que nao existe mais, e isso no cartao de configuracao parece defeito --
      e' so' uma linha esperando a proxima varredura limpar. */
   const vivas = fontes.filter((f) => guild.channels.cache.has(f.canal_id));
+  const fila = esperando.get(servidor.id) || [];
+
+  /* Um sinal antes do numero, pra dar pra ler sem contar: cheio grita, quase
+     cheio avisa, com folga nao chama atencao. */
+  const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
+
   const lista = vivas.length
     ? vivas.map((f) => `• <#${f.canal_id}>`).join("\n")
     : "_nenhum ainda — mande os canais aqui embaixo_";
@@ -2024,10 +2078,18 @@ async function cartaoDeConfig(guild, servidor) {
     "",
     "Digite `#` e o Discord abre a lista de canais do servidor — é só clicar nos que você quer.",
     "",
-    `**Plano:** ${planoDe(servidor)}${emTeste ? ` (teste até ${emTeste})` : ""} · ` +
-      `até ${limite.fontes} ${limite.fontes === 1 ? "canal traduzido" : "canais traduzidos"} · ` +
-      `${limite.idiomas} idiomas · ${limite.canais} canais no total`,
-    `**Idiomas com gente:** ${idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join(", ") : "_nenhum ainda_"}`,
+    "---",
+    `**Plano ${planoDe(servidor).toUpperCase()}**${emTeste ? ` — teste até ${emTeste}` : ""}`,
+    "",
+    `${marca(vivas.length, limite.fontes)} **Canais traduzidos:** ${vivas.length} de ${limite.fontes}`,
+    `${marca(idiomas.length, limite.idiomas)} **Idiomas:** ${idiomas.length} de ${limite.idiomas}` +
+      (idiomas.length ? ` — ${idiomas.map((i) => nomeDoIdioma(i.idioma)).join(", ")}` : ""),
+    ...(fila.length
+      ? ["",
+         "⚠️ **Escolheram e não couberam:**",
+         ...fila.map((f) => `• ${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`),
+         "_Para essas pessoas o bot parece não ter funcionado: elas escolheram o idioma e não receberam canal nenhum._"]
+      : []),
   ].join("\n");
 
   const canal = await guild.channels.fetch(servidor.canal_config).catch(() => null);
@@ -2133,6 +2195,24 @@ async function comandoDeConfig(msg, servidor) {
     "As cópias por idioma aparecem em até dez minutos. As de canais que saíram da lista eu deixo onde estão — apague na mão se não quiser mais.");
   await cartaoDeConfig(msg.guild, servidor);
   return true;
+}
+
+/* O cartao e' desenhado por ULTIMO na volta do relogio.
+
+   Ele mostra o que a varredura acabou de decidir -- quantos idiomas couberam,
+   quem ficou de fora, quantos canais existem. Desenhando antes, ele mostraria
+   sempre o retrato da passada anterior, e um painel atrasado e' pior que
+   nenhum: a pessoa confia nele. */
+async function atualizarCartoes() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor?.canal_config) continue;
+      await cartaoDeConfig(guild, servidor);
+    } catch (e) {
+      console.error("config: nao consegui atualizar o cartão de", guild.name, e?.message || e);
+    }
+  }
 }
 
 client.on("guildCreate", async (guild) => {
@@ -2268,7 +2348,9 @@ client.once("clientReady", () => {
       .then(() => sincronizarSalas())
       .catch((e) => console.error("espelho: sincronia falhou:", e?.message || e))
       .then(() => garantirConvites())
-      .catch((e) => console.error("portaria: passada falhou:", e?.message || e));
+      .catch((e) => console.error("portaria: passada falhou:", e?.message || e))
+      .then(() => atualizarCartoes())
+      .catch((e) => console.error("config: cartões falharam:", e?.message || e));
   }, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
