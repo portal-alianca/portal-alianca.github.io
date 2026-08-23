@@ -2446,6 +2446,11 @@ client.on("messageCreate", async (msg) => {
       /* Avisos automaticos (evento, dica do dia, arena) vem como embed -- o
          texto que importa esta la, nao em msg.content (que as vezes so tem
          "@everyone"). */
+      /* So em servidor com alianca, pelo mesmo motivo do outro ramo: num
+         servidor qualquer, TODO webhook de terceiro (bot de música, aviso de
+         GitHub, feed de notícia) ganharia um tópico de tradução pendurado. */
+      if (!aliancaId) return;
+
       const emb = msg.embeds?.[0];
       const texto = String(emb ? [emb.title, emb.description].filter(Boolean).join("\n") : (msg.content || "")).trim();
       if (podeTraduzirAgora(msg.webhookId)) await traduzirEResponder(msg, texto);
@@ -2531,6 +2536,27 @@ client.on("messageCreate", async (msg) => {
     }
 
     if (!texto) return;
+
+    /* Daqui pra baixo e' coisa do portal do Kingshot, e por isso pergunta pela
+       alianca antes.
+
+       As duas estavam rodando em TODO servidor onde o bot entrasse:
+
+       - A brincadeira das rosas: qualquer pessoa que escrevesse "lady" no
+         servidor de um cliente recebia um GIF que e' piada interna de outra
+         gente. Constrangedor no melhor caso.
+
+       - O seletor de traducao pendurado em cada mensagem: ele nasceu pros
+         canais da [TOP], onde e' util. Num servidor recem-instalado ele
+         penduraria um topico embaixo de cada frase de cada canal -- inclusive
+         nos que o dono nunca pediu pra traduzir. E' o tipo de coisa que faz
+         tirarem o bot.
+
+       O CYRON traduz onde mandaram traduzir: canal-fonte vira replica, sala de
+       idioma vira conversa espelhada. Traduzir o servidor inteiro por conta
+       propria e' outra funcao, e ela precisa ser pedida. */
+    const aliancaId = await aliancaDoGuild(msg.guild.id);
+    if (!aliancaId) return;
 
     if (mencionaLadyOuMaelle(texto)) {
       const url = await gifRosas();
