@@ -2704,17 +2704,30 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
       { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
       { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
-      ...(servidor.plano === "pago"
-        ? []   // liberado sem prazo: codigo aqui so' confundiria
-        : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
-      ...(orfas?.length
-        ? [{
-            type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
-            label: `Apagar ${orfas.length} ${orfas.length === 1 ? "cópia sem origem" : "cópias sem origem"}`,
-          }]
-        : []),
     ],
   });
+
+  /* Os botoes de situacao vao numa linha propria.
+
+     Estavam junto dos quatro fixos, e num servidor que tinha copia sem origem
+     E ainda nao era pago deram SEIS numa linha -- o Discord aceita cinco.
+     O painel daquele servidor parou de atualizar, e o log dizia
+     "components[1].components: Must be between 1 and 5 in length".
+
+     Pior que o erro: ele so' aparece na combinacao exata dos dois, entao
+     testar cada botao sozinho nunca acharia. */
+  const situacao = [
+    ...(servidor.plano === "pago"
+      ? []   // liberado sem prazo: codigo aqui so' confundiria
+      : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
+    ...(orfas?.length
+      ? [{
+          type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
+          label: `Apagar ${orfas.length} ${orfas.length === 1 ? "cópia sem origem" : "cópias sem origem"}`,
+        }]
+      : []),
+  ];
+  if (situacao.length) linhas.push({ type: 1, components: situacao });
 
   return linhas;
 }
@@ -3859,7 +3872,13 @@ async function rpc(fn, corpo) {
     body: JSON.stringify(corpo),
   });
   if (!r.ok) throw new Error(`rpc ${fn} ${r.status}`);
-  return await r.json();
+  /* Funcao que devolve void responde 204 com corpo VAZIO, e r.json() estoura
+     nele com "Unexpected end of JSON input". Foi o que aconteceu com a
+     contagem de uso: ela gravava certo no banco e depois estourava na leitura
+     da resposta, entao eu reenfileirava tudo e tentava de novo a cada minuto,
+     pra sempre -- gravando duplicado e achando que nao tinha gravado nada. */
+  const corpoTexto = await r.text();
+  return corpoTexto ? JSON.parse(corpoTexto) : null;
 }
 
 async function comandoSettings(inter) {
