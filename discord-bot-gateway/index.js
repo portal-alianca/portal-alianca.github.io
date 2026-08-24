@@ -1032,7 +1032,7 @@ const PLANOS = {
    Uma funcao so' pra isso porque "este servidor e' pago?" aparece em varios
    lugares. Espalhar a regra seria garantir que um deles ficasse pra tras no
    dia em que ela mudasse. */
-/* Periodo de lancamento: todo mundo pago, ate uma data.
+/* Beta: todo mundo pago enquanto durar.
 
    Enquanto nao ha publico, cobrar so' serve pra afastar quem ia experimentar.
    Entao tudo fica liberado -- mas com DATA, e dita em voz alta no painel.
@@ -1041,12 +1041,26 @@ const PLANOS = {
    que isso acaba, senao o fim vira sensacao de golpe. E eu preciso de uma
    data pra escrever no painel: "temporario" nao e' informacao, e' desculpa.
 
-   Vem de variavel de ambiente pra esticar ou encerrar sem mexer no codigo:
-   fly secrets set CYRON_ABERTO_ATE=2027-03-31 */
-const ABERTO_ATE = process.env.CYRON_ABERTO_ATE || "";
+   Chamar de BETA, e nao de promocao, resolve tres coisas de uma vez: diz que
+   e' temporario sem precisar de data, explica por que ainda aparece defeito, e
+   nao promete um preco que ainda nao existe.
+
+   Dois modos, porque o comeco e o fim pedem coisas diferentes:
+
+     CYRON_BETA=1                    em beta, sem data ainda
+     CYRON_BETA_ATE=2027-03-31       beta com fim marcado, e o painel conta
+
+   Comecar sem data e' honesto: ninguem sabe quando havera publico, e chutar
+   uma data pra depois adiar e' pior que nao ter. Mas "temporario, sem data"
+   sozinho soa arbitrario -- entao no lugar da data vai uma promessa que o
+   codigo consegue cumprir: quando houver fim, ele aparece aqui com
+   antecedencia. Basta preencher a segunda variavel, e o painel de todo mundo
+   passa a mostrar o prazo. */
+const BETA = process.env.CYRON_BETA === "1" || process.env.CYRON_BETA === "sim";
+const BETA_ATE = process.env.CYRON_BETA_ATE || "";
 
 function planoDe(servidor) {
-  if (venceEm(ABERTO_ATE)) return "pago";             // periodo de lancamento
+  if (BETA || venceEm(BETA_ATE)) return "pago";       // beta aberto
   if (servidor?.plano === "pago") return "pago";      // liberado na mao, sem prazo
   if (venceEm(servidor?.teste_ate)) return "pago";    // teste de 7 dias
   if (venceEm(servidor?.pago_ate)) return "pago";     // codigo de ativacao
@@ -2891,10 +2905,12 @@ async function montarPainel(guild, servidor) {
   /* O rodape diz ate quando, e por que. "Plano PAGO" sozinho nao responde a
      pergunta que a pessoa faz quando vai renovar. */
   const dia = (t) => new Date(t).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-  const aberto = venceEm(ABERTO_ATE);
+  const fimDoBeta = venceEm(BETA_ATE);   // data, se ja houver
+  const emBeta = BETA || fimDoBeta;
   const pagoAte = venceEm(servidor.pago_ate);
   const testeAte = venceEm(servidor.teste_ate);
-  const prazo = aberto ? ` · lançamento, liberado até ${dia(aberto)}`
+  const prazo = fimDoBeta ? ` · beta até ${dia(fimDoBeta)}`
+    : emBeta ? " · liberado durante o beta"
     : pagoAte ? ` · até ${dia(pagoAte)}`
     : testeAte ? ` · teste até ${dia(testeAte)}`
     : "";
@@ -2984,14 +3000,24 @@ async function montarPainel(guild, servidor) {
      Ele nao e' um problema -- e' o motivo de os numeros estarem altos. Quem
      olha o painel e ve "10 canais" precisa saber que isso vence, na mesma
      olhada, ou vai planejar em cima de um limite que nao vai durar. */
-  if (aberto && !pagoAte && servidor.plano !== "pago") {
+  if (emBeta && !pagoAte && servidor.plano !== "pago") {
     const g = PLANOS.gratis;
     campos.push({
-      name: `🎁 Período de lançamento — liberado até ${dia(aberto)}`,
+      name: fimDoBeta
+        ? `🧪 CYRON em beta — até ${dia(fimDoBeta)}`
+        : "🧪 CYRON está em beta",
       value: [
-        `Até lá, tudo do plano pago sem pagar nada: **${PLANOS.pago.idiomas} idiomas** e **${PLANOS.pago.fontes} canais traduzidos**.`,
+        "Enquanto durar o beta, seu servidor usa o plano pago **sem pagar nada**: " +
+        `**${PLANOS.pago.idiomas} idiomas** e **${PLANOS.pago.fontes} canais traduzidos**.`,
         "",
-        `Depois dessa data o servidor volta ao plano grátis (**${g.idiomas} idiomas**, **${g.fontes} canais**). ` +
+        fimDoBeta
+          ? `O beta vai até **${dia(fimDoBeta)}**.`
+          : "**O beta vai acabar** — ainda não há data. Quando houver, o prazo aparece aqui " +
+            "neste painel com antecedência, antes de qualquer coisa mudar.",
+        "",
+        "_Beta também quer dizer que ainda aparece defeito. Se algo estranho acontecer, é bug meu, não seu._",
+        "",
+        `Quando terminar, o servidor volta ao plano grátis (**${g.idiomas} idiomas**, **${g.fontes} canais**). ` +
         "**Nada é apagado** — o que passar do limite apenas para de crescer, e você escolhe o que manter.",
       ].join("\n"),
     });
