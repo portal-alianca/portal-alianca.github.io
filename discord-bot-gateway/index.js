@@ -123,7 +123,21 @@ async function servidorDoGuild(guildId) {
   if (achado && Date.now() - achado.t < 5 * 60 * 1000) return achado.v;
   let v = null;
   try {
-    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=id,plano,teste_ate,tradutor_topico,canal_config,msg_config,limite_idiomas,limite_canais,tradutor,tradutor_chave,tradutor_regiao`);
+    /* Le a linha INTEIRA, de proposito.
+
+       Aqui havia uma lista de colunas escrita a mao, e ela envelheceu em
+       silencio: eu criei pago_ate e tradutor_motor, gravei nos dois, e nunca
+       os LI -- entao o pagamento do Stripe nao dava plano nenhum, e a chave
+       de Azure/DeepL nunca era usada. As duas coisas funcionavam de um lado
+       so', e o painel mostrava "GRATIS" e "Google gratis" com toda a
+       convicção do mundo.
+
+       Pior: a lista ainda pedia "tradutor", coluna de um desenho anterior que
+       ninguem le mais. Ela continuava chegando, e a que importava, nao.
+
+       Um select=* custa alguns bytes por servidor a cada cinco minutos.
+       Descobrir isto de novo custou uma hora. */
+    const r = await sb(`cyron_servidor?guild_id=eq.${encodeURIComponent(guildId)}&select=*`);
     v = r?.[0] ?? null;
   } catch { /* tenta de novo na proxima mensagem */ }
   cacheServidor.set(guildId, { v, t: Date.now() });
@@ -2730,14 +2744,26 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
   const situacao = [
     /* Botao de link (estilo 5) nao gera interacao: o Discord abre a URL e
        pronto. Por isso ele nao tem custom_id e nao passa por cliquePainel. */
-    ...(LINK_PAGAMENTO && servidor.plano !== "pago"
+    /* Nao ofereco assinatura a quem ja tem uma.
+
+       A condicao era plano !== "pago", e plano e' a coluna do liberado-pra-
+       sempre -- quem pagou pelo Stripe fica pago pela DATA, nao por ela.
+       Resultado: o cliente que acabou de assinar continuava vendo "Assinar o
+       plano pago" no painel dele.
+
+       Quem esta no teste de 7 dias CONTINUA vendo o botao, e isso e' o certo:
+       o teste e' exatamente o momento de assinar. */
+    ...(LINK_PAGAMENTO && !servidor.stripe_assinatura && servidor.plano !== "pago"
       ? [{
           type: 2, style: 5, emoji: { name: "💳" }, label: "Assinar o plano pago",
           url: `${LINK_PAGAMENTO}${LINK_PAGAMENTO.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
         }]
       : []),
+    /* O codigo continua a mao mesmo em quem ja' e' pago por data: resgatar
+       soma dias, entao renovar por codigo e' legitimo. So' some pra quem esta
+       liberado sem prazo, onde nao ha dia pra somar. */
     ...(servidor.plano === "pago"
-      ? []   // liberado sem prazo: codigo aqui so' confundiria
+      ? []
       : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
     ...(orfas?.length
       ? [{
