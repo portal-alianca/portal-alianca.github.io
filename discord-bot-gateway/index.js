@@ -157,21 +157,35 @@ async function aliancaDoGuild(guildId) {
   return v;
 }
 
-let cacheGifRosas = { v: null, t: 0 };
-async function gifRosas() {
-  if (cacheGifRosas.v && Date.now() - cacheGifRosas.t < 10 * 60 * 1000) return cacheGifRosas.v;
+/* GIF e' de quem o cadastrou.
+
+   A tabela era lida sem filtro, entao as duas aliancas dividiam os mesmos
+   quatro GIFs. Hoje nao doi -- so' a [TOP] tem servidor ligado --, mas doeria
+   na primeira vez que a outra ligasse, e do jeito mais estranho possivel:
+   piada interna de uma aparecendo no servidor da outra.
+
+   Sem alianca na mao, nao devolvo GIF nenhum. Nao ter GIF e' um recurso a
+   menos; ter o GIF errado e' um constrangimento. */
+const cacheGifRosas = new Map(); // aliancaId -> { v, t }
+async function gifRosas(aliancaId) {
+  if (!aliancaId) return null;
+  const guardado = cacheGifRosas.get(aliancaId);
+  if (guardado && Date.now() - guardado.t < 10 * 60 * 1000) return guardado.v;
   let v = null;
   try {
-    const r = await sb(`discord_gifs?uso=eq.rosas&ativo=eq.true&select=url&limit=1`);
+    const r = await sb(
+      `discord_gifs?alianca_id=eq.${encodeURIComponent(aliancaId)}&uso=eq.rosas&ativo=eq.true&select=url&limit=1`);
     v = r?.[0]?.url ?? null;
   } catch { /* sem gif por enquanto, sem problema */ }
-  cacheGifRosas = { v, t: Date.now() };
+  cacheGifRosas.set(aliancaId, { v, t: Date.now() });
   return v;
 }
 
-async function gifBoasVindas() {
+async function gifBoasVindas(aliancaId) {
+  if (!aliancaId) return null;
   try {
-    const r = await sb(`discord_gifs?uso=eq.boas_vindas&ativo=eq.true&select=url`);
+    const r = await sb(
+      `discord_gifs?alianca_id=eq.${encodeURIComponent(aliancaId)}&uso=eq.boas_vindas&ativo=eq.true&select=url`);
     const opcoes = (r || []).map((x) => x.url).filter(Boolean);
     return opcoes.length ? opcoes[Math.floor(Math.random() * opcoes.length)] : null;
   } catch {
@@ -295,7 +309,7 @@ client.on("guildMemberAdd", async (member) => {
       return console.error(`boas-vindas ${quem}: o canal ${canalId} nao aceita mensagem`);
     }
 
-    const [gif, tag] = await Promise.all([gifBoasVindas(), tagDaAlianca(aliancaId)]);
+    const [gif, tag] = await Promise.all([gifBoasVindas(aliancaId), tagDaAlianca(aliancaId)]);
     await canal.send({
       embeds: [{
         title: `🎉 Boas-vindas, ${quem}!`,
@@ -3983,7 +3997,7 @@ async function comandoSettings(inter) {
   }
   const a = v.aliancas || {};
   const evs = await sb(`top_eventos?alianca_id=eq.${v.alianca_id}&ativa=eq.true&select=titulo,gif_url&order=ordem`);
-  const gifs = await sb(`discord_gifs?uso=eq.boas_vindas&ativo=eq.true&select=id`);
+  const gifs = await sb(`discord_gifs?alianca_id=eq.${encodeURIComponent(v.alianca_id)}&uso=eq.boas_vindas&ativo=eq.true&select=id`);
   const cfg = await sb(`alianca_discord?guild_id=eq.${encodeURIComponent(guild)}&select=webhook,webhook_boas_vindas`);
   const comGif = (evs || []).filter((e) => e.gif_url);
   return {
@@ -4460,7 +4474,7 @@ client.on("messageCreate", async (msg) => {
     /* A piada das rosas continua sendo coisa da alianca. */
     const aliancaId = await aliancaDoGuild(msg.guild.id);
     if (aliancaId && mencionaLadyOuMaelle(texto)) {
-      const url = await gifRosas();
+      const url = await gifRosas(aliancaId);
       if (url) msg.reply({ files: [url], allowedMentions: { repliedUser: false } }).catch(() => {});
     }
 
