@@ -3786,6 +3786,55 @@ async function cliqueTraduzirMsg(inter) {
   await inter.editReply(carga);
 }
 
+/* A pagina do bot, dentro do Discord.
+
+   Existe uma pagina web explicando o CYRON, mas ela nao serve pro membro:
+   morar fora do Discord ja e' um passo a mais, e a maioria le num celular no
+   meio de outra coisa. Aqui a explicacao chega no mesmo lugar onde a duvida
+   nasceu -- e, o que importa mais, TRADUZIDA: quem nao entende o idioma da
+   casa e' exatamente quem precisa do texto de ajuda, e um manual so' em
+   portugues seria a piada que o proprio produto existe pra resolver.
+
+   O seletor de idioma vem junto, na mesma resposta. Mandar a pessoa "ir no
+   canal tal" e' perder metade dela no caminho. */
+function paginaDoMembro(souAdmin) {
+  const linhas = [
+    "**Você lê este servidor na sua língua.**",
+    "Escolha o seu idioma no menu aqui embaixo. A partir daí, aparecem para você cópias dos canais principais já traduzidas — mesmos avisos, mesmos eventos, na sua língua.",
+    "",
+    "**Você continua falando na sua língua.**",
+    "Nas salas de conversa, o que você escrever chega traduzido para quem escolheu outro idioma. Escreva normal.",
+    "",
+    "**Traduzir uma mensagem solta**",
+    "Segure a mensagem (ou clique com o botão direito) → **Apps** → **Translate**. Serve para qualquer mensagem, sem mudar nada no servidor.",
+    "",
+    "**Trocar de idioma depois**",
+    "Use `/mylanguage`, ou o menu abaixo de novo. Pode trocar quantas vezes quiser.",
+  ];
+  if (souAdmin) {
+    linhas.push(
+      "",
+      "— — —",
+      "**Você administra este servidor:** use `/cyron` para escolher quais canais eu traduzo, ligar o tradutor por mensagem e ver os limites do plano.");
+  }
+  return {
+    title: "🌐 CYRON",
+    description: linhas.join("\n"),
+    footer: { text: "Só você está vendo esta mensagem." },
+  };
+}
+
+async function comandoAjuda(inter) {
+  const idioma = await idiomaDoJogador(inter.user.id);
+  const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  const embed = await traduzirEmbed(paginaDoMembro(souAdmin), idioma, await motorDoGuild(inter.guildId));
+  return inter.reply({
+    flags: 64,
+    embeds: [{ color: COR, ...embed }],
+    components: menuIdioma(),
+  });
+}
+
 async function comandoDeInteracao(inter) {
   const idioma = await idiomaDoJogador(inter.user.id);
   const nome = inter.commandName;
@@ -3797,6 +3846,8 @@ async function comandoDeInteracao(inter) {
      cargo mas nao lembra onde fica a sala, e pra quem esta' no meio de outra
      conversa e nao quer sair dela pra ligar uma coisa. E' o mesmo desenho e o
      mesmo estado: mexer aqui atualiza o fixado tambem. */
+  if (nome === "help") return comandoAjuda(inter);
+
   if (nome === "cyron") {
     if (!inter.guildId) {
       return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
@@ -4134,7 +4185,7 @@ client.on("messageCreate", async (msg) => {
    publicado e mudo de lugar. Reescrever a mao seria arriscar perder uma opcao,
    uma descricao traduzida, um tipo de campo -- coisas que ja estao certas e
    que eu nao teria como conferir sem testar comando por comando. */
-const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron"]);
+const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help"]);
 
 async function separarComandos() {
   try {
@@ -4223,20 +4274,41 @@ async function soltarAsInteracoes() {
    comando na lista, entao a recusa nao precisa ser explicada pra maioria --
    ela simplesmente nao aparece. A checagem no clique continua existindo
    mesmo assim, porque cargo muda depois do comando publicado. */
-async function garantirComandoCyron() {
-  if (!umaVezPorProcesso("comando-cyron")) return;
+/* Publica os comandos que nao vem do jogo, se ainda nao existirem.
+
+   /cyron e' restrito a Gerenciar Servidor: quem nao tem o cargo nem ve o
+   comando na lista, entao a recusa nao precisa ser explicada pra maioria --
+   ela simplesmente nao aparece. A checagem no clique continua existindo mesmo
+   assim, porque cargo muda depois do comando publicado.
+
+   /help e' de todo mundo, de proposito: e' a unica porta que a pessoa que nao
+   entende o idioma da casa consegue achar sozinha. */
+const GLOBAIS_DO_CYRON = [
+  {
+    name: "cyron",
+    description: "Abrir o painel de configuração do CYRON",
+    defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+    dmPermission: false,
+  },
+  {
+    name: "help",
+    description: "Como usar o CYRON / How to use CYRON",
+    dmPermission: false,
+  },
+];
+
+async function garantirComandosGlobais() {
+  if (!umaVezPorProcesso("comandos-globais")) return;
   try {
     const globais = await client.application.commands.fetch();
-    if ([...globais.values()].some((c) => c.name === "cyron")) return;
-    await client.application.commands.create({
-      name: "cyron",
-      description: "Abrir o painel de configuração do CYRON",
-      defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
-      dmPermission: false,
-    });
-    console.log("comandos: /cyron publicado");
+    const existem = new Set([...globais.values()].map((c) => c.name));
+    for (const def of GLOBAIS_DO_CYRON) {
+      if (existem.has(def.name)) continue;
+      await client.application.commands.create(def);
+      console.log(`comandos: /${def.name} publicado`);
+    }
   } catch (e) {
-    console.error("comandos: não consegui publicar o /cyron:", e?.message || e);
+    console.error("comandos: não consegui publicar os globais:", e?.message || e);
   }
 }
 
@@ -4262,7 +4334,7 @@ async function umaPassada() {
 
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
-  separarComandos().then(() => garantirComandoCyron());
+  separarComandos().then(() => garantirComandosGlobais());
   soltarAsInteracoes();
   /* Uma vez ao subir, pra quem mexeu em algo com o bot fora do ar nao ficar
      esperando dez minutos, e depois de tempos em tempos. */
