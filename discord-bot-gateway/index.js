@@ -1571,6 +1571,117 @@ const SO_LEITURA = {
   SendMessagesInThreads: false,
 };
 
+/* As portas de uma replica.
+
+   A replica era so' leitura: o cargo do idioma via e lia, mas nao falava, e
+   quem escrevia ali levava um recado dizendo que aquilo nao ia pra ninguem.
+   Isso partia o servidor em dois pela metade errada -- aviso de um lado,
+   conversa do outro -- e o comentario do administrador embaixo do proprio
+   aviso, que e' a coisa mais natural do mundo, caia no vazio.
+
+   Agora a replica CONVERSA: o que se escreve numa aparece traduzido nas
+   irmas, igual as salas de chat. E quem manda no acesso e' o canal de origem,
+   copiado ao pe da letra:
+
+   - Origem aberta a todos -> a replica e' do cargo do idioma, e ele fala se
+     na origem todo mundo fala. Canal de anuncio onde so' o administrador
+     escreve continua assim na replica.
+
+   - Origem fechada -> a replica herda quem enxerga la', cargo por cargo. Isto
+     tapa um vazamento que existia calado: #leaders so' dos lideres gerava um
+     leaders-pt que TODO falante de portugues via. O aviso de lideranca
+     aparecia traduzido para o servidor inteiro.
+
+   O "so' na propria lingua" sai dos cargos dos outros idiomas levando um
+   "nao ve" explicito. No Discord negar num cargo vence permitir em outro,
+   entao o lider que fala ingles e' barrado no leaders-pt pelo cargo de
+   ingles, mesmo tendo o de lider. Sem essa regra, ou ele veria as oito salas,
+   ou eu teria que inventar e manter um cargo "lider-pt" por idioma. */
+function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
+  const V = PermissionFlagsBits.ViewChannel;
+  const R = PermissionFlagsBits.ReadMessageHistory;
+  const S = PermissionFlagsBits.SendMessages;
+  const soLeitura = Object.keys(SO_LEITURA).map((k) => PermissionFlagsBits[k]);
+  const todos = guild.roles.everyone;
+
+  /* Um id, uma entrada.
+
+     A lista vai por Mapa e nao por vetor porque as duas metades da conta
+     podem falar do mesmo cargo: o cargo de ingles pode ter permissao explicita
+     no #leaders (entra permitindo) e ser tambem um "outro idioma" da sala pt
+     (entra negando). Em vetor, iam os dois, e o Discord fica com um deles por
+     sorte -- o mesmo tropeco que o comentario da criacao ja' avisava. Em Mapa,
+     quem chega depois manda, e a ordem aqui poe a negativa por ultimo: entre
+     "e' lider" e "nao fala esta lingua", quem decide e' a lingua. */
+  const portas = new Map();
+  portas.set(todos.id, { id: todos.id, deny: [V] });
+  portas.set(client.user.id, {
+    id: client.user.id,
+    allow: [V, S, PermissionFlagsBits.ManageWebhooks],
+  });
+  const fala = (quem) => podeConversar && !!fonte?.permissionsFor(quem)?.has(S);
+  const entrada = (id, podeFalar) => portas.set(id, podeFalar
+    ? { id, allow: [V, R, S] }
+    : { id, allow: [V, R], deny: soLeitura });
+
+  if (!fonte || fonte.permissionsFor(todos)?.has(V)) {
+    entrada(cargoId, fala(todos));
+    return [...portas.values()];
+  }
+
+  /* Fonte fechada. Pergunto pela permissao EFETIVA, nao pelo que esta escrito
+     no overwrite: um cargo costuma ganhar "ver" explicito e herdar "falar" do
+     cargo em si. Lendo so' o overwrite, esse cargo entraria como leitor mudo
+     numa sala que ele deveria poder usar. */
+  let herdou = false;
+  for (const [id, porta] of fonte.permissionOverwrites.cache) {
+    if (id === todos.id || id === client.user.id) continue;
+    const cargo = guild.roles.cache.get(id);
+    if (cargo) {
+      if (!fonte.permissionsFor(cargo)?.has(V)) continue;
+      entrada(id, fala(cargo));
+    } else {
+      /* Permissao de PESSOA, nao de cargo. Aqui vale o que esta escrito na
+         porta, e nao a permissao efetiva: a pessoa pode nao estar em cache
+         (a lista de membros nao e' garantida) e eu perderia o acesso dela
+         calado, que e' pior do que copiar a porta como ela e'. */
+      if (!porta.allow.has(V)) continue;
+      entrada(id, podeConversar && porta.allow.has(S));
+    }
+    herdou = true;
+  }
+
+  /* Fonte fechada de que ninguem alem de mim tem chave: sem esta rede a
+     replica nasceria trancada pra todos, e um canal que so' o bot enxerga nao
+     e' recurso, e' lixo. Volta a ser do cargo do idioma, so' leitura. */
+  if (!herdou) entrada(cargoId, false);
+
+  for (const outro of outrosCargos) {
+    if (outro === cargoId) continue;
+    portas.set(outro, { id: outro, deny: [V] });
+  }
+  return [...portas.values()];
+}
+
+/* As portas ja' sao estas?
+
+   A varredura passa de dez em dez minutos. Reescrever a lista de permissoes
+   toda vez seria uma chamada por replica por passada -- em oito idiomas e
+   cinco canais, quarenta chamadas de dez em dez minutos pra nao mudar nada,
+   e o Discord cobra isso em limite de taxa. */
+function mesmasPortas(canal, desejadas) {
+  const atual = canal.permissionOverwrites.cache;
+  if (atual.size !== desejadas.length) return false;
+  for (const p of desejadas) {
+    const tem = atual.get(p.id);
+    if (!tem) return false;
+    const somar = (l) => (l || []).reduce((a, b) => a | b, 0n);
+    if (tem.allow.bitfield !== somar(p.allow)) return false;
+    if (tem.deny.bitfield !== somar(p.deny)) return false;
+  }
+  return true;
+}
+
 /* Quem enxerga a categoria enxerga tudo que esta dentro: o cargo do idioma e'
    a chave, e as portas de dentro herdam esta. */
 function portasDaCategoria(guild, cargoId) {
@@ -1634,7 +1745,8 @@ async function garantirCategoria(guild, sala, pistaCanal) {
   return categoria;
 }
 
-async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome) {
+async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome,
+  fonte, outrosCargos, podeConversar) {
   /* Ja existe um canal com este nome nesta categoria? Adota.
 
      Mesma regra da categoria: o Discord manda, nao o meu registro. Um canal
@@ -1662,14 +1774,12 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    topic: `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. Só leitura: quem escreve aqui é o bot.`,
-    /* So-leitura de proposito: o cargo do idioma ve e le, mas nao fala.
-       Conversa tem lugar, e o lugar e' o chat da mesma categoria.
+    topic: `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
+    /* Quem entra e quem fala vem do canal de origem -- ver portasDaReplica.
 
-       Tudo do cargo numa entrada so: dois overwrites com o mesmo id fazem o
-       Discord ficar com um deles, e qual dos dois vira sorte. */
-    permissionOverwrites: portasDaCategoria(guild, sala.role_id).map((p) =>
-      p.id === sala.role_id ? { ...p, deny: Object.keys(SO_LEITURA).map((k) => PermissionFlagsBits[k]) } : p),
+       Tudo de um cargo numa entrada so: dois overwrites com o mesmo id fazem
+       o Discord ficar com um deles, e qual dos dois vira sorte. */
+    permissionOverwrites: portasDaReplica(guild, sala.role_id, fonte, outrosCargos, podeConversar),
     reason: "replica do canal no idioma",
   });
 
@@ -1806,7 +1916,10 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
   for (const [canalId, tipo] of fontes) {
     if (!fontes.geraReplica?.has(canalId)) continue;
     if (tipos.some((t) => t.tipo === tipo)) continue; // duas fontes, um destino
-    tipos.push({ tipo, nomeBase: modelos.get(tipo) || tipo });
+    /* O canal de origem viaja junto: e' dele que a replica tira quem entra e
+       quem fala. Antes so' o rotulo vinha, e por isso a replica de um canal
+       fechado nascia aberta ao servidor inteiro. */
+    tipos.push({ tipo, canalId, nomeBase: modelos.get(tipo) || tipo });
   }
   if (!tipos.length) {
     console.log(`idioma: ${guild.name} não tem canal-fonte que gere réplica; só a categoria`);
@@ -1835,11 +1948,20 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
       for (let i = 0; i < tipos.length; i++) {
         const def = tipos[i];
         const nome = nomeDaReplica(def.nomeBase, def.tipo, sala.idioma);
+        /* O canal de origem e os cargos dos OUTROS idiomas: os dois lados da
+           conta que portasDaReplica faz. Origem sumida vira replica do cargo
+           do idioma, que e' o comportamento de sempre. */
+        const fonte = def.canalId
+          ? await guild.channels.fetch(def.canalId).catch(() => null)
+          : null;
+        const outrosCargos = [...porIdioma.values()]
+          .map((s) => s.role_id).filter((r) => r && r !== sala.role_id);
         const jaExiste = porChave.get(`${sala.idioma}|${def.tipo}`);
 
         if (!jaExiste) {
           if (!podeCriarCanal(orcamento, guild, limite)) continue;
-          await garantirReplica(guild, servidorId, sala, categoria, def, i, nome);
+          await garantirReplica(guild, servidorId, sala, categoria, def, i, nome,
+            fonte, outrosCargos, pago);
           continue;
         }
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
@@ -1854,12 +1976,24 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            nome: uma tentativa por partida, porque a posicao que o Discord
            devolve pode nao ser a que eu pedi e eu ficaria reordenando pra
            sempre. */
-        /* Replica que nasceu antes de eu perceber a janela do tópico. */
-        const doCargo = canal.permissionOverwrites.cache.get(sala.role_id);
-        if (sala.role_id && !doCargo?.deny.has(PermissionFlagsBits.CreatePublicThreads)) {
-          await canal.permissionOverwrites.edit(sala.role_id, SO_LEITURA,
-            { reason: "replica e' so leitura, tópico tambem nao" });
-          console.log(`idioma: #${canal.name} fechado pra tópico`);
+        /* As portas sao refeitas do zero, nao remendadas.
+
+           Aqui so' se trancava o tópico de quem nasceu antes daquela ideia.
+           Agora quem decide a replica e' o canal de origem, e origem muda: o
+           dono fecha o #leaders na terca e a replica precisa fechar junto, ou
+           o vazamento continua com cara de resolvido. Comparar antes de
+           escrever mantem isso barato -- ver mesmasPortas. */
+        const assunto = `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. ` +
+          "O que se escreve aqui aparece traduzido nos outros idiomas.";
+        if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
+          await canal.setTopic(assunto, "réplica deixou de ser só leitura")
+            .catch(() => { /* assunto e' capricho */ });
+        }
+
+        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, pago);
+        if (sala.role_id && !mesmasPortas(canal, querem)) {
+          await canal.permissionOverwrites.set(querem, "portas da réplica seguem o canal de origem");
+          console.log(`idioma: #${canal.name} teve as portas refeitas pelo canal de origem`);
         }
 
         if (canal.position !== i && umaVezPorProcesso(`pos:${canal.id}:${i}`)) {
@@ -2425,7 +2559,9 @@ function colunasDoConvite() {
   return [
     {
       name: "📥 Você lê no seu idioma",
-      value: "Os canais principais ganham uma cópia traduzida só sua.\n_The main channels get a translated copy._",
+      value: "Os canais principais ganham uma cópia no seu idioma — e o que você responder nela " +
+        "aparece traduzido para os outros.\n_The main channels get a copy in your language — and what " +
+        "you reply there shows up translated for everyone else._",
       inline: true,
     },
     {
@@ -4784,7 +4920,8 @@ async function orientarNaReplica(msg, servidor, replica) {
   if (Date.now() - ultima < ESPERA_ORIENTAR) return;
   jaOrientado.set(chave, Date.now());
 
-  const linhas = ["📖 Este canal é uma **cópia traduzida** — o que você escrever aqui não vai para ninguém."];
+  const linhas = ["📖 Aqui neste canal a conversa ainda não vai nos dois sentidos — " +
+    "o que você escrever não chega em quem lê nos outros idiomas."];
 
   /* Onde ele deveria escrever depende do que o servidor tem. */
   const sala = (await sb(
@@ -5556,9 +5693,36 @@ client.on("messageCreate", async (msg) => {
        Entao o bot diz onde e' o lugar certo. Uma vez a cada dez minutos por
        pessoa e canal -- repetir a cada frase seria trocar um silencio ruim por
        um papagaio. */
-    const aqui = (await replicasDoIdioma(servidorId)).find((r) => r.canal_id === msg.channel.id);
+    /* Falar numa replica agora chega nas irmas.
+
+       A replica era destino, nunca origem: quem comentasse ali levava um
+       recado dizendo que aquilo nao ia pra lugar nenhum. So' que comentar o
+       aviso embaixo do aviso e' a coisa mais natural que existe, e a resposta
+       do administrador -- justamente a que interessa a todo mundo -- morria
+       na lingua dele.
+
+       Agora a familia de replicas de um mesmo canal-fonte conversa entre si,
+       igual as salas de chat. O caminho e' o mesmo daquelas, de proposito:
+       uma lista de destinos e uma origem. Duas rotas de espelho seria a
+       receita de corrigir de um lado e esquecer do outro, que ja' aconteceu
+       neste projeto mais de uma vez.
+
+       A fala NAO volta pro canal de origem: ele e' o original, na lingua da
+       casa, e ja' esta escondido de quem escolheu idioma. Mandar de volta
+       encheria o canal do dono com a conversa dos oito.
+
+       No plano gratis a replica segue so' leitura -- por permissao, entao
+       ninguem esbarra nisso sem querer --, e quem passa por cima (o dono do
+       servidor passa) continua recebendo o recado de onde e' o lugar. */
+    const replicas = await replicasDoIdioma(servidorId);
+    const aqui = replicas.find((r) => r.canal_id === msg.channel.id);
     if (aqui) {
-      await orientarNaReplica(msg, servidor, aqui);
+      if (planoDe(servidor) !== "pago") {
+        await orientarNaReplica(msg, servidor, aqui);
+        return;
+      }
+      const irmas = replicas.filter((r) => r.tipo === aqui.tipo);
+      await espelharMensagem(msg, irmas, aqui, texto, motorDe(servidor));
       return;
     }
 
