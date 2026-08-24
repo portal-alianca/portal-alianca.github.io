@@ -1005,10 +1005,17 @@ const PLANOS = {
    lugares. Espalhar a regra seria garantir que um deles ficasse pra tras no
    dia em que ela mudasse. */
 function planoDe(servidor) {
-  if (servidor?.plano === "pago") return "pago";
-  const ate = servidor?.teste_ate ? Date.parse(servidor.teste_ate) : 0;
-  if (ate && ate > Date.now()) return "pago";
+  if (servidor?.plano === "pago") return "pago";      // liberado na mao, sem prazo
+  if (venceEm(servidor?.teste_ate)) return "pago";    // teste de 7 dias
+  if (venceEm(servidor?.pago_ate)) return "pago";     // codigo de ativacao
   return "gratis";
+}
+
+/* A data, se ela ainda esta no futuro. Nula quando ja venceu -- assim o plano
+   cai sozinho no dia seguinte, sem nada precisar rodar pra derrubar. */
+function venceEm(quando) {
+  const t = quando ? Date.parse(quando) : 0;
+  return t && t > Date.now() ? t : 0;
 }
 
 /* Idiomas que alguem escolheu e que nao couberam no plano.
@@ -2697,6 +2704,9 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
       { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
       { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
+      ...(servidor.plano === "pago"
+        ? []   // liberado sem prazo: codigo aqui so' confundiria
+        : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
       ...(orfas?.length
         ? [{
             type: 2, custom_id: "cyron:limpar", style: 4, emoji: { name: "🗑️" },
@@ -2785,10 +2795,14 @@ async function montarPainel(guild, servidor) {
   const idiomas = await sb(
     `discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,canal_id`) || [];
   const limite = limitesDo(servidor);
-  const teste = servidor.teste_ate ? Date.parse(servidor.teste_ate) : 0;
-  const emTeste = teste > Date.now()
-    ? new Date(teste).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
-    : null;
+  /* O rodape diz ate quando, e por que. "Plano PAGO" sozinho nao responde a
+     pergunta que a pessoa faz quando vai renovar. */
+  const dia = (t) => new Date(t).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  const pagoAte = venceEm(servidor.pago_ate);
+  const testeAte = venceEm(servidor.teste_ate);
+  const prazo = pagoAte ? ` · até ${dia(pagoAte)}`
+    : testeAte ? ` · teste até ${dia(testeAte)}`
+    : "";
 
   /* Canal apagado nao entra no painel. O Discord desenha "#desconhecido" pra id
      que nao existe mais, e isso aqui parece defeito -- e' so' uma linha
@@ -2919,7 +2933,7 @@ async function montarPainel(guild, servidor) {
       "dentro da categoria de quem escolheu aquele idioma.",
     color: corDoPainel(noTeto, fila.length > 0 || inalcancaveis.length > 0 || !!cargoRuim),
     fields: campos,
-    footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${emTeste ? ` · teste até ${emTeste}` : ""}` },
+    footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${prazo}` },
   };
 
   return { embed, componentes: componentesDoPainel(servidor, vivas, limite, orfas, elegiveis) };
@@ -3209,6 +3223,7 @@ async function cliquePainel(inter) {
   /* showModal so' vale em interacao ainda nao respondida -- por isso vem
      antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
   if (acao === "motor") return inter.showModal(janelaDoMotor(servidor));
+  if (acao === "codigo") return inter.showModal(janelaDoCodigo());
 
   await inter.deferUpdate();
 
@@ -3451,6 +3466,77 @@ async function salvarMotor(inter) {
 async function atualizarUmCartao(guild) {
   const servidor = await servidorDoGuild(guild.id);
   if (servidor?.canal_config) await cartaoDeConfig(guild, servidor).catch(() => {});
+}
+
+/* Resgatar um código de ativação.
+
+   O plano pago era um UPDATE feito a mao. Nao da' pra vender assim: o cliente
+   paga e fica esperando alguem acordar.
+
+   O codigo e' o denominador comum de qualquer forma de cobranca -- PIX,
+   cartao, venda no boca a boca. O que muda de uma pra outra e' de onde o
+   codigo sai, nao o que ele faz aqui.
+
+   Ele entra por janela, e nao por mensagem no canal, pelo mesmo motivo da
+   chave de API: um codigo postado num canal e' um codigo que outra pessoa
+   resgata primeiro. */
+function janelaDoCodigo() {
+  return {
+    custom_id: "cyron:codigo",
+    title: "Ativar o plano pago",
+    components: [
+      { type: 1, components: [{
+        type: 4, custom_id: "codigo", style: 1, required: true, max_length: 40,
+        label: "Código de ativação",
+        placeholder: "CYRON-XXXXXXXX",
+      }] },
+    ],
+  };
+}
+
+async function resgatarCodigo(inter) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode ativar um plano." });
+  }
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui." });
+
+  await inter.deferReply({ flags: 64 });
+
+  let codigo = "";
+  try { codigo = String(inter.fields.getTextInputValue("codigo") || "").trim(); } catch { /* campo vazio */ }
+  if (!codigo) return inter.editReply("Você não digitou nenhum código.");
+
+  let r;
+  try {
+    r = (await rpc("cyron_resgatar_codigo", { p_codigo: codigo, p_servidor: servidor.id }))?.[0];
+  } catch (e) {
+    console.error("codigo: resgate falhou:", e?.message || e);
+    return inter.editReply("❌ Não consegui falar com o servidor agora. **Nada foi usado** — tente de novo em instantes.");
+  }
+
+  if (!r?.ok) {
+    /* Recusa dizendo QUAL foi o problema: "código inválido" para as duas
+       coisas faria quem digitou errado ficar procurando a compra, e quem já
+       usou ficar redigitando. */
+    return inter.editReply(r?.motivo === "usado"
+      ? "🎟️ Esse código **já foi usado**. Cada código vale uma ativação — se você comprou e ele já constava usado, me chame."
+      : "🎟️ Não encontrei esse código. Confira as letras: eles não têm **O**, **I**, **zero** nem **um**, justamente para não confundir.");
+  }
+
+  cacheServidor.delete(inter.guildId);
+  const ate = new Date(r.ate).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  await inter.editReply([
+    `✅ **Plano pago ativado até ${ate}.**`,
+    "",
+    `Agora cabem **${PLANOS.pago.idiomas} idiomas** e **${PLANOS.pago.fontes} canais traduzidos**.`,
+    "Resgatar outro código soma os dias a esta data — não substitui.",
+  ].join("\n"));
+
+  /* Monta na hora: quem acabou de pagar quer ver acontecer. */
+  const atualizado = await servidorDoGuild(inter.guildId);
+  await sincronizarAgora(inter.guild);
+  if (atualizado) await cartaoDeConfig(inter.guild, atualizado).catch(() => {});
 }
 
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
@@ -4125,6 +4211,7 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
+      if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
       return;
     }
     if (inter.isStringSelectMenu()) {
