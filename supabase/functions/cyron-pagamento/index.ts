@@ -76,6 +76,28 @@ async function rpc(fn: string, corpo: unknown) {
   return txt ? JSON.parse(txt) : null;
 }
 
+/* Onde a assinatura se esconde dentro de uma fatura.
+
+   O Stripe mudou isso de lugar entre versoes da API: era invoice.subscription,
+   virou invoice.parent.subscription_details.subscription, e tambem aparece
+   dentro de cada linha da fatura. No primeiro teste real a fatura chegou sem
+   nada no lugar antigo, e eu so' nao perdi o pagamento porque o checkout ja
+   tinha creditado.
+
+   Na RENOVACAO nao existe checkout: a fatura e' o unico aviso que chega. Se
+   eu procurasse num lugar so', o mes 2 nao creditaria, o cliente cairia pro
+   gratis -- tendo pago. Procuro nos tres. */
+function assinaturaDaFatura(obj: any): string | null {
+  const candidatos = [
+    obj?.subscription,
+    obj?.parent?.subscription_details?.subscription,
+    obj?.lines?.data?.[0]?.parent?.subscription_item_details?.subscription,
+    obj?.lines?.data?.[0]?.subscription,
+  ];
+  for (const c of candidatos) if (typeof c === "string" && c) return c;
+  return null;
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("só POST", { status: 405 });
 
@@ -114,14 +136,18 @@ Deno.serve(async (req) => {
     if (obj.billing_reason !== "subscription_cycle") {
       return new Response("primeira fatura, já creditada no checkout", { status: 200 });
     }
-    assinatura = typeof obj.subscription === "string" ? obj.subscription : null;
+    assinatura = assinaturaDaFatura(obj);
   } else {
     /* Qualquer outro evento: 200 pra ele nao ficar reenviando pra sempre. */
     return new Response("ignorado", { status: 200 });
   }
 
   if (!servidor && !assinatura) {
-    console.error(`pagamento: ${evento.type} sem servidor nem assinatura`);
+    /* Registra os campos do objeto, nao o conteudo: se o Stripe mudar de lugar
+       de novo, isto diz ONDE procurar sem despejar dado de cliente no log. */
+    console.error(
+      `pagamento: ${evento.type} sem servidor nem assinatura; campos=${Object.keys(obj).join(",")}`,
+    );
     return new Response("sem destino", { status: 200 });
   }
 
