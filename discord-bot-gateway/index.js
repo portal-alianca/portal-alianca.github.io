@@ -1032,7 +1032,21 @@ const PLANOS = {
    Uma funcao so' pra isso porque "este servidor e' pago?" aparece em varios
    lugares. Espalhar a regra seria garantir que um deles ficasse pra tras no
    dia em que ela mudasse. */
+/* Periodo de lancamento: todo mundo pago, ate uma data.
+
+   Enquanto nao ha publico, cobrar so' serve pra afastar quem ia experimentar.
+   Entao tudo fica liberado -- mas com DATA, e dita em voz alta no painel.
+
+   Data, e nao um "por enquanto", por dois motivos. Quem instala precisa saber
+   que isso acaba, senao o fim vira sensacao de golpe. E eu preciso de uma
+   data pra escrever no painel: "temporario" nao e' informacao, e' desculpa.
+
+   Vem de variavel de ambiente pra esticar ou encerrar sem mexer no codigo:
+   fly secrets set CYRON_ABERTO_ATE=2027-03-31 */
+const ABERTO_ATE = process.env.CYRON_ABERTO_ATE || "";
+
 function planoDe(servidor) {
+  if (venceEm(ABERTO_ATE)) return "pago";             // periodo de lancamento
   if (servidor?.plano === "pago") return "pago";      // liberado na mao, sem prazo
   if (venceEm(servidor?.teste_ate)) return "pago";    // teste de 7 dias
   if (venceEm(servidor?.pago_ate)) return "pago";     // codigo de ativacao
@@ -2877,9 +2891,11 @@ async function montarPainel(guild, servidor) {
   /* O rodape diz ate quando, e por que. "Plano PAGO" sozinho nao responde a
      pergunta que a pessoa faz quando vai renovar. */
   const dia = (t) => new Date(t).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  const aberto = venceEm(ABERTO_ATE);
   const pagoAte = venceEm(servidor.pago_ate);
   const testeAte = venceEm(servidor.teste_ate);
-  const prazo = pagoAte ? ` · até ${dia(pagoAte)}`
+  const prazo = aberto ? ` · lançamento, liberado até ${dia(aberto)}`
+    : pagoAte ? ` · até ${dia(pagoAte)}`
     : testeAte ? ` · teste até ${dia(testeAte)}`
     : "";
 
@@ -2960,6 +2976,24 @@ async function montarPainel(guild, servidor) {
       name: `💬 Salas de conversa — ${salas.length}`,
       value: salas.map((i) => `<#${i.canal_id}>`).join(" ") +
         "\n_Uma por idioma. Não são cópias: é onde cada idioma conversa, e o que se escreve numa aparece traduzido nas outras._",
+    });
+  }
+
+  /* O aviso do periodo aberto vem ANTES dos problemas, e nao depois.
+
+     Ele nao e' um problema -- e' o motivo de os numeros estarem altos. Quem
+     olha o painel e ve "10 canais" precisa saber que isso vence, na mesma
+     olhada, ou vai planejar em cima de um limite que nao vai durar. */
+  if (aberto && !pagoAte && servidor.plano !== "pago") {
+    const g = PLANOS.gratis;
+    campos.push({
+      name: `🎁 Período de lançamento — liberado até ${dia(aberto)}`,
+      value: [
+        `Até lá, tudo do plano pago sem pagar nada: **${PLANOS.pago.idiomas} idiomas** e **${PLANOS.pago.fontes} canais traduzidos**.`,
+        "",
+        `Depois dessa data o servidor volta ao plano grátis (**${g.idiomas} idiomas**, **${g.fontes} canais**). ` +
+        "**Nada é apagado** — o que passar do limite apenas para de crescer, e você escolhe o que manter.",
+      ].join("\n"),
     });
   }
 
