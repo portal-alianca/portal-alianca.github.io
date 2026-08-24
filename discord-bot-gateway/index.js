@@ -2156,6 +2156,13 @@ async function sincronizarUmGuild(guild) {
           const tem = membro.roles.cache.has(cargo);
           if (cargo === querido && !tem) {
             await membro.roles.add(cargo, "idioma escolhido no bot").catch((e) => {
+              /* Uma vez por servidor e por pessoa, nao a cada dez minutos.
+
+                 Esta linha vinha repetindo desde ontem, e o painel do servidor
+                 ja' diz a mesma coisa de forma permanente e com o conserto
+                 junto. Repetida, ela nao informa nada novo -- so' empurra pra
+                 fora da tela o erro que eu ainda nao conheco. */
+              if (!umaVezPorProcesso(`semcargo:${guild.id}:${membro.id}`)) return;
               /* Com os numeros junto.
 
                  "Missing Permissions" sozinho nao diz de quem e' a culpa: pode
