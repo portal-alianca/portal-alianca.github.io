@@ -45,12 +45,15 @@ async function sb(caminho) {
   return await r.json();
 }
 
-async function sbPost(caminho, corpo) {
+async function sbPost(caminho, corpo, prefer = "") {
   const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
     method: "POST",
     headers: {
       apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
-      "Content-Type": "application/json", Prefer: "return=representation",
+      "Content-Type": "application/json",
+      /* merge-duplicates transforma o POST em upsert -- e' assim que um
+         ajuste e' gravado sem eu precisar saber se ele ja existia. */
+      Prefer: ["return=representation", prefer].filter(Boolean).join(","),
     },
     body: JSON.stringify(corpo),
   });
@@ -1032,6 +1035,46 @@ const PLANOS = {
    Uma funcao so' pra isso porque "este servidor e' pago?" aparece em varios
    lugares. Espalhar a regra seria garantir que um deles ficasse pra tras no
    dia em que ela mudasse. */
+/* ---------------- ajustes vivos ----------------
+
+   Link de pagamento, beta ligado, servidor do painel: coisas que mudam por
+   decisao de negocio, nao por mudanca de codigo. Em variavel de ambiente,
+   cada troca dessas exigia um deploy meu -- ou seja, exigia eu estar
+   disponivel. No banco, e' um formulario do dono.
+
+   Cache curto porque isto e' lido em toda montagem de painel. Um minuto de
+   atraso pra ver um ajuste novo e' aceitavel; ler o banco a cada mensagem
+   nao e'. */
+let cacheAjustes = { v: null, t: 0 };
+
+async function ajustes() {
+  if (cacheAjustes.v && Date.now() - cacheAjustes.t < 60 * 1000) return cacheAjustes.v;
+  let v = {};
+  try {
+    for (const r of (await sb("cyron_ajuste?select=chave,valor")) || []) v[r.chave] = r.valor;
+  } catch {
+    /* Banco fora do ar nao pode apagar o que ja' estava valendo. */
+    if (cacheAjustes.v) return cacheAjustes.v;
+  }
+  cacheAjustes = { v, t: Date.now() };
+  return v;
+}
+
+async function porAjuste(chave, valor) {
+  await sbPost("cyron_ajuste", { chave, valor, atualizado_em: new Date().toISOString() },
+    "resolution=merge-duplicates");
+  cacheAjustes = { v: null, t: 0 };
+}
+
+/* Variavel de ambiente continua valendo como PADRAO.
+
+   Assim nada quebra na virada: o que ja estava no Fly segue funcionando ate'
+   o dono mexer no painel, e o painel passa a mandar a partir daí. */
+async function ajuste(chave, doAmbiente) {
+  const a = await ajustes();
+  return a[chave] ?? doAmbiente ?? "";
+}
+
 /* Beta: todo mundo pago enquanto durar.
 
    Enquanto nao ha publico, cobrar so' serve pra afastar quem ia experimentar.
@@ -3678,6 +3721,426 @@ async function resgatarCodigo(inter) {
   if (atualizado) await cartaoDeConfig(inter.guild, atualizado).catch(() => {});
 }
 
+/* ---------------- o painel do dono ----------------
+
+   Um servidor do Discord inteiro como area administrativa: um canal por
+   cliente, mais canais de acontecimento. E' a ideia do dono, e ela e' boa pro
+   que canal faz bem -- historico por assunto, em ordem, no celular.
+
+   Cada cliente ganha um TOPICO, nao um canal.
+
+   Canal por cliente era a ideia primeira, e ela esbarra em tres coisas: o
+   Discord aceita 500 canais por servidor mas a barra lateral fica ilegivel
+   bem antes; cliente que cancela vira faxina manual; e canal nao arquiva
+   sozinho. Topico resolve os tres -- some da barra quando esfria, volta
+   quando acontece algo, e continua pesquisavel.
+
+   O que topico NAO resolve, e canal nenhum resolveria: ordenar, filtrar e
+   somar. "Quem traduziu mais essa semana" nao se responde olhando uma lista.
+   Por isso o painel tem duas metades -- os topicos e os canais pro que
+   acontece, e o /admin pro que se pergunta.
+
+   O bot NAO se instala no servidor do painel. Sem isso, ele criaria ali a
+   porta de idioma, o canal de configuracao e o resto, tratando o dono como
+   mais um cliente. */
+
+/* Os ultimos erros, em memoria.
+
+   O log do Fly tem tudo, mas exige terminal e some no meio de linhas
+   repetidas -- foi assim que eu quase perdi o "Invalid Form Body" hoje. Aqui
+   ficam os ultimos, filtrados, com hora e lugar, pra olhar do celular.
+
+   Em memoria, e nao no banco, de proposito: erro e' coisa de agora. Gravar
+   cada um daria uma tabela que so cresce e que ninguem lê, e um erro no
+   gravador de erros e' um laco que ninguem quer depurar. Somem no reinicio, e
+   o painel diz isso. */
+const errosRecentes = [];
+const MAX_ERROS = 60;
+
+/* O canal #erros recebe cada erro UMA vez por hora.
+
+   Sem trava, um erro que se repete de dez em dez minutos -- e eu tenho um
+   assim hoje -- encheria o canal de linhas iguais ate' o dono parar de olhar.
+   Um canal de erro que ninguem le e' pior que nenhum: da a impressao de que
+   esta tudo sob controle.
+
+   A lista do /admin guarda todas as ocorrencias; o canal so' avisa. */
+const jaAvisado = new Map();
+const ESPERA_AVISO = 60 * 60 * 1000;
+
+function anotarErro(onde, porque) {
+  errosRecentes.push({ quando: Date.now(), onde, porque: String(porque || "").slice(0, 300) });
+  if (errosRecentes.length > MAX_ERROS) errosRecentes.shift();
+
+  const chave = `${onde}|${String(porque).slice(0, 60)}`;
+  const ultimo = jaAvisado.get(chave) || 0;
+  if (Date.now() - ultimo < ESPERA_AVISO) return;
+  jaAvisado.set(chave, Date.now());
+  avisarNoPainel(CANAL_ERROS,
+    `\`${new Date().toLocaleTimeString("pt-BR")}\` **${onde}** — ${porque}`).catch(() => {});
+}
+
+const CANAL_NOVOS = "📥-novos";
+const CANAL_PAGAMENTOS = "💳-pagamentos";
+const CANAL_ERROS = "🐛-erros";
+const CANAL_CLIENTES = "📋-clientes";
+
+/* Quem pode abrir o painel do dono.
+
+   Pergunto ao Discord de quem e' o aplicativo, em vez de guardar um id numa
+   variavel. Id escrito na mao envelhece calado: no dia em que a conta mudar
+   ou o app virar de um time, ninguem lembra de atualizar, e o painel some pro
+   dono legitimo. */
+async function ehDono(userId) {
+  try {
+    if (!client.application?.owner) await client.application.fetch();
+    const dono = client.application?.owner;
+    if (!dono) return false;
+    if (dono.members) return dono.members.has(userId);   // aplicativo de um time
+    return dono.id === userId;
+  } catch {
+    return false;
+  }
+}
+
+async function guildDoPainel() {
+  return (await ajustes()).admin_guild || "";
+}
+
+async function ehOPainel(guildId) {
+  return !!guildId && guildId === await guildDoPainel();
+}
+
+/* Nome de canal a partir do nome do servidor.
+
+   Discord so' aceita minusculas, sem espaco e sem acento. Um servidor chamado
+   "Servidor de 𝐹𝑒𝓇𝓃𝒶𝓃𝒹𝑜 †" vira "servidor-de-fernando" -- e se sobrar vazio
+   (nome so' de simbolos, que existe), cai no id, que nunca e' vazio. */
+function nomeDeCanal(nome, id) {
+  const limpo = String(nome || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 90);
+  return limpo || `servidor-${String(id).slice(-6)}`;
+}
+
+async function canalDoPainel(guild, nome, categoria) {
+  const achado = guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildText && c.name === nome);
+  if (achado) return achado;
+  return await guild.channels.create({
+    name: nome, type: ChannelType.GuildText,
+    ...(categoria ? { parent: categoria.id } : {}),
+    reason: "painel de administração do CYRON",
+  }).catch((e) => {
+    console.error("painel: nao consegui criar", nome, e?.message || e);
+    return null;
+  });
+}
+
+/* Acha o topico do cliente, ou abre um.
+
+   Guardo o id, nunca procuro pelo nome: servidor muda de nome, e busca por
+   nome vira topico duplicado no dia da primeira renomeacao.
+
+   Uma semana de auto-arquivamento: quem esta em uso fica a vista, quem
+   esfriou sai da frente sem sumir. */
+async function topicoDoCliente(guild, canal, servidor) {
+  if (servidor.canal_admin) {
+    const achado = await guild.channels.fetch(servidor.canal_admin).catch(() => null);
+    if (achado) return achado;
+  }
+  const topico = await canal.threads.create({
+    name: nomeDeCanal(servidor.nome, servidor.guild_id).slice(0, 90),
+    autoArchiveDuration: 10080,
+    reason: "ficha do cliente no painel",
+  }).catch((e) => {
+    console.error("painel: nao consegui abrir o tópico:", e?.message || e);
+    return null;
+  });
+  if (!topico) return null;
+  await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
+    { canal_admin: topico.id, msg_admin: null });
+  servidor.canal_admin = topico.id;
+  servidor.msg_admin = null;
+  return topico;
+}
+
+/* Escreve num canal de acontecimento, se o painel existir.
+
+   Nunca estoura: um aviso administrativo que derruba a operacao seria o
+   cumulo. Se o painel nao existe ainda, a linha simplesmente nao e' escrita --
+   o dado de verdade esta no banco de qualquer jeito. */
+async function avisarNoPainel(nomeCanal, texto) {
+  try {
+    const gid = await guildDoPainel();
+    if (!gid) return;
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return;
+    const canal = guild.channels.cache.find(
+      (c) => c.type === ChannelType.GuildText && c.name === nomeCanal);
+    if (!canal) return;
+    await canal.send({ content: texto.slice(0, 1900), allowedMentions: { parse: [] } });
+  } catch (e) {
+    console.error("painel: nao consegui avisar em", nomeCanal, e?.message || e);
+  }
+}
+
+/* O cartao de um cliente: o que ele tem, o que ele usa, como esta.
+
+   Mesmo padrao do painel do cliente -- mensagem fixada que se EDITA. Um canal
+   por cliente com dez mensagens de estado velhas seria pior que nenhum canal:
+   a pessoa leria a de cima achando que e' a atual. */
+async function cartaoDoCliente(guild, servidor) {
+  if (!servidor.canal_admin) return;
+  const canal = await guild.channels.fetch(servidor.canal_admin).catch(() => null);
+  if (!canal) return;
+
+  const uso = await usoDeHoje(servidor.id);
+  const sete = await sb(
+    `cyron_uso_diario?servidor_id=eq.${servidor.id}&dia=gte.${new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10)}&select=caracteres,traducoes`) || [];
+  const soma = sete.reduce((a, l) => ({
+    c: a.c + Number(l.caracteres || 0), t: a.t + Number(l.traducoes || 0),
+  }), { c: 0, t: 0 });
+
+  const idiomas = await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma`) || [];
+  const fontes = await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
+  const cliente = client.guilds.cache.get(String(servidor.guild_id));
+  const plano = planoDe(servidor);
+
+  const embed = {
+    color: servidor.saiu_em ? 0x8A3A33 : plano === "pago" ? 0x2E8B7A : 0xB08A2E,
+    title: servidor.nome || nomeDeCanal(servidor.nome, servidor.guild_id),
+    description: servidor.saiu_em
+      ? `⚠️ **Me tiraram deste servidor** em ${new Date(servidor.saiu_em).toLocaleString("pt-BR")}.`
+      : `${cliente ? `${cliente.memberCount} membros` : "_não estou vendo este servidor agora_"}`,
+    fields: [
+      { name: "Plano", value: plano === "pago" ? "🟢 pago" : "⚪ grátis", inline: true },
+      { name: "Idiomas", value: String(idiomas.length), inline: true },
+      { name: "Canais traduzidos", value: String(fontes.length), inline: true },
+      { name: "Hoje", value: `${uso.traducoes} traduções\n${(uso.caracteres / 1000).toFixed(1)}k caracteres`, inline: true },
+      { name: "7 dias", value: `${soma.t} traduções\n${(soma.c / 1000).toFixed(1)}k caracteres`, inline: true },
+      { name: "Motor", value: servidor.tradutor_motor && servidor.tradutor_motor !== "auto"
+          ? `🔑 ${servidor.tradutor_motor}` : "⚪ google grátis", inline: true },
+    ],
+    footer: { text: `guild ${servidor.guild_id} · instalado em ${new Date(servidor.criado_em).toLocaleDateString("pt-BR")}` },
+  };
+
+  if (servidor.msg_admin) {
+    const antiga = await canal.messages.fetch(servidor.msg_admin).catch(() => null);
+    if (antiga) {
+      const antes = antiga.embeds?.[0] ? assinaturaDoCartao(antiga.embeds[0].toJSON(), []) : null;
+      if (antes === assinaturaDoCartao(embed, [])) return;   // nada mudou
+
+      /* Desarquiva SO' quando ha' o que escrever. Desarquivar a cada volta do
+         relogio deixaria todos os topicos sempre ativos, e a barra lateral
+         voltaria a ser a parede que o topico veio evitar. */
+      if (canal.archived) await canal.setArchived(false, "ficha mudou").catch(() => {});
+      await antiga.edit({ embeds: [embed] });
+      return;
+    }
+  }
+  if (canal.archived) await canal.setArchived(false, "primeira ficha").catch(() => {});
+  const nova = await canal.send({ embeds: [embed] });
+  await nova.pin("ficha do cliente").catch(() => {});
+  await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_admin: nova.id });
+  servidor.msg_admin = nova.id;
+}
+
+/* Monta o painel inteiro: canais de acontecimento, categoria e um canal por
+   cliente. Roda junto da volta do relogio, entao cliente novo ganha canal
+   sozinho -- e cliente que ja tem canal so' tem a ficha atualizada. */
+async function montarPainelDoDono() {
+  const gid = await guildDoPainel();
+  if (!gid) return;
+  const guild = client.guilds.cache.get(gid);
+  if (!guild) return;
+
+  for (const nome of [CANAL_NOVOS, CANAL_PAGAMENTOS, CANAL_ERROS]) {
+    await canalDoPainel(guild, nome, null);
+  }
+  const sala = await canalDoPainel(guild, CANAL_CLIENTES, null);
+  if (!sala) return;
+
+  const todos = await sb("cyron_servidor?select=*&order=criado_em.asc") || [];
+  for (const servidor of todos) {
+    if (String(servidor.guild_id) === gid) continue;   // o painel nao e' cliente
+    try {
+      const topico = await topicoDoCliente(guild, sala, servidor);
+      if (topico) await cartaoDoCliente(guild, servidor);
+    } catch (e) {
+      console.error("painel: cliente", servidor.nome, e?.message || e);
+    }
+  }
+}
+
+/* O /admin: a metade do painel que responde perguntas.
+
+   Canal por cliente mostra o historico de UM cliente. Aqui ficam as respostas
+   que exigem olhar todos de uma vez -- quem usa mais, quantos existem, o que
+   quebrou. E' de proposito que sejam duas coisas: tentar fazer a lista de
+   canais responder isso e' o que ia frustrar em duas semanas. */
+async function comandoAdmin(inter) {
+  if (!await ehDono(inter.user.id)) {
+    /* Nao digo "voce nao e' o dono" -- digo que o comando nao existe pra
+       quem pergunta. Confirmar que existe um painel de dono e' contar metade
+       do caminho pra quem estava tateando. */
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+
+  await inter.deferReply({ flags: 64 });
+
+  const gid = await guildDoPainel();
+  if (!gid) {
+    return inter.editReply({
+      content: "Este servidor ainda não é o seu painel. Quer usar **este aqui** para acompanhar os clientes?",
+      components: [{ type: 1, components: [
+        { type: 2, custom_id: "admin:aqui", style: 3, emoji: { name: "📋" }, label: "Usar este servidor como painel" },
+      ] }],
+    });
+  }
+
+  return inter.editReply({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
+}
+
+function linhasDoAdmin() {
+  return [{ type: 1, components: [
+    { type: 2, custom_id: "admin:resumo", style: 2, emoji: { name: "📊" }, label: "Resumo" },
+    { type: 2, custom_id: "admin:uso", style: 2, emoji: { name: "🏆" }, label: "Quem usa mais" },
+    { type: 2, custom_id: "admin:erros", style: 2, emoji: { name: "🐛" }, label: "Erros" },
+    { type: 2, custom_id: "admin:codigos", style: 1, emoji: { name: "🎟️" }, label: "Gerar códigos" },
+    { type: 2, custom_id: "admin:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar painel" },
+  ] }];
+}
+
+async function embedDoResumo() {
+  const todos = await sb("cyron_servidor?select=id,nome,plano,pago_ate,teste_ate,saiu_em") || [];
+  const dentro = todos.filter((s) => !s.saiu_em);
+  const pagos = dentro.filter((s) => s.plano === "pago" || venceEm(s.pago_ate));
+  const hoje = await sb(
+    `cyron_uso_diario?dia=eq.${hojeISO()}&select=caracteres,traducoes,do_cache`) || [];
+  const soma = hoje.reduce((a, l) => ({
+    c: a.c + Number(l.caracteres || 0), t: a.t + Number(l.traducoes || 0), k: a.k + Number(l.do_cache || 0),
+  }), { c: 0, t: 0, k: 0 });
+  const codigos = await sb("cyron_codigo?usado_em=is.null&select=codigo") || [];
+
+  return {
+    color: 0x2E8B7A,
+    title: "📊 CYRON — resumo",
+    fields: [
+      { name: "Servidores", value: `**${dentro.length}** ativos\n${todos.length - dentro.length} saíram`, inline: true },
+      { name: "Pagantes", value: `**${pagos.length}**${BETA || venceEm(BETA_ATE) ? "\n_beta: todos com limites do pago_" : ""}`, inline: true },
+      { name: "Códigos livres", value: String(codigos.length), inline: true },
+      { name: "Traduzido hoje", value: soma.t
+          ? `**${soma.t}** traduções · ${(soma.c / 1000).toFixed(1)}k caracteres\n${soma.k} vieram do cache`
+          : "_nada ainda_" },
+      { name: "Erros guardados", value: errosRecentes.length ? `${errosRecentes.length} — veja em 🐛` : "_nenhum_", inline: true },
+    ],
+    footer: { text: `de pé desde ${new Date(Date.now() - process.uptime() * 1000).toLocaleString("pt-BR")}` },
+  };
+}
+
+async function embedDeUso() {
+  const desde = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+  const linhas = await sb(`cyron_uso_diario?dia=gte.${desde}&select=servidor_id,caracteres,traducoes`) || [];
+  const nomes = new Map((await sb("cyron_servidor?select=id,nome") || []).map((s) => [s.id, s.nome]));
+
+  const por = new Map();
+  for (const l of linhas) {
+    const a = por.get(l.servidor_id) || { c: 0, t: 0 };
+    a.c += Number(l.caracteres || 0); a.t += Number(l.traducoes || 0);
+    por.set(l.servidor_id, a);
+  }
+  const ranking = [...por.entries()].sort((a, b) => b[1].c - a[1].c).slice(0, 15);
+
+  return {
+    color: 0x2E8B7A,
+    title: "🏆 Quem mais traduziu — últimos 7 dias",
+    description: ranking.length
+      ? ranking.map(([id, v], i) =>
+          `**${i + 1}.** ${nomes.get(id) || id} — ${(v.c / 1000).toFixed(1)}k caracteres · ${v.t} traduções`).join("\n")
+      : "_ninguém traduziu nada nos últimos 7 dias_",
+  };
+}
+
+function embedDeErros() {
+  return {
+    color: errosRecentes.length ? 0xB4534A : 0x2E8B7A,
+    title: "🐛 Últimos erros do bot",
+    description: errosRecentes.length
+      ? errosRecentes.slice(-12).reverse().map((e) =>
+          `\`${new Date(e.quando).toLocaleTimeString("pt-BR")}\` **${e.onde}**\n${e.porque.slice(0, 140)}`).join("\n\n").slice(0, 3800)
+      : "_nenhum erro desde que subi_",
+    footer: { text: "guardados em memória; somem quando eu reinicio" },
+  };
+}
+
+function janelaDeCodigos() {
+  return {
+    custom_id: "admin:codigos",
+    title: "Gerar códigos de ativação",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "quantos", style: 1, required: true, max_length: 3,
+        label: "Quantos códigos", placeholder: "5" }] },
+      { type: 1, components: [{ type: 4, custom_id: "dias", style: 1, required: true, max_length: 4,
+        label: "Dias de plano pago cada um", placeholder: "31" }] },
+      { type: 1, components: [{ type: 4, custom_id: "nota", style: 1, required: false, max_length: 80,
+        label: "Anotação (para você lembrar)", placeholder: "venda PIX - fulano" }] },
+    ],
+  };
+}
+
+async function cliqueAdmin(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  const acao = inter.customId.slice("admin:".length);
+
+  if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaDeCodigos());
+
+  await inter.deferUpdate();
+
+  if (acao === "aqui") {
+    await porAjuste("admin_guild", inter.guildId);
+    await montarPainelDoDono();
+    return inter.editReply({
+      content: "📋 Pronto. Este servidor virou o seu painel: criei os canais de acontecimento e um canal por cliente.",
+      embeds: [await embedDoResumo()], components: linhasDoAdmin(),
+    });
+  }
+  if (acao === "remontar") {
+    await montarPainelDoDono();
+    return inter.editReply({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
+  }
+  if (acao === "uso") return inter.editReply({ embeds: [await embedDeUso()], components: linhasDoAdmin() });
+  if (acao === "erros") return inter.editReply({ embeds: [embedDeErros()], components: linhasDoAdmin() });
+  return inter.editReply({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
+}
+
+async function gerarCodigos(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+  const quantos = Math.min(50, Math.max(1, parseInt(campo("quantos"), 10) || 0));
+  const dias = Math.min(3650, Math.max(1, parseInt(campo("dias"), 10) || 0));
+  if (!quantos || !dias) return inter.editReply("Quantidade e dias precisam ser números.");
+
+  try {
+    const r = await rpc("cyron_criar_codigos", { p_quantos: quantos, p_dias: dias, p_nota: campo("nota") || null });
+    const lista = (r || []).map((x) => x.codigo);
+    /* Efemero de proposito: codigo postado num canal e' codigo que outra
+       pessoa resgata primeiro -- inclusive no seu proprio painel. */
+    return inter.editReply(
+      `🎟️ **${lista.length} códigos de ${dias} dias:**\n\`\`\`\n${lista.join("\n")}\n\`\`\`` +
+      "\n_Só você está vendo isto. Copie agora: eu não mostro de novo._");
+  } catch (e) {
+    console.error("admin: nao consegui gerar codigos:", e?.message || e);
+    return inter.editReply("❌ Não consegui gerar agora. Nada foi criado.");
+  }
+}
+
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
 
    Ele mostra o que a varredura acabou de decidir -- quantos idiomas couberam,
@@ -3696,9 +4159,37 @@ async function atualizarCartoes() {
   }
 }
 
+/* Sair tambem e' informacao.
+
+   Sem isto, cliente que desiste some sem deixar rastro: a linha fica no banco
+   parecendo ativa, o canal dele no painel continua verde, e a conta de
+   "quantos servidores eu tenho" mente pra cima. */
+client.on("guildDelete", async (guild) => {
+  try {
+    const servidor = await servidorDoGuild(guild.id);
+    if (!servidor) return;
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
+      { saiu_em: new Date().toISOString() });
+    cacheServidor.delete(guild.id);
+    console.log(`instalar: me tiraram de ${guild.name} (${guild.id})`);
+    await avisarNoPainel(CANAL_NOVOS, `📤 **${guild.name}** me removeu · \`${guild.id}\``);
+  } catch (e) {
+    console.error("instalar: nao consegui anotar a saida:", e?.message || e);
+  }
+});
+
 client.on("guildCreate", async (guild) => {
   try {
+    /* O servidor do painel nao e' cliente. Sem esta linha, ele ganharia porta
+       de idioma, canal de configuracao e replicas -- o dono viraria inquilino
+       da propria area administrativa. */
+    if (await ehOPainel(guild.id)) {
+      console.log(`instalar: ${guild.name} é o painel do dono, não instalo nada aqui`);
+      return;
+    }
     console.log(`instalar: entrei em ${guild.name} (${guild.id})`);
+    avisarNoPainel(CANAL_NOVOS,
+      `📥 **${guild.name}** me instalou · ${guild.memberCount} membros · \`${guild.id}\``).catch(() => {});
     const servidor = await instalarServidor(guild);
     /* Monta o que der na hora: quem adiciona o bot quer ver acontecer, nao
        quer esperar a proxima varredura. */
@@ -4234,6 +4725,7 @@ async function comandoDeInteracao(inter) {
      conversa e nao quer sair dela pra ligar uma coisa. E' o mesmo desenho e o
      mesmo estado: mexer aqui atualiza o fixado tambem. */
   if (nome === "help") return comandoAjuda(inter);
+  if (nome === "admin") return comandoAdmin(inter);
 
   if (nome === "cyron") {
     if (!inter.guildId) {
@@ -4348,6 +4840,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
       return await cliquePainel(inter);
     }
+    if (inter.isMessageComponent() && inter.customId.startsWith("admin:")) {
+      return await cliqueAdmin(inter);
+    }
     /* O botao da porta de entrada abre a mesma explicacao do /help, efemera e
        ja traduzida -- e' o unico jeito de essa mensagem publica falar a lingua
        de cada um que passa por ela. */
@@ -4357,6 +4852,7 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
+      if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       return;
     }
     if (inter.isStringSelectMenu()) {
@@ -4689,6 +5185,14 @@ const GLOBAIS_DO_CYRON = [
     description: "Como usar o CYRON / How to use CYRON",
     dmPermission: false,
   },
+  {
+    /* Sem defaultMemberPermissions: quem manda aqui nao e' cargo de servidor,
+       e' ser dono do aplicativo. Administrador de um servidor qualquer nao
+       pode ver os numeros de todos os outros. A checagem e' no clique. */
+    name: "admin",
+    description: "Painel do dono do CYRON",
+    dmPermission: false,
+  },
 ];
 
 async function garantirComandosGlobais() {
@@ -4724,6 +5228,7 @@ async function umaPassada() {
   await sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
+  await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
 }
 
 client.once("clientReady", () => {
@@ -4758,6 +5263,25 @@ for (const sinal of ["SIGINT", "SIGTERM"]) {
     process.exit(0);
   });
 }
+
+/* Todo console.error passa a alimentar o painel tambem.
+
+   Envolver o console em vez de sair chamando anotarErro em cinquenta lugares:
+   assim nenhum erro fica de fora por eu ter esquecido de um deles -- inclusive
+   os que eu ainda vou escrever. */
+const erroOriginal = console.error.bind(console);
+console.error = (...partes) => {
+  erroOriginal(...partes);
+  try {
+    const texto = partes.map((p) => (p instanceof Error ? p.message : String(p))).join(" ");
+    const [onde, ...resto] = texto.split(":");
+    /* avisarNoPainel usa console.error quando falha. Sem esta trava, um erro
+       ao avisar viraria um aviso que falha, que avisa, que falha. */
+    if (!texto.startsWith("painel:")) {
+      anotarErro(onde.slice(0, 40), resto.join(":").trim().slice(0, 300) || texto);
+    }
+  } catch { /* nunca deixar o registrador derrubar o registro */ }
+};
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
