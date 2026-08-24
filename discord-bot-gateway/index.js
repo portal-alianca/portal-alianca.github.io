@@ -1146,6 +1146,7 @@ function venceEm(quando) {
 const esperando = new Map(); // servidorId -> [{ idioma, quantos }]
 const semAlcance = new Map(); // servidorId -> [discord_user_id] fora da minha hierarquia
 const cargoAcimaDeMim = new Map(); // servidorId -> [nome do cargo] que eu nao alcanço
+const cargoTrocado = new Map();    // servidorId -> [nome do cargo velho] que virou lixo
 
 /* Avisa a administracao que alguem ficou de fora.
 
@@ -1248,6 +1249,42 @@ function nomeDoIdioma(cod) {
    faz falta, o painel diz. */
 async function criarCargoDeIdioma(guild, nome, motivo) {
   return await guild.roles.create({ name: nome, mentionable: false, reason: motivo });
+}
+
+/* Passa as portas do cargo velho pro novo.
+
+   Trocar o cargo no banco nao basta, e essa era a metade que faltava: quem
+   abre canal e categoria nao e' a linha do banco, e' a lista de permissoes
+   gravada em CADA canal, e ela guarda o ID do cargo. Se eu so' trocasse a
+   linha, todo mundo ganharia um cargo novo que nao abre porta nenhuma -- o
+   servidor continuaria quebrado, agora com dois cargos.
+
+   Varro os canais pelo que eles dizem, em vez de reconstruir a estrutura pela
+   memoria (categoria, sala, replicas): o canal e' quem sabe se tem porta do
+   cargo velho, e assim entram tambem os canais que fugiram da regra --
+   replica renomeada, canal movido na mao, o que for.
+
+   Mexer em porta de canal nao esbarra na hierarquia (ela vale pra mandar em
+   CARGO, nao em canal), entao isto funciona mesmo com o cargo velho acima de
+   mim. Apagar a porta velha pode falhar sem estrago: porta a mais nao fecha
+   nada. */
+async function trocarCargoNasPortas(guild, velhoId, novoId) {
+  let trocadas = 0;
+  for (const [, canal] of guild.channels.cache) {
+    const porta = canal.permissionOverwrites?.cache?.get(velhoId);
+    if (!porta) continue;
+    try {
+      await canal.permissionOverwrites.edit(novoId, {
+        ...Object.fromEntries([...porta.allow.toArray().map((p) => [p, true]),
+          ...porta.deny.toArray().map((p) => [p, false])]),
+      }, { reason: "cargo do idioma trocado por um que eu alcanço" });
+      await canal.permissionOverwrites.delete(velhoId, "cargo antigo aposentado").catch(() => {});
+      trocadas += 1;
+    } catch (e) {
+      console.error("cargo: nao consegui passar a porta de", canal.name, e?.message || e);
+    }
+  }
+  return trocadas;
 }
 
 async function garantirIdioma(guild, servidorId, idioma) {
@@ -2229,8 +2266,67 @@ async function sincronizarUmGuild(guild) {
 
          A comparacao abaixo e' a mesma que o Discord faz, e por isso ela acerta
          nos quatro casos que eu tenho pra conferir. */
-      if (altosDemais.length) cargoAcimaDeMim.set(servidorId, { nomes: altosDemais.map((c) => c.name) });
+      /* Cargo fora de alcance: troco por um novo, em vez de so' reclamar.
+
+         Mover um cargo acima do meu exige alcanca-lo -- e' o proprio problema.
+         Apagar, idem. Mas CRIAR eu consigo, e cargo que eu crio nasce abaixo
+         de mim: e' o que se ve nos servidores que funcionam, onde todos os
+         cargos de idioma que eu criei estao abaixo do meu.
+
+         Entao a saida e' abandonar o cargo velho e passar a usar um novo com
+         o mesmo nome. Quem tinha o velho continua com ele -- nao consigo tirar
+         --, mas ele deixa de mandar em qualquer coisa, porque as portas dos
+         canais passam a ser abertas pelo novo.
+
+         O velho fica no servidor como lixo, e o painel avisa. Preferi lixo
+         visivel a um servidor que nao funciona: o primeiro se apaga em dois
+         cliques, o segundo faz o cliente desistir. */
+      for (const velho of altosDemais) {
+        const sala = [...porIdioma.entries()].find(([, s]) => s.role_id === velho.id);
+        if (!sala) continue;
+        const [idioma, linha] = sala;
+        try {
+          const novo = await criarCargoDeIdioma(guild, velho.name, "cargo antigo ficou fora do meu alcance");
+          if (novo.position >= minhaAltura) {
+            /* Nasceu alto tambem. Nao ha o que fazer daqui: desfaco pra nao
+               deixar dois cargos iguais e inuteis. */
+            await novo.delete("nasceu fora do meu alcance também").catch(() => {});
+            continue;
+          }
+          const portas = await trocarCargoNasPortas(guild, velho.id, novo.id);
+          await sbPatch(`discord_chat_espelho?id=eq.${encodeURIComponent(linha.id)}`, { role_id: novo.id });
+          linha.role_id = novo.id;
+          cargosDeSala.delete(velho.id);
+          cargosDeSala.add(novo.id);
+          console.log(`cargo: ${guild.name} trocou o cargo de ${idioma} por um que eu alcanço ` +
+            `(${portas} porta(s) repassada(s))`);
+        } catch (e) {
+          console.error("cargo: nao consegui trocar o cargo de", idioma, e?.message || e);
+        }
+      }
+
+      /* O painel so' fica vermelho se AINDA houver cargo fora de alcance
+         depois da troca. Sobra de cargo velho e' recado, nao alarme. */
+      const aindaAltos = [...cargosDeSala]
+        .map((id) => guild.roles.cache.get(id))
+        .filter((c) => c && c.position >= minhaAltura);
+      if (aindaAltos.length) cargoAcimaDeMim.set(servidorId, { nomes: aindaAltos.map((c) => c.name) });
       else cargoAcimaDeMim.delete(servidorId);
+
+      /* A sobra e' lida do servidor, nao anotada na hora da troca.
+
+         Anotar na hora parecia mais simples e estava errado por dois motivos:
+         o recado sumiria na varredura seguinte (que ja nao encontra cargo alto
+         nenhum, porque a troca deu certo) e sumiria de novo em cada reinicio.
+         Perguntando ao servidor -- cargo acima de mim, com nome de idioma que
+         eu uso, que nao e' o cargo em uso -- o recado fica de pe enquanto o
+         lixo existir e some sozinho no minuto em que a pessoa apagar. */
+      const nomesEmUso = new Set([...porIdioma.keys()].map((i) => nomeDoIdioma(i)));
+      const lixoAlto = [...guild.roles.cache.values()]
+        .filter((c) => c.position >= minhaAltura && !cargosDeSala.has(c.id) && nomesEmUso.has(c.name))
+        .map((c) => c.name);
+      if (lixoAlto.length) cargoTrocado.set(servidorId, lixoAlto);
+      else cargoTrocado.delete(servidorId);
       for (const [, membro] of membros) {
         if (membro.user.bot) continue;
         const querido = porIdioma.get(porPessoa.get(membro.id))?.role_id || null;
@@ -3084,6 +3180,17 @@ async function montarPainel(guild, servidor) {
         `Quando terminar, o servidor volta ao plano grátis (**${g.idiomas} idiomas**, **${g.fontes} canais**). ` +
         "**Nada é apagado** — o que passar do limite apenas para de crescer, e você escolhe o que manter.",
       ].join("\n"),
+    });
+  }
+
+  const trocados = cargoTrocado.get(servidor.id) || [];
+  if (trocados.length && !cargoRuim) {
+    campos.push({
+      name: "🧹 Cargos antigos que dá para apagar",
+      value: `${trocados.map((n) => `**${n}**`).join(", ")} ficaram acima do meu cargo, então criei novos no lugar ` +
+        "e já religuei tudo — **está funcionando**.\n" +
+        "Os antigos não mandam mais em nada e eu não consigo apagá-los (estão acima de mim). " +
+        "Você pode apagar em Configurações do Servidor → Cargos.",
     });
   }
 
