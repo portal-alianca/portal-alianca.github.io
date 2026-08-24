@@ -871,6 +871,7 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
       throw new Error("resposta vazia");
     } catch (e) {
       const porque = String(e?.message || e).slice(0, 160);
+      tradutorFalhas.erros++; tradutorFalhas.quedas++; tradutorFalhas.ultimoErro = porque;
       console.error(`tradutor: ${motor.tipo} falhou:`, porque);
       if (motor.servidorId) falhaDoMotor.set(motor.servidorId, { quando: Date.now(), porque });
       /* Cai no gratuito em vez de devolver nada: mensagem sem traducao ainda
@@ -891,7 +892,10 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
   for (const t of tentativas) {
     try {
       const r = await fetch(t.url, { signal: AbortSignal.timeout(8000) });
-      if (!r.ok) { console.error("espelho: tradutor devolveu HTTP", r.status); continue; }
+      if (!r.ok) {
+        tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `HTTP ${r.status} no gratuito`;
+        console.error("espelho: tradutor devolveu HTTP", r.status); continue;
+      }
       const saiu = t.ler(await r.json());
       if (saiu) {
         /* Sempre "auto" aqui, mesmo quando o servidor tem chave propria: se
@@ -3421,8 +3425,8 @@ async function cliquePainel(inter) {
 
   /* showModal so' vale em interacao ainda nao respondida -- por isso vem
      antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
-  if (acao === "motor") return inter.showModal(janelaDoMotor(servidor));
-  if (acao === "codigo") return inter.showModal(janelaDoCodigo());
+  if (acao === "motor") return inter.showModal(janelaValida(janelaDoMotor(servidor)));
+  if (acao === "codigo") return inter.showModal(janelaValida(janelaDoCodigo()));
 
   await inter.deferUpdate();
 
@@ -3575,6 +3579,37 @@ function janelaDoMotor(servidor) {
    um servidor que parece configurado e traduz pelo gratuito sem ninguem
    saber; o erro so' apareceria dias depois, como "a qualidade piorou". Aqui a
    pessoa descobre no segundo seguinte, com a frase de teste na frente. */
+/* Nenhuma janela sai daqui fora dos limites do Discord.
+
+   O Discord recusa a janela INTEIRA quando um rotulo passa de 45 caracteres,
+   e devolve "components[3].components[0].label" -- que nao diz qual campo e'
+   nem o que fazer. Foi o que aconteceu com o formulario de ajustes: eu tinha
+   escrito esse limite pro dono horas antes e depois o violei.
+
+   Aqui eu corto e grito. Cortar deixa o rotulo pior; nao cortar deixa o botao
+   quebrado. E o log passa a dizer o NOME do campo, nao o indice dele. */
+function janelaValida(j) {
+  const corta = (t, n, onde) => {
+    const texto = String(t ?? "");
+    if (texto.length <= n) return texto;
+    console.error(`janela ${j.custom_id}: ${onde} tem ${texto.length} caracteres, o máximo é ${n} — cortei`);
+    return texto.slice(0, n);
+  };
+  j.title = corta(j.title, 45, "o título");
+  for (const linha of j.components || []) {
+    for (const c of linha.components || []) {
+      c.label = corta(c.label, 45, `o rótulo de "${c.custom_id}"`);
+      if (c.placeholder) c.placeholder = corta(c.placeholder, 100, `o exemplo de "${c.custom_id}"`);
+      if (c.value) c.value = corta(c.value, 4000, `o valor de "${c.custom_id}"`);
+    }
+  }
+  if ((j.components || []).length > 5) {
+    console.error(`janela ${j.custom_id}: ${j.components.length} campos, o máximo é 5 — cortei`);
+    j.components = j.components.slice(0, 5);
+  }
+  return j;
+}
+
 async function salvarMotor(inter) {
   if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
@@ -3785,9 +3820,30 @@ const MAX_ERROS = 60;
 const jaAvisado = new Map();
 const ESPERA_AVISO = 60 * 60 * 1000;
 
+/* Nem todo erro e' do dono.
+
+   "nao consegui dar o cargo" e' configuracao do servidor do CLIENTE: o cargo
+   do bot esta abaixo do cargo da pessoa, e quem arruma e' um administrador de
+   la', arrastando. O painel daquele cliente ja diz isso em vermelho, com o
+   passo a passo.
+
+   Mandar pro canal de erros do dono, a cada reinicio, e' barulho sobre algo
+   que ele nao pode consertar -- e barulho no canal de erro tem um preco
+   especifico: ensina a ignorar o canal. Estes continuam na lista do /admin,
+   que e' onde se procura quando se quer procurar. */
+const ERRO_DO_CLIENTE = [
+  /nao consegui dar o cargo/i,
+  /nao consegui tirar o cargo/i,
+  /Missing Permissions/i,
+  /Missing Access/i,
+];
+
 function anotarErro(onde, porque) {
   errosRecentes.push({ quando: Date.now(), onde, porque: String(porque || "").slice(0, 300) });
   if (errosRecentes.length > MAX_ERROS) errosRecentes.shift();
+
+  const texto = `${onde} ${porque}`;
+  if (ERRO_DO_CLIENTE.some((r) => r.test(texto))) return;
 
   const chave = `${onde}|${String(porque).slice(0, 60)}`;
   const ultimo = jaAvisado.get(chave) || 0;
@@ -3885,6 +3941,34 @@ async function canalDoPainel(guild, nome, categoria) {
   });
 }
 
+/* O canal de pagamentos precisa de uma boca que a funcao do Stripe alcance.
+
+   Quem recebe o aviso de pagamento e' a edge function, que roda no Supabase e
+   nao fala com o gateway do Discord. Um webhook resolve: o bot cria, guarda a
+   URL nos ajustes, e a funcao so' faz um POST. Sem isso o canal existiria
+   mudo -- que foi como ele nasceu.
+
+   Reaproveito o que ja existe: criar um webhook novo a cada volta do relogio
+   encheria o canal de webhooks orfaos ate' bater no limite de 15. */
+async function garantirWebhookDePagamentos(guild) {
+  try {
+    const a = await ajustes();
+    if (a.webhook_pagamentos) return;
+
+    const canal = guild.channels.cache.find(
+      (c) => c.type === ChannelType.GuildText && c.name === CANAL_PAGAMENTOS);
+    if (!canal) return;
+
+    const existentes = await canal.fetchWebhooks().catch(() => null);
+    const meu = existentes?.find((w) => w.owner?.id === client.user.id);
+    const w = meu || await canal.createWebhook({ name: "CYRON pagamentos" });
+    await porAjuste("webhook_pagamentos", w.url);
+    console.log("painel: webhook de pagamentos pronto");
+  } catch (e) {
+    console.error("painel: nao consegui preparar o webhook de pagamentos:", e?.message || e);
+  }
+}
+
 /* Acha o topico do cliente, ou abre um.
 
    Guardo o id, nunca procuro pelo nome: servidor muda de nome, e busca por
@@ -3970,6 +4054,14 @@ async function cartaoDoCliente(guild, servidor) {
       { name: "7 dias", value: `${soma.t} traduções\n${(soma.c / 1000).toFixed(1)}k caracteres`, inline: true },
       { name: "Motor", value: servidor.tradutor_motor && servidor.tradutor_motor !== "auto"
           ? `🔑 ${servidor.tradutor_motor}` : "⚪ google grátis", inline: true },
+      /* O problema do cliente aparece na ficha DELE, e nao no canal de erros
+         do dono. Aqui ele e' contexto -- "por isso este servidor tem idioma e
+         nao tem gente nas categorias" --, e nao um chamado. */
+      ...(cargoAcimaDeMim.has(servidor.id) ? [{
+        name: "⛔ Cargo fora de alcance",
+        value: "Os cargos de idioma estão acima do meu neste servidor. " +
+          "Ninguém recebe cargo até um administrador de lá arrastar o CYRON para cima.",
+      }] : []),
     ],
     footer: { text: `guild ${servidor.guild_id} · instalado em ${new Date(servidor.criado_em).toLocaleDateString("pt-BR")}` },
   };
@@ -4034,6 +4126,8 @@ async function montarPainelDoDonoAgora() {
   }
   const sala = await canalDoPainel(guild, CANAL_CLIENTES, null);
   if (!sala) return;
+
+  await garantirWebhookDePagamentos(guild);
 
   const todos = await sb("cyron_servidor?select=*&order=criado_em.asc") || [];
   for (const servidor of todos) {
@@ -4111,6 +4205,8 @@ function linhasDoAdmin() {
     { type: 2, custom_id: "admin:codigos", style: 1, emoji: { name: "🎟️" }, label: "Gerar códigos" },
     { type: 2, custom_id: "admin:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar painel" },
   ] }, { type: 1, components: [
+    { type: 2, custom_id: "admin:saude", style: 2, emoji: { name: "🩺" }, label: "Saúde" },
+    { type: 2, custom_id: "admin:busca", style: 2, emoji: { name: "🔎" }, label: "Procurar" },
     { type: 2, custom_id: "admin:ajustes", style: 1, emoji: { name: "⚙️" }, label: "Ajustes" },
     { type: 2, style: 5, emoji: { name: "➕" }, label: "Link para instalar o CYRON", url: linkDeConvite() },
   ] }];
@@ -4199,8 +4295,9 @@ async function cliqueAdmin(inter) {
   }
   const acao = inter.customId.slice("admin:".length);
 
-  if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaDeCodigos());
-  if (acao === "ajustes" && inter.isButton()) return inter.showModal(await janelaDeAjustes());
+  if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
+  if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
+  if (acao === "busca" && inter.isButton()) return inter.showModal(janelaValida(janelaDeBusca()));
 
   await inter.deferUpdate();
 
@@ -4219,6 +4316,7 @@ async function cliqueAdmin(inter) {
   }
   if (acao === "uso") return inter.editReply({ embeds: [await embedDeUso()], components: linhasDoAdmin() });
   if (acao === "erros") return inter.editReply({ embeds: [embedDeErros()], components: linhasDoAdmin() });
+  if (acao === "saude") return inter.editReply({ embeds: [await embedDeSaude()], components: linhasDoAdmin() });
   return inter.editReply({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
 }
 
@@ -4385,7 +4483,7 @@ async function janelaDeAjustes() {
       { type: 1, components: [{ type: 4, custom_id: "beta_ate", style: 1, required: false, max_length: 12,
         label: "Beta acaba em (AAAA-MM-DD, vazio = sem data)", placeholder: "2027-03-31", ...cheio(a.beta_ate) }] },
       { type: 1, components: [{ type: 4, custom_id: "donos", style: 1, required: false, max_length: 200,
-        label: "Outras contas suas (ids, separados por vírgula)", ...cheio(a.donos) }] },
+        label: "Outras contas suas (ids)", placeholder: "866033442688073748, 577245717114912830", ...cheio(a.donos) }] },
     ],
   };
 }
@@ -4416,6 +4514,97 @@ async function salvarAjustes(inter) {
   return inter.editReply(
     "⚙️ Ajustes gravados. Valem na próxima volta do relógio, no máximo um minuto.\n" +
     (campo("beta") === "0" ? "_Beta desligado: os servidores voltam aos limites do plano deles._" : ""));
+}
+
+/* Saude do sistema: o que o dono so' descobriria por reclamacao.
+
+   As telas de antes contam o que os clientes fazem. Esta conta o que EU estou
+   fazendo -- se a volta do relogio esta acontecendo, se o tradutor esta
+   respondendo, quantas vezes ele falhou. Sem isto, "o bot esta lento" chega
+   pelo cliente, e nao pelo painel. */
+let ultimaPassada = 0;
+let duracaoPassada = 0;
+const tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
+
+async function embedDeSaude() {
+  const agora = Date.now();
+  const idade = ultimaPassada ? Math.round((agora - ultimaPassada) / 1000) : null;
+  const atrasada = idade != null && idade > (INTERVALO_SINCRONIA / 1000) * 1.6;
+
+  const cache = await sb("discord_traducao_cache?select=chave&limit=1&head=false").then((r) => r?.length ?? 0).catch(() => 0);
+  const motores = await sb("cyron_servidor?tradutor_motor=neq.auto&select=id").catch(() => []);
+
+  return {
+    color: atrasada || tradutorFalhas.quedas ? 0xB4534A : 0x2E8B7A,
+    title: "🩺 Saúde do CYRON",
+    fields: [
+      { name: "Última volta do relógio", value: idade == null ? "_ainda não rodou_"
+          : `há ${idade}s${atrasada ? " ⚠️ **atrasada**" : ""}\ndurou ${(duracaoPassada / 1000).toFixed(1)}s`, inline: true },
+      { name: "De pé há", value: `${Math.floor(process.uptime() / 3600)}h ${Math.floor((process.uptime() % 3600) / 60)}min`, inline: true },
+      { name: "Servidores no gateway", value: String(client.guilds.cache.size), inline: true },
+      { name: "Tradutor", value: tradutorFalhas.erros
+          ? `⚠️ **${tradutorFalhas.erros}** falhas desde que subi\n${tradutorFalhas.quedas} caíram no grátis\n\`${tradutorFalhas.ultimoErro.slice(0, 80)}\``
+          : "🟢 sem falhas desde que subi" },
+      { name: "Chaves próprias", value: `${(motores || []).length} servidores`, inline: true },
+      { name: "Memória", value: `${Math.round(process.memoryUsage().rss / 1048576)} MB`, inline: true },
+    ],
+    footer: { text: "os contadores zeram quando eu reinicio" },
+  };
+}
+
+/* Buscar um servidor pelo nome ou pelo id.
+
+   Com cinco clientes a lista serve. Com cinquenta, nao -- e o momento de
+   precisar disso e' justamente quando um cliente reclama e voce tem o nome
+   dele na mao, nao a posicao dele numa lista. */
+function janelaDeBusca() {
+  return {
+    custom_id: "admin:busca",
+    title: "Procurar servidor",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "termo", style: 1, required: true, max_length: 80,
+        label: "Nome ou id do servidor", placeholder: "parte do nome já serve" }] },
+    ],
+  };
+}
+
+async function procurarServidor(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  let termo = "";
+  try { termo = String(inter.fields.getTextInputValue("termo") || "").trim(); } catch { /* vazio */ }
+  if (!termo) return inter.editReply("Você não digitou nada.");
+
+  const todos = await sb("cyron_servidor?select=*&order=criado_em.asc") || [];
+  const alvo = termo.toLowerCase();
+  const achados = todos.filter((s) =>
+    String(s.guild_id) === termo || String(s.nome || "").toLowerCase().includes(alvo));
+
+  if (!achados.length) return inter.editReply(`Não achei nenhum servidor com **${termo}**.`);
+  if (achados.length > 1) {
+    return inter.editReply(
+      `Achei **${achados.length}**:\n` +
+      achados.slice(0, 15).map((s) => `• ${s.nome} — \`${s.guild_id}\`${s.saiu_em ? " _(saiu)_" : ""}`).join("\n"));
+  }
+
+  const s = achados[0];
+  const uso = await usoDeHoje(s.id);
+  return inter.editReply({
+    content: s.canal_admin ? `Ficha completa em <#${s.canal_admin}>` : undefined,
+    embeds: [{
+      color: s.saiu_em ? 0x8A3A33 : planoDe(s) === "pago" ? 0x2E8B7A : 0xB08A2E,
+      title: s.nome,
+      description: s.saiu_em ? `⚠️ saiu em ${new Date(s.saiu_em).toLocaleString("pt-BR")}` : "no ar",
+      fields: [
+        { name: "Plano", value: planoDe(s), inline: true },
+        { name: "Hoje", value: `${uso.traducoes} traduções`, inline: true },
+        { name: "guild", value: `\`${s.guild_id}\``, inline: true },
+      ],
+    }],
+    components: botoesDaFicha(s),
+  });
 }
 
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
@@ -5134,6 +5323,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
+      if (inter.customId === "admin:busca") return await procurarServidor(inter);
       return;
     }
     if (inter.isStringSelectMenu()) {
@@ -5550,12 +5740,15 @@ async function garantirComandosGlobais() {
    Isso apareceu na hora errada: subi os botoes e fui conferir se tinham
    chegado, e o painel ainda era o de antes. */
 async function umaPassada() {
+  const comecou = Date.now();
   await recarregarAjustes().catch((e) => console.error("ajustes: nao consegui recarregar:", e?.message || e));
   await repararInstalacoes().catch((e) => console.error("instalar: reparo falhou:", e?.message || e));
   await sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
+  ultimaPassada = Date.now();
+  duracaoPassada = ultimaPassada - comecou;
 }
 
 client.once("clientReady", () => {

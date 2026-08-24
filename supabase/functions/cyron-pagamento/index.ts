@@ -98,6 +98,32 @@ function assinaturaDaFatura(obj: any): string | null {
   return null;
 }
 
+/* Avisa o dono no Discord que entrou dinheiro.
+
+   O bot vive no Fly e nao tem endereco publico; eu vivo no Supabase e nao
+   falo com o gateway. O ponto de encontro e' um webhook que o bot cria no
+   canal de pagamentos e guarda nos ajustes -- daqui e' so' um POST.
+
+   Nunca estoura e nunca atrasa a resposta ao Stripe: se o aviso falhar, o
+   pagamento ja foi creditado de qualquer jeito, e fazer o Stripe reenviar por
+   causa de uma mensagem no Discord seria trocar dinheiro por enfeite. */
+async function avisarDono(texto: string) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/cyron_ajuste?chave=eq.webhook_pagamentos&select=valor`, {
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    });
+    const url = r.ok ? (await r.json())?.[0]?.valor : null;
+    if (!url) return;
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: texto.slice(0, 1900), allowed_mentions: { parse: [] } }),
+    });
+  } catch (e) {
+    console.error("pagamento: não consegui avisar no Discord:", e instanceof Error ? e.message : e);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("só POST", { status: 405 });
 
@@ -157,8 +183,15 @@ Deno.serve(async (req) => {
       p_servidor: servidor, p_assinatura: assinatura, p_dias: DIAS,
     }))?.[0];
 
-    if (r?.ok) console.log(`pagamento: ${evento.type} creditado, pago até ${r.ate}`);
+    if (r?.ok) {
+      console.log(`pagamento: ${evento.type} creditado, pago até ${r.ate}`);
+      const ate = new Date(r.ate).toLocaleDateString("pt-BR");
+      await avisarDono(evento.type === "checkout.session.completed"
+        ? `💳 **Nova assinatura** · pago até ${ate}\n\`${assinatura ?? "sem assinatura"}\``
+        : `🔁 **Renovação** · pago até ${ate}\n\`${assinatura ?? "sem assinatura"}\``);
+    }
     else console.log(`pagamento: ${evento.type} não creditado (${r?.motivo})`);
+
 
     /* 200 mesmo quando nao credita. "Repetido" e "sem servidor" nao melhoram
        com reenvio -- devolver erro faria o Stripe insistir por dias e encher
