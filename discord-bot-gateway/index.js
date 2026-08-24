@@ -3790,17 +3790,48 @@ const CANAL_CLIENTES = "📋-clientes";
    Pergunto ao Discord de quem e' o aplicativo, em vez de guardar um id numa
    variavel. Id escrito na mao envelhece calado: no dia em que a conta mudar
    ou o app virar de um time, ninguem lembra de atualizar, e o painel some pro
-   dono legitimo. */
-async function ehDono(userId) {
+   dono legitimo.
+
+   Vou direto na API em vez de usar o objeto que o discord.js guarda. A
+   primeira versao usava client.application.owner, e ele nem sempre vem
+   preenchido -- quando nao vinha, meu catch devolvia "nao e' o dono" sem
+   dizer nada, e o dono de verdade levava "Não conheço esse comando" na cara
+   sem nenhuma pista do motivo. Foi o que aconteceu no primeiro teste.
+
+   A lista "donos" nos ajustes existe pra quem tem mais de uma conta -- o caso
+   comum de quem criou o aplicativo numa e usa o Discord noutra. */
+let cacheDonos = { v: null, t: 0 };
+
+async function idsDeDono() {
+  if (cacheDonos.v && Date.now() - cacheDonos.t < 10 * 60 * 1000) return cacheDonos.v;
+  const ids = new Set();
   try {
-    if (!client.application?.owner) await client.application.fetch();
-    const dono = client.application?.owner;
-    if (!dono) return false;
-    if (dono.members) return dono.members.has(userId);   // aplicativo de um time
-    return dono.id === userId;
-  } catch {
-    return false;
+    const r = await fetch(`${API}/applications/@me`, { headers: { Authorization: `Bot ${TOKEN}` } });
+    if (r.ok) {
+      const app = await r.json();
+      if (app?.owner?.id) ids.add(String(app.owner.id));
+      for (const m of app?.team?.members || []) if (m?.user?.id) ids.add(String(m.user.id));
+    } else {
+      console.error(`admin: nao consegui saber de quem e o aplicativo: HTTP ${r.status}`);
+    }
+  } catch (e) {
+    console.error("admin: nao consegui saber de quem e o aplicativo:", e?.message || e);
   }
+  for (const extra of String((await ajustes()).donos || "").split(/[,\s]+/)) {
+    if (/^\d{5,}$/.test(extra)) ids.add(extra);
+  }
+  if (ids.size) cacheDonos = { v: ids, t: Date.now() };
+  return ids;
+}
+
+async function ehDono(userId) {
+  const ids = await idsDeDono();
+  const pode = ids.has(String(userId));
+  /* Recusa deixa rastro. Sem isto, "não conheço esse comando" e' indistinguivel
+     de "eu nao consegui descobrir quem e' o dono" -- que foi exatamente a
+     duvida que me custou tempo. */
+  if (!pode) console.log(`admin: recusei ${userId}; donos conhecidos: ${[...ids].join(",") || "NENHUM"}`);
+  return pode;
 }
 
 async function guildDoPainel() {
