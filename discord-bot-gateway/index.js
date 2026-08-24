@@ -1099,8 +1099,25 @@ async function ajuste(chave, doAmbiente) {
    codigo consegue cumprir: quando houver fim, ele aparece aqui com
    antecedencia. Basta preencher a segunda variavel, e o painel de todo mundo
    passa a mostrar o prazo. */
-const BETA = process.env.CYRON_BETA === "1" || process.env.CYRON_BETA === "sim";
-const BETA_ATE = process.env.CYRON_BETA_ATE || "";
+const BETA_DO_AMBIENTE = process.env.CYRON_BETA === "1" || process.env.CYRON_BETA === "sim";
+const BETA_ATE_DO_AMBIENTE = process.env.CYRON_BETA_ATE || "";
+
+/* O que vale e' o banco; o ambiente e' so' o padrao de partida.
+
+   planoDe e' chamado em todo lugar e nao pode ser assincrono -- entao os dois
+   ficam aqui, atualizados pela volta do relogio, e nao lidos na hora. Um
+   minuto de atraso pra um ajuste de negocio e' aceitavel; tornar planoDe
+   assincrono contaminaria metade do arquivo. */
+let BETA = BETA_DO_AMBIENTE;
+let BETA_ATE = BETA_ATE_DO_AMBIENTE;
+let LINK_PAGAMENTO_VIVO = "";
+
+async function recarregarAjustes() {
+  const a = await ajustes();
+  BETA = a.beta != null ? a.beta === "1" || a.beta === "sim" : BETA_DO_AMBIENTE;
+  BETA_ATE = a.beta_ate || BETA_ATE_DO_AMBIENTE;
+  LINK_PAGAMENTO_VIVO = a.stripe_link || LINK_PAGAMENTO;
+}
 
 function planoDe(servidor) {
   if (BETA || venceEm(BETA_ATE)) return "pago";       // beta aberto
@@ -2845,10 +2862,10 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
 
        Quem esta no teste de 7 dias CONTINUA vendo o botao, e isso e' o certo:
        o teste e' exatamente o momento de assinar. */
-    ...(LINK_PAGAMENTO && !servidor.stripe_assinatura && servidor.plano !== "pago"
+    ...(LINK_PAGAMENTO_VIVO && !servidor.stripe_assinatura && servidor.plano !== "pago"
       ? [{
           type: 2, style: 5, emoji: { name: "💳" }, label: "Assinar o plano pago",
-          url: `${LINK_PAGAMENTO}${LINK_PAGAMENTO.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
+          url: `${LINK_PAGAMENTO_VIVO}${LINK_PAGAMENTO_VIVO.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
         }]
       : []),
     /* O codigo continua a mao mesmo em quem ja' e' pago por data: resgatar
@@ -3960,19 +3977,22 @@ async function cartaoDoCliente(guild, servidor) {
   if (servidor.msg_admin) {
     const antiga = await canal.messages.fetch(servidor.msg_admin).catch(() => null);
     if (antiga) {
-      const antes = antiga.embeds?.[0] ? assinaturaDoCartao(antiga.embeds[0].toJSON(), []) : null;
-      if (antes === assinaturaDoCartao(embed, [])) return;   // nada mudou
+      const botoes = botoesDaFicha(servidor);
+      const antes = antiga.embeds?.[0]
+        ? assinaturaDoCartao(antiga.embeds[0].toJSON(), (antiga.components || []).map((l) => l.toJSON()))
+        : null;
+      if (antes === assinaturaDoCartao(embed, botoes)) return;   // nada mudou
 
       /* Desarquiva SO' quando ha' o que escrever. Desarquivar a cada volta do
          relogio deixaria todos os topicos sempre ativos, e a barra lateral
          voltaria a ser a parede que o topico veio evitar. */
       if (canal.archived) await canal.setArchived(false, "ficha mudou").catch(() => {});
-      await antiga.edit({ embeds: [embed] });
+      await antiga.edit({ embeds: [embed], components: botoes });
       return;
     }
   }
   if (canal.archived) await canal.setArchived(false, "primeira ficha").catch(() => {});
-  const nova = await canal.send({ embeds: [embed] });
+  const nova = await canal.send({ embeds: [embed], components: botoesDaFicha(servidor) });
   await nova.pin("ficha do cliente").catch(() => {});
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_admin: nova.id });
   servidor.msg_admin = nova.id;
@@ -4090,6 +4110,9 @@ function linhasDoAdmin() {
     { type: 2, custom_id: "admin:erros", style: 2, emoji: { name: "🐛" }, label: "Erros" },
     { type: 2, custom_id: "admin:codigos", style: 1, emoji: { name: "🎟️" }, label: "Gerar códigos" },
     { type: 2, custom_id: "admin:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar painel" },
+  ] }, { type: 1, components: [
+    { type: 2, custom_id: "admin:ajustes", style: 1, emoji: { name: "⚙️" }, label: "Ajustes" },
+    { type: 2, style: 5, emoji: { name: "➕" }, label: "Link para instalar o CYRON", url: linkDeConvite() },
   ] }];
 }
 
@@ -4177,6 +4200,7 @@ async function cliqueAdmin(inter) {
   const acao = inter.customId.slice("admin:".length);
 
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaDeCodigos());
+  if (acao === "ajustes" && inter.isButton()) return inter.showModal(await janelaDeAjustes());
 
   await inter.deferUpdate();
 
@@ -4220,6 +4244,178 @@ async function gerarCodigos(inter) {
     console.error("admin: nao consegui gerar codigos:", e?.message || e);
     return inter.editReply("❌ Não consegui gerar agora. Nada foi criado.");
   }
+}
+
+/* ---------------- o painel que AGE ----------------
+
+   A primeira versao mostrava e nao fazia. Ficha de cliente sem botao e'
+   relatorio: pra dar trinta dias a alguem eu ainda precisava abrir o banco,
+   e pra trocar o link de pagamento precisava de um deploy meu -- ou seja, o
+   dono dependia de mim pra qualquer decisao de negocio. */
+
+/* Convite do bot, com as permissoes que ele realmente usa.
+
+   Hoje o CYRON esta com Administrator nos servidores onde foi instalado, e
+   isso e' o que mais assusta quem vai instalar: o Discord mostra em vermelho.
+   O numero abaixo e' a soma exata do que o codigo exerce -- criar canal,
+   mexer em cargo de idioma, abrir webhook, fixar mensagem, abrir topico.
+   Nada alem disso.
+
+   Trocar o convite nao rebaixa quem ja instalou: permissao concedida fica
+   como esta ate' o dono do servidor mexer. Vale pros proximos. */
+const PERMISSOES_DO_CONVITE = "327223209040";
+
+function linkDeConvite() {
+  return `https://discord.com/oauth2/authorize?client_id=${client.user.id}` +
+    `&permissions=${PERMISSOES_DO_CONVITE}&scope=bot%20applications.commands`;
+}
+
+/* Botoes da ficha do cliente.
+
+   O id do servidor vai no proprio botao. Sem isso eu teria que descobrir de
+   quem e' a ficha pelo topico em que o clique aconteceu -- que funciona ate' o
+   dia em que alguem arrasta a mensagem, e falha calado. */
+function botoesDaFicha(servidor) {
+  return [{ type: 1, components: [
+    { type: 2, custom_id: `cli:mais30:${servidor.id}`, style: 3, emoji: { name: "➕" }, label: "30 dias" },
+    { type: 2, custom_id: `cli:tirar:${servidor.id}`, style: 4, emoji: { name: "🚫" }, label: "Tirar plano" },
+    { type: 2, custom_id: `cli:remontar:${servidor.id}`, style: 2, emoji: { name: "🔄" }, label: "Remontar" },
+    { type: 2, custom_id: `cli:detalhes:${servidor.id}`, style: 2, emoji: { name: "🔍" }, label: "Detalhes" },
+  ] }];
+}
+
+async function cliqueDaFicha(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  const [, acao, servidorId] = inter.customId.split(":");
+  const servidor = (await sb(`cyron_servidor?id=eq.${encodeURIComponent(servidorId)}&select=*`))?.[0];
+  if (!servidor) {
+    return inter.reply({ flags: 64, content: "Não achei esse servidor no banco. A ficha está velha." });
+  }
+
+  await inter.deferReply({ flags: 64 });
+  const guild = client.guilds.cache.get(String(servidor.guild_id));
+
+  if (acao === "mais30") {
+    const base = venceEm(servidor.pago_ate) || Date.now();
+    const novo = new Date(base + 30 * 864e5).toISOString();
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { pago_ate: novo });
+    cacheServidor.delete(String(servidor.guild_id));
+    await refazerFicha(servidor.id);
+    return inter.editReply(`➕ **${servidor.nome}** agora está pago até ${new Date(novo).toLocaleDateString("pt-BR")}.`);
+  }
+
+  if (acao === "tirar") {
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
+      { pago_ate: null, teste_ate: null, plano: "gratis" });
+    cacheServidor.delete(String(servidor.guild_id));
+    await refazerFicha(servidor.id);
+    /* Diz o que NAO aconteceu. Tirar o plano nao apaga canal nenhum, e quem
+       aperta precisa saber disso antes de entrar em panico. */
+    return inter.editReply(
+      `🚫 **${servidor.nome}** voltou ao plano grátis.\n` +
+      "_Nada foi apagado lá: o que passa do limite apenas para de crescer._" +
+      (BETA || venceEm(BETA_ATE) ? "\n⚠️ O beta está ligado, então ele continua com os limites do pago." : ""));
+  }
+
+  if (acao === "remontar") {
+    if (!guild) return inter.editReply("Não estou nesse servidor agora — não tenho o que remontar.");
+    await sincronizarAgora(guild);
+    await refazerFicha(servidor.id);
+    return inter.editReply(`🔄 Passei por **${servidor.nome}**: canais, categorias e cargos.`);
+  }
+
+  if (acao === "detalhes") {
+    const fontes = await sb(
+      `discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id,tipo,gera_replica&order=criado_em.asc`) || [];
+    const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,canal_id`) || [];
+    const replicas = await sb(`discord_canal_idioma?servidor_id=eq.${servidor.id}&select=tipo`) || [];
+    const nomeDoCanal = (id) => guild?.channels?.cache?.get(id)?.name || id;
+
+    return inter.editReply({ embeds: [{
+      color: 0x2E8B7A,
+      title: `🔍 ${servidor.nome}`,
+      fields: [
+        { name: "Canais-fonte", value: fontes.length
+            ? fontes.map((f) => `${f.gera_replica ? "•" : "◦"} #${nomeDoCanal(f.canal_id)} _(${f.tipo})_`).join("\n").slice(0, 1000)
+            : "_nenhum_" },
+        { name: "Idiomas", value: salas.length ? salas.map((s) => nomeDoIdioma(s.idioma)).join(", ") : "_nenhum_" },
+        { name: "Cópias criadas", value: String(replicas.length), inline: true },
+        { name: "Tradutor por mensagem", value: servidor.tradutor_topico ? "ligado" : "desligado", inline: true },
+        { name: "Assinatura Stripe", value: servidor.stripe_assinatura || "_nenhuma_", inline: true },
+      ],
+      footer: { text: "◦ = canal que só empresta o nome, não gera cópia" },
+    }] });
+  }
+}
+
+/* Redesenha a ficha de UM cliente, sem varrer todos.
+
+   Depois de uma acao, a ficha ao lado do botao precisa mudar na hora -- senao
+   a pessoa aperta "30 dias", ve o mesmo cartao de antes e aperta de novo. */
+async function refazerFicha(servidorId) {
+  try {
+    const gid = await guildDoPainel();
+    const guild = gid && client.guilds.cache.get(gid);
+    if (!guild) return;
+    const servidor = (await sb(`cyron_servidor?id=eq.${encodeURIComponent(servidorId)}&select=*`))?.[0];
+    if (servidor) await cartaoDoCliente(guild, servidor);
+  } catch (e) {
+    console.error("painel: nao consegui refazer a ficha:", e?.message || e);
+  }
+}
+
+/* Ajustes do sistema, num formulario.
+
+   Sao as decisoes que hoje exigem um deploy meu. Cada campo vem preenchido
+   com o que esta valendo: formulario em branco faz a pessoa apagar sem querer
+   o que ja estava certo. */
+async function janelaDeAjustes() {
+  const a = await ajustes();
+  const cheio = (v) => (v ? { value: String(v).slice(0, 300) } : {});
+  return {
+    custom_id: "admin:ajustes",
+    title: "Ajustes do CYRON",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "stripe_link", style: 1, required: false, max_length: 300,
+        label: "Link de pagamento", placeholder: "https://buy.stripe.com/...", ...cheio(a.stripe_link || LINK_PAGAMENTO) }] },
+      { type: 1, components: [{ type: 4, custom_id: "beta", style: 1, required: false, max_length: 12,
+        label: "Beta ligado? (1 ou 0)", placeholder: "1", ...cheio(a.beta ?? (BETA ? "1" : "0")) }] },
+      { type: 1, components: [{ type: 4, custom_id: "beta_ate", style: 1, required: false, max_length: 12,
+        label: "Beta acaba em (AAAA-MM-DD, vazio = sem data)", placeholder: "2027-03-31", ...cheio(a.beta_ate) }] },
+      { type: 1, components: [{ type: 4, custom_id: "donos", style: 1, required: false, max_length: 200,
+        label: "Outras contas suas (ids, separados por vírgula)", ...cheio(a.donos) }] },
+    ],
+  };
+}
+
+async function salvarAjustes(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+
+  const beta_ate = campo("beta_ate");
+  if (beta_ate && !/^\d{4}-\d{2}-\d{2}$/.test(beta_ate)) {
+    return inter.editReply("A data do beta precisa ser AAAA-MM-DD. **Não gravei nada.**");
+  }
+  const link = campo("stripe_link");
+  if (link && !/^https:\/\//.test(link)) {
+    return inter.editReply("O link de pagamento precisa começar com https://. **Não gravei nada.**");
+  }
+
+  for (const [chave, valor] of [
+    ["stripe_link", link], ["beta", campo("beta")], ["beta_ate", beta_ate], ["donos", campo("donos")],
+  ]) {
+    await porAjuste(chave, valor || null);
+  }
+  cacheDonos = { v: null, t: 0 };
+
+  return inter.editReply(
+    "⚙️ Ajustes gravados. Valem na próxima volta do relógio, no máximo um minuto.\n" +
+    (campo("beta") === "0" ? "_Beta desligado: os servidores voltam aos limites do plano deles._" : ""));
 }
 
 /* O cartao e' desenhado por ULTIMO na volta do relogio.
@@ -4924,6 +5120,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("admin:")) {
       return await cliqueAdmin(inter);
     }
+    if (inter.isMessageComponent() && inter.customId.startsWith("cli:")) {
+      return await cliqueDaFicha(inter);
+    }
     /* O botao da porta de entrada abre a mesma explicacao do /help, efemera e
        ja traduzida -- e' o unico jeito de essa mensagem publica falar a lingua
        de cada um que passa por ela. */
@@ -4934,6 +5133,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
+      if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       return;
     }
     if (inter.isStringSelectMenu()) {
@@ -5350,6 +5550,7 @@ async function garantirComandosGlobais() {
    Isso apareceu na hora errada: subi os botoes e fui conferir se tinham
    chegado, e o painel ainda era o de antes. */
 async function umaPassada() {
+  await recarregarAjustes().catch((e) => console.error("ajustes: nao consegui recarregar:", e?.message || e));
   await repararInstalacoes().catch((e) => console.error("instalar: reparo falhou:", e?.message || e));
   await sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
@@ -5365,7 +5566,7 @@ client.once("clientReady", () => {
   soltarAsInteracoes();
   /* Uma vez ao subir, pra quem mexeu em algo com o bot fora do ar nao ficar
      esperando dez minutos, e depois de tempos em tempos. */
-  umaPassada();
+  recarregarAjustes().then(() => umaPassada());
   setInterval(umaPassada, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
