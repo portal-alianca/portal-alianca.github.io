@@ -702,7 +702,10 @@ function motorDe(servidor) {
   const guardado = cacheMotor.get(servidor.id);
   if (guardado && guardado.quando > Date.now() - 5 * 60 * 1000) return guardado.motor;
 
-  let motor = MOTOR_AUTO;
+  /* Ate' o gratuito carrega o id do servidor. Antes so' o motor com chave
+     carregava, porque so' ele precisava -- e a contagem de uso, que veio
+     depois, teria nascido cega justamente pra maioria dos servidores. */
+  let motor = { tipo: "auto", servidorId: servidor.id };
   if (servidor.tradutor_motor && servidor.tradutor_motor !== "auto" && servidor.tradutor_chave) {
     const chave = decifrar(servidor.tradutor_chave);
     if (chave) {
@@ -722,6 +725,75 @@ function motorDe(servidor) {
   return motor;
 }
 
+/* ---------------- quanto cada servidor traduz ----------------
+
+   Isto nao existia, e era a unica lacuna do projeto que piorava sozinha: o
+   que nao foi contado hoje nao da' pra recuperar amanha. Sem esses numeros
+   nao da' pra saber quanto um cliente custa, nao ha base pra decidir preco, e
+   um painel de controle nasceria sem historico nenhum pra mostrar.
+
+   Conto em MEMORIA e descarrego de minuto em minuto. Uma escrita no banco por
+   mensagem traduzida poria o banco no caminho da conversa -- e a conversa e' o
+   produto. O preco disso e' perder ate' um minuto de contagem se o processo
+   cair no meio; pra uma metrica de uso, arredondamento aceitavel.
+
+   Acerto de cache conta separado, e de proposito: ele nao custa nada, entao
+   somar junto inflaria o consumo e faria o cache parecer inutil. Contado a
+   parte, ele mostra exatamente o quanto esta economizando. */
+const usoPendente = new Map(); // servidorId|dia|motor -> { caracteres, traducoes, cache }
+
+function hojeISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function anotarUso(servidorId, motor, { caracteres = 0, traducoes = 0, cache = 0 }) {
+  if (!servidorId) return;
+  const chave = `${servidorId}|${hojeISO()}|${motor}`;
+  const atual = usoPendente.get(chave) || { caracteres: 0, traducoes: 0, cache: 0 };
+  atual.caracteres += caracteres;
+  atual.traducoes += traducoes;
+  atual.cache += cache;
+  usoPendente.set(chave, atual);
+}
+
+async function descarregarUso() {
+  if (!usoPendente.size) return;
+  /* Tira tudo do mapa ANTES de escrever: o que chegar durante a escrita entra
+     na proxima leva, em vez de ser contado duas vezes ou perdido. */
+  const leva = [...usoPendente.entries()];
+  usoPendente.clear();
+
+  for (const [chave, v] of leva) {
+    const [servidorId, dia, motor] = chave.split("|");
+    try {
+      await rpc("cyron_somar_uso", {
+        p_servidor: servidorId, p_dia: dia, p_motor: motor,
+        p_caracteres: v.caracteres, p_traducoes: v.traducoes, p_cache: v.cache,
+      });
+    } catch (e) {
+      console.error("uso: nao consegui gravar:", e?.message || e);
+      /* Devolve pro mapa pra tentar de novo -- somando com o que chegou
+         nesse meio tempo, senao a falha de uma vez apagaria a contagem. */
+      const voltou = usoPendente.get(chave) || { caracteres: 0, traducoes: 0, cache: 0 };
+      voltou.caracteres += v.caracteres;
+      voltou.traducoes += v.traducoes;
+      voltou.cache += v.cache;
+      usoPendente.set(chave, voltou);
+    }
+  }
+}
+
+/* O que este servidor traduziu hoje, pro painel. */
+async function usoDeHoje(servidorId) {
+  const linhas = await sb(
+    `cyron_uso_diario?servidor_id=eq.${servidorId}&dia=eq.${hojeISO()}&select=caracteres,traducoes,do_cache`) || [];
+  return linhas.reduce((a, l) => ({
+    caracteres: a.caracteres + Number(l.caracteres || 0),
+    traducoes: a.traducoes + Number(l.traducoes || 0),
+    cache: a.cache + Number(l.do_cache || 0),
+  }), { caracteres: 0, traducoes: 0, cache: 0 });
+}
+
 async function traduzirComCache(texto, alvo, motor = MOTOR_AUTO) {
   if (texto.length > MAX_CACHE) return await traduzir(texto, alvo, motor);
 
@@ -733,7 +805,10 @@ async function traduzirComCache(texto, alvo, motor = MOTOR_AUTO) {
      motor que escolheu, nao a de quem passou ali antes. */
   const chave = createHash("sha256").update(`${motor.tipo} ${alvo} ${texto}`).digest("hex").slice(0, 40);
   const guardado = await doCache(chave);
-  if (guardado) return guardado;
+  if (guardado) {
+    anotarUso(motor.servidorId, motor.tipo, { cache: 1 });
+    return guardado;
+  }
 
   const novo = await traduzir(texto, alvo, motor);
   if (novo) {
@@ -759,6 +834,7 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
       const saiu = await escolhido.traduzir(texto, alvo, motor);
       if (saiu) {
         if (motor.servidorId) falhaDoMotor.delete(motor.servidorId);
+        anotarUso(motor.servidorId, motor.tipo, { caracteres: texto.length, traducoes: 1 });
         return saiu;
       }
       throw new Error("resposta vazia");
@@ -786,7 +862,14 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
       const r = await fetch(t.url, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) { console.error("espelho: tradutor devolveu HTTP", r.status); continue; }
       const saiu = t.ler(await r.json());
-      if (saiu) return saiu;
+      if (saiu) {
+        /* Sempre "auto" aqui, mesmo quando o servidor tem chave propria: se
+           chegou nesta linha e' porque o motor dele recusou e eu caí no
+           gratuito. Contar como se fosse a chave dele esconderia justamente o
+           que ele precisa ver -- que o que ele paga nao esta sendo usado. */
+        anotarUso(motor.servidorId, "auto", { caracteres: texto.length, traducoes: 1 });
+        return saiu;
+      }
     } catch (e) {
       console.error("espelho: tradutor falhou:", String(e).slice(0, 100));
     }
@@ -2715,6 +2798,7 @@ async function montarPainel(guild, servidor) {
   const orfas = await replicasOrfas(guild, servidor);
   const elegiveis = await canaisElegiveis(guild, servidor, vivas);
   const motorUsado = comoEstaOMotor(servidor);
+  const uso = await usoDeHoje(servidor.id);
 
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
@@ -2739,6 +2823,15 @@ async function montarPainel(guild, servidor) {
     {
       name: "🌐 Motor de tradução",
       value: motorUsado,
+      inline: true,
+    },
+    {
+      name: "📊 Traduzido hoje",
+      value: uso.traducoes || uso.cache
+        ? `**${uso.traducoes.toLocaleString("pt-BR")}** ${uso.traducoes === 1 ? "tradução" : "traduções"}` +
+          ` · ${(uso.caracteres / 1000).toFixed(1)}k caracteres` +
+          (uso.cache ? `\n_${uso.cache.toLocaleString("pt-BR")} repetidas, servidas do cache sem custo_` : "")
+        : "_nada ainda hoje_",
       inline: true,
     },
     {
@@ -4411,8 +4504,28 @@ client.once("clientReady", () => {
   setInterval(umaPassada, INTERVALO_SINCRONIA);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
+    descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));
   }, 60 * 1000);
 });
+
+/* Descarrega a contagem antes de morrer.
+
+   O Fly manda SIGINT a cada deploy, e eu ando fazendo varios por dia. Sem
+   isto, cada deploy jogaria fora ate' um minuto de contagem -- e como os
+   deploys acontecem justamente quando estou mexendo, a metrica ficaria com
+   buracos exatamente nos dias de mais movimento.
+
+   Com prazo curto: se o banco nao responder, desligar continua sendo mais
+   importante que contar. */
+for (const sinal of ["SIGINT", "SIGTERM"]) {
+  process.on(sinal, async () => {
+    await Promise.race([
+      descarregarUso().catch(() => {}),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
+    process.exit(0);
+  });
+}
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
