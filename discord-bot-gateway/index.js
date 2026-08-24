@@ -3981,7 +3981,29 @@ async function cartaoDoCliente(guild, servidor) {
 /* Monta o painel inteiro: canais de acontecimento, categoria e um canal por
    cliente. Roda junto da volta do relogio, entao cliente novo ganha canal
    sozinho -- e cliente que ja tem canal so' tem a ficha atualizada. */
+/* Uma montagem por vez.
+
+   O painel duplicou todos os topicos na primeira vez que foi usado: o clique
+   do dono disparou uma montagem e o relogio disparou outra, e as duas leram
+   "este cliente ainda nao tem topico" antes de qualquer uma gravar. Cada uma
+   abriu o seu.
+
+   E' exatamente o defeito que eu ja tinha corrigido na montagem dos canais de
+   idioma -- e nao apliquei aqui. Corrigir num lugar e esquecer do outro e' o
+   jeito mais comum de um bug voltar. */
+let montandoPainel = false;
+
 async function montarPainelDoDono() {
+  if (montandoPainel) return;
+  montandoPainel = true;
+  try {
+    await montarPainelDoDonoAgora();
+  } finally {
+    montandoPainel = false;
+  }
+}
+
+async function montarPainelDoDonoAgora() {
   const gid = await guildDoPainel();
   if (!gid) return;
   const guild = client.guilds.cache.get(gid);
@@ -4002,6 +4024,33 @@ async function montarPainelDoDono() {
     } catch (e) {
       console.error("painel: cliente", servidor.nome, e?.message || e);
     }
+  }
+
+  await limparTopicosOrfaos(sala, todos);
+}
+
+/* Topico meu que nao pertence a cliente nenhum: sobra de duplicacao.
+
+   So' apago o que EU abri (ownerId meu) e que nao esta apontado por nenhuma
+   linha. Topico que o dono criou na mao fica onde esta -- apagar o que nao e'
+   meu, num servidor que e' dele, seria passar por cima de uma decisao que nao
+   me pertence. */
+async function limparTopicosOrfaos(sala, servidores) {
+  try {
+    const meus = new Set(servidores.map((s) => s.canal_admin).filter(Boolean));
+    const ativos = await sala.threads.fetchActive().catch(() => null);
+    const velhos = await sala.threads.fetchArchived({ limit: 100 }).catch(() => null);
+
+    for (const lista of [ativos?.threads, velhos?.threads]) {
+      for (const [, t] of lista || []) {
+        if (meus.has(t.id)) continue;
+        if (t.ownerId !== client.user.id) continue;
+        await t.delete("tópico duplicado do painel").catch(() => {});
+        console.log(`painel: apaguei o tópico duplicado ${t.name}`);
+      }
+    }
+  } catch (e) {
+    console.error("painel: nao consegui limpar duplicados:", e?.message || e);
   }
 }
 
