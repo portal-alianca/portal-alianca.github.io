@@ -2361,6 +2361,17 @@ async function garantirConvites() {
    ha canal antigo pra adivinhar. */
 
 const CANAL_CONFIG = "⚙️-cyron";
+
+/* O link de pagamento, se existir.
+
+   E' um Payment Link do Stripe -- uma URL, nao uma chave. O bot nao precisa
+   de credencial nenhuma do Stripe pra vender: ele so' pendura o id deste
+   servidor na URL, e quem confirma o pagamento e' a funcao cyron-pagamento,
+   do outro lado. Chave secreta nao passa nem perto do bot.
+
+   Sem a variavel, o botao simplesmente nao aparece e o codigo de ativacao
+   continua sendo o caminho. */
+const LINK_PAGAMENTO = process.env.STRIPE_LINK || "";
 const CANAL_PORTA = "🌐-idioma-language";
 const CANAL_FONTE = "📢-anuncios";
 
@@ -2717,6 +2728,14 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
      Pior que o erro: ele so' aparece na combinacao exata dos dois, entao
      testar cada botao sozinho nunca acharia. */
   const situacao = [
+    /* Botao de link (estilo 5) nao gera interacao: o Discord abre a URL e
+       pronto. Por isso ele nao tem custom_id e nao passa por cliquePainel. */
+    ...(LINK_PAGAMENTO && servidor.plano !== "pago"
+      ? [{
+          type: 2, style: 5, emoji: { name: "💳" }, label: "Assinar o plano pago",
+          url: `${LINK_PAGAMENTO}${LINK_PAGAMENTO.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
+        }]
+      : []),
     ...(servidor.plano === "pago"
       ? []   // liberado sem prazo: codigo aqui so' confundiria
       : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
