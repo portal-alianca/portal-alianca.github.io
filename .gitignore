@@ -1,0 +1,16 @@
+# Segredos que passam por aqui durante o trabalho.
+#
+# O .flytok e' escrito a cada sessao pra rodar o flyctl e apagado depois --
+# mas ele existe por alguns minutos, e este repositorio E' um site publico
+# (GitHub Pages). Um "git add -A" distraido no minuto errado publicaria um
+# token de deploy pro mundo. Nao vale contar com disciplina pra isso.
+.flytok
+.seg
+.env
+.env.*
+!.env.example
+
+# Dependencias e ruido de editor
+node_modules/
+.DS_Store
+*.log
