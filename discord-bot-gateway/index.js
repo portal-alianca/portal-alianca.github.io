@@ -705,7 +705,18 @@ function motorDe(servidor) {
   let motor = MOTOR_AUTO;
   if (servidor.tradutor_motor && servidor.tradutor_motor !== "auto" && servidor.tradutor_chave) {
     const chave = decifrar(servidor.tradutor_chave);
-    if (chave) motor = { tipo: servidor.tradutor_motor, chave, regiao: servidor.tradutor_regiao || null, servidorId: servidor.id };
+    if (chave) {
+      motor = { tipo: servidor.tradutor_motor, chave, regiao: servidor.tradutor_regiao || null, servidorId: servidor.id };
+    } else {
+      /* Nao decifrou -- segredo trocado, ou linha mexida. Sem isto aqui o
+         painel dizia "🟢 Azure, chave deste servidor" (ele so' olha se a
+         coluna esta preenchida) enquanto eu traduzia pelo gratuito. Mentira
+         exata sobre o que a pessoa esta pagando. */
+      falhaDoMotor.set(servidor.id, {
+        quando: Date.now(),
+        porque: "não consegui decifrar a chave guardada — precisa ser colada de novo",
+      });
+    }
   }
   cacheMotor.set(servidor.id, { motor, quando: Date.now() });
   return motor;
@@ -923,6 +934,8 @@ function planoDe(servidor) {
    varredura. Guardar no banco criaria uma segunda verdade pra manter em dia --
    e a primeira coisa que ficaria velha seria justamente esta. */
 const esperando = new Map(); // servidorId -> [{ idioma, quantos }]
+const semAlcance = new Map(); // servidorId -> [discord_user_id] fora da minha hierarquia
+const cargoAcimaDeMim = new Map(); // servidorId -> [nome do cargo] que eu nao alcanço
 
 /* Avisa a administracao que alguem ficou de fora.
 
@@ -1005,12 +1018,30 @@ function nomeDoIdioma(cod) {
    quer dizer: ter um cargo (a chave que abre as portas dele) e uma linha no
    banco. A sala de conversa e' um bem desse idioma, nao a definicao dele --
    por isso ela nasce numa funcao separada, e so no plano pago. */
+/* Cria o cargo do idioma.
+
+   Sem escolher posicao, de proposito -- e isso e' uma correcao de uma tentativa
+   minha que teria PIORADO as coisas.
+
+   Eu tinha passado `position: minhaPosicao - 1` achando que assim o cargo
+   nasceria uma casa abaixo do meu. Dois numeros diferentes com o mesmo nome:
+   o `position` que o discord.js expoe e' um INDICE calculado (ele ordena os
+   cargos e devolve o lugar na fila), enquanto o `position` que a API aceita na
+   criacao e' o numero cru do Discord. Num servidor onde todo mundo esta cru=1,
+   o indice calculado do meu cargo era 3 -- e mandar criar em cru=2 poria o
+   cargo do idioma ACIMA de mim, causando exatamente o defeito que eu queria
+   evitar.
+
+   E nao ha o que fazer daqui de qualquer jeito: quando meu cargo esta no fundo
+   (cru=1), nao existe posicao abaixo, porque zero e' do @everyone. Quem
+   resolve e' uma pessoa arrastando o cargo do bot pra cima -- e quando isso
+   faz falta, o painel diz. */
+async function criarCargoDeIdioma(guild, nome, motivo) {
+  return await guild.roles.create({ name: nome, mentionable: false, reason: motivo });
+}
+
 async function garantirIdioma(guild, servidorId, idioma) {
-  const cargo = await guild.roles.create({
-    name: nomeDoIdioma(idioma),
-    mentionable: false,
-    reason: "cargo do idioma",
-  });
+  const cargo = await criarCargoDeIdioma(guild, nomeDoIdioma(idioma), "cargo do idioma");
 
   const linha = { servidor_id: servidorId, idioma, role_id: cargo.id };
   /* Devolve a linha COM o id que o banco deu.
@@ -1858,10 +1889,7 @@ async function sincronizarUmGuild(guild) {
         if (sala.role_id && guild.roles.cache.has(sala.role_id)) continue;
         try {
           const canal = sala.canal_id ? await guild.channels.fetch(sala.canal_id).catch(() => null) : null;
-          const cargo = await guild.roles.create({
-            name: nomeDoIdioma(sala.idioma), mentionable: false,
-            reason: "sala de idioma do chat espelhado",
-          });
+          const cargo = await criarCargoDeIdioma(guild, nomeDoIdioma(sala.idioma), "sala de idioma do chat espelhado");
           if (canal) {
             await canal.permissionOverwrites.set([
               { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -1940,20 +1968,96 @@ async function sincronizarUmGuild(guild) {
       /* Cargo de sala e' exclusivo: entrar numa e' sair das outras, senao a
          pessoa passaria a ver a mesma conversa repetida em dois idiomas. */
       const cargosDeSala = new Set([...porIdioma.values()].map((s) => s.role_id).filter(Boolean));
+
+      /* Quem eu nao alcanco.
+
+         O Discord nao deixa um bot mexer nos cargos de quem tem cargo mais
+         alto que o dele, nem do dono do servidor -- nunca, nem com
+         Administrator, porque isso e' hierarquia e nao permissao. E ao entrar
+         num servidor novo o cargo do bot nasce EMBAIXO de todos os outros.
+
+         Isso era so' uma linha de log repetindo de dez em dez minutos. Pra
+         quem instalou, e' outra coisa: a pessoa escolhe o idioma, nao ganha o
+         cargo, nao ve categoria nenhuma e conclui que o bot nao funciona.
+         Entao passa a aparecer no painel, com o nome de quem ficou de fora e
+         o que fazer.
+
+         Administrador nao entra na conta: ele enxerga todas as categorias de
+         qualquer jeito (Administrator fura tranca de canal), entao pra ele o
+         cargo faltando nao esconde nada -- avisar seria barulho sem conserto,
+         ja que o dono e' inalcancavel por definicao. */
+      const minhaAltura = guild.members.me?.roles?.highest?.position ?? 0;
+      /* Uma linha por servidor, uma vez por partida: onde estou na fila de
+         cargos e onde estao os cargos de idioma. Foi o que finalmente mostrou
+         que o problema era a posicao do cargo, e nao a da pessoa. */
+      if (umaVezPorProcesso(`altura:${guild.id}`)) {
+        const posicoes = [...cargosDeSala].map((id) => guild.roles.cache.get(id)?.position ?? "?");
+        console.log(`cargo: ${guild.name} eu=${minhaAltura} idiomas=[${posicoes.join(",")}]`);
+      }
+      const foraDoAlcance = [];
+
+      /* Cargo de idioma acima do meu: eu criei e nao alcanço mais.
+
+         Vale pros cargos que ja existiam antes de eu passar a cria-los na
+         posicao certa, e pra quando alguem arrasta o CYRON pra baixo depois.
+         Daqui nao ha conserto: mover um cargo acima do meu exige alcanca-lo,
+         e e' exatamente o que falta. Quem conserta e' uma pessoa, arrastando
+         -- entao o painel precisa dizer isso com todas as letras, porque o
+         sintoma ("escolhi idioma e nao apareceu canal") nao aponta pra ca. */
+      const altosDemais = [...cargosDeSala]
+        .map((id) => guild.roles.cache.get(id))
+        .filter((c) => c && c.position >= minhaAltura);
+
+      /* Aviso so' quando e' verdade.
+
+         Eu tinha posto tambem um aviso preventivo por "meu cargo esta no fundo
+         da lista", achando que servidor novo sempre quebra. Nao quebra: dos
+         tres servidores novos, dois funcionam. Com varios cargos empatados na
+         mesma posicao crua, quem fica por cima sai de um desempate por id --
+         entao e' sorte, e um aviso vermelho gritando num servidor que funciona
+         e' pior que aviso nenhum: ensina a ignorar o painel.
+
+         A comparacao abaixo e' a mesma que o Discord faz, e por isso ela acerta
+         nos quatro casos que eu tenho pra conferir. */
+      if (altosDemais.length) cargoAcimaDeMim.set(servidorId, { nomes: altosDemais.map((c) => c.name) });
+      else cargoAcimaDeMim.delete(servidorId);
       for (const [, membro] of membros) {
         if (membro.user.bot) continue;
         const querido = porIdioma.get(porPessoa.get(membro.id))?.role_id || null;
+
+        const precisaMexer = [...cargosDeSala].some((c) =>
+          (c === querido) !== membro.roles.cache.has(c));
+        if (!precisaMexer) continue;
+
+        if (membro.id === guild.ownerId || membro.roles.highest.position >= minhaAltura) {
+          if (!membro.permissions.has(PermissionFlagsBits.Administrator)) foraDoAlcance.push(membro);
+          continue;
+        }
+
         for (const cargo of cargosDeSala) {
           const tem = membro.roles.cache.has(cargo);
           if (cargo === querido && !tem) {
-            await membro.roles.add(cargo, "idioma escolhido no bot").catch((e) =>
-              console.error("espelho: nao consegui dar o cargo a", membro.id, e?.message || e));
+            await membro.roles.add(cargo, "idioma escolhido no bot").catch((e) => {
+              /* Com os numeros junto.
+
+                 "Missing Permissions" sozinho nao diz de quem e' a culpa: pode
+                 ser o cargo acima de mim, a pessoa acima de mim, ou o dono do
+                 servidor -- que e' inalcancavel sempre. Eu passei uma hora
+                 supondo qual dos tres era. O log agora responde. */
+              const alvo = guild.roles.cache.get(cargo);
+              console.error(
+                `espelho: nao consegui dar o cargo a ${membro.id}: ${e?.message || e}` +
+                ` | eu=${minhaAltura} pessoa=${membro.roles.highest.position}` +
+                ` cargo=${alvo?.position ?? "?"} dono=${membro.id === guild.ownerId}`);
+            });
           } else if (cargo !== querido && tem) {
             await membro.roles.remove(cargo, "trocou de idioma").catch((e) =>
               console.error("espelho: nao consegui tirar o cargo de", membro.id, e?.message || e));
           }
         }
       }
+      if (foraDoAlcance.length) semAlcance.set(servidorId, foraDoAlcance.map((m) => m.id));
+      else semAlcance.delete(servidorId);
       /* Depois dos cargos: a categoria e' fechada com o cargo do idioma, e
          sem ele nao ha como fechar porta nenhuma. */
       await montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite, vivos);
@@ -2552,6 +2656,8 @@ async function montarPainel(guild, servidor) {
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
   const noTeto = vivas.length >= limite.fontes || idiomas.length >= limite.idiomas;
+  const inalcancaveis = semAlcance.get(servidor.id) || [];
+  const cargoRuim = cargoAcimaDeMim.get(servidor.id) || null;
 
   const campos = [
     {
@@ -2608,6 +2714,34 @@ async function montarPainel(guild, servidor) {
     });
   }
 
+  if (cargoRuim) {
+    campos.push({
+      name: "🚨 Ninguém está recebendo o cargo do idioma",
+      value: [
+        `Os cargos ${cargoRuim.nomes.slice(0, 6).map((n) => `**${n}**`).join(", ")} estão **acima** do meu na lista de cargos, ` +
+        "e o Discord não deixa um bot mexer em cargo que não esteja abaixo do dele. " +
+        "Daqui eu não tenho como resolver: mover um cargo acima do meu exige alcançá-lo.",
+        "",
+        "**Conserto (30 segundos):** Configurações do Servidor → Cargos → arraste **CYRON** para cima.",
+        "",
+        "_Enquanto isso, quem escolhe um idioma não recebe cargo — e sem cargo não enxerga a categoria dele. " +
+        "De fora, parece que eu não funciono._",
+      ].join("\n"),
+    });
+  }
+
+  if (inalcancaveis.length) {
+    campos.push({
+      name: `⛔ Não consigo dar o cargo de idioma a ${inalcancaveis.length} ${inalcancaveis.length === 1 ? "pessoa" : "pessoas"}`,
+      value: inalcancaveis.slice(0, 10).map((id) => `<@${id}>`).join(" ") +
+        (inalcancaveis.length > 10 ? ` _…e mais ${inalcancaveis.length - 10}_` : "") +
+        "\n_O cargo delas está acima do meu, e o Discord não deixa um bot mexer em quem está acima — " +
+        "isso o Administrator não resolve._\n" +
+        "**Conserto:** Configurações do Servidor → Cargos, e arraste **CYRON** para cima delas.\n" +
+        "_Sem isso, elas escolhem o idioma e não recebem canal nenhum._",
+    });
+  }
+
   if (orfas.length) {
     campos.push({
       name: `🗑️ Cópias sem origem — ${orfas.length}`,
@@ -2627,7 +2761,7 @@ async function montarPainel(guild, servidor) {
     title: "⚙️ CYRON",
     description: "O que for postado nos canais abaixo sai traduzido numa cópia por idioma, " +
       "dentro da categoria de quem escolheu aquele idioma.",
-    color: corDoPainel(noTeto, fila.length > 0),
+    color: corDoPainel(noTeto, fila.length > 0 || inalcancaveis.length > 0 || !!cargoRuim),
     fields: campos,
     footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${emTeste ? ` · teste até ${emTeste}` : ""}` },
   };
@@ -3080,9 +3214,21 @@ async function salvarMotor(inter) {
 
   await inter.deferReply({ flags: 64 });
 
-  const tipo = String(inter.fields.getTextInputValue("motor") || "").trim().toLowerCase();
-  const chave = String(inter.fields.getTextInputValue("chave") || "").trim();
-  const regiao = String(inter.fields.getTextInputValue("regiao") || "").trim() || null;
+  /* getTextInputValue estoura se o campo nao veio, e campo opcional em branco
+     nem sempre vem. Um throw aqui viraria "Esta interacao falhou" logo depois
+     de a pessoa colar a chave -- e ela nao teria como saber se gravou. */
+  const campo = (nome) => {
+    try { return String(inter.fields.getTextInputValue(nome) || "").trim(); }
+    catch { return ""; }
+  };
+  const tipo = campo("motor").toLowerCase();
+  const digitada = campo("chave");
+  const regiao = campo("regiao") || null;
+
+  /* Chave em branco com motor ja configurado = "mexi so na regiao".
+     Exigir a chave de novo pra trocar uma palavra e' o tipo de atrito que faz
+     a pessoa desistir e deixar errado. */
+  const chave = digitada || (servidor.tradutor_motor === tipo ? decifrar(servidor.tradutor_chave) : "") || "";
 
   /* Voltar pro gratuito e' um caminho de primeira classe, nao um esquecimento.
      Quem cancelou a conta do Azure precisa conseguir sair sem ficar com uma
@@ -3131,7 +3277,7 @@ async function salvarMotor(inter) {
   }
 
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`,
-    { tradutor_motor: tipo, tradutor_chave: cifrar(chave), tradutor_regiao: regiao });
+    { tradutor_motor: tipo, tradutor_chave: digitada ? cifrar(digitada) : servidor.tradutor_chave, tradutor_regiao: regiao });
   cacheServidor.delete(inter.guildId);
   cacheMotor.delete(servidor.id);
   falhaDoMotor.delete(servidor.id);
