@@ -2090,29 +2090,75 @@ async function sincronizarUmGuild(guild) {
    e' isso que deixa esta funcao rodar de dez em dez minutos sem entulhar o
    canal. Se alguem apagar, a proxima passada repoe. */
 
-const CONVITE = {
-  portao: [
-    "🌐 **Selecione seu idioma / Select your language**",
-    "",
-    "🇧🇷 Este chat agora é traduzido. Escolha seu idioma abaixo e você entra na sala da aliança no seu próprio idioma.",
-    "🇬🇧 This chat is now translated. Pick your language below and you'll join the alliance room in your own language.",
-    "🇸🇦 أصبحت هذه الدردشة مترجمة. اختر لغتك أدناه وستنضم إلى غرفة التحالف بلغتك.",
-    "🇪🇸 Este chat ahora está traducido. Elige tu idioma abajo y entrarás en la sala de la alianza en tu idioma.",
-    "🇨🇳 此聊天现已支持翻译。在下方选择你的语言，即可进入你所用语言的联盟聊天室。",
-    "",
-    "👉 O que você escrever lá chega traduzido para todo mundo — e o que os outros escreverem chega traduzido para você.",
-    "👉 What you write there reaches everyone translated — and what they write reaches you translated.",
-  ].join("\n"),
-  convite: [
-    "🌐 **Agora dá para ler tudo no seu idioma / Now you can read this in your language**",
-    "",
-    "🇧🇷 Escolha seu idioma abaixo e a aliança passa a falar com você no seu idioma.",
-    "🇬🇧 Pick your language below and the alliance starts speaking to you in your own language.",
-    "🇸🇦 اختر لغتك أدناه وسيبدأ التحالف بالتحدث معك بلغتك.",
-    "🇪🇸 Elige tu idioma abajo y la alianza empezará a hablarte en tu idioma.",
-    "🇨🇳 在下方选择你的语言，联盟将用你的语言与你交流。",
-  ].join("\n"),
-};
+/* A porta de entrada.
+
+   Era um bloco de texto puro com a mesma frase repetida em cinco idiomas, um
+   embaixo do outro. No celular isso ocupava a tela inteira e ninguem lia --
+   e' a primeira coisa que um membro novo ve do CYRON, e parecia um aviso de
+   condominio.
+
+   O que ficou: uma frase, tres colunas dizendo o que muda pra pessoa, e a
+   lista de idiomas comprimida numa linha so' no rodape. As cinco traducoes
+   viraram cinco palavras.
+
+   O texto do embed nao da' pra traduzir por pessoa -- e' uma mensagem publica,
+   uma so' pra todo mundo. Por isso o botao "Como funciona": ele abre a
+   explicacao completa em EFEMERO, ja traduzida pro idioma de quem clicou.
+   Quem nao entende o idioma da casa e' justamente quem precisa dela. */
+const RODAPE_IDIOMAS =
+  "🇧🇷 Escolha abaixo · 🇬🇧 Pick below · 🇪🇸 Elige abajo · 🇸🇦 اختر أدناه · 🇨🇳 在下方选择 · 🇮🇩 Pilih di bawah";
+
+function colunasDoConvite() {
+  return [
+    {
+      name: "📥 Você lê no seu idioma",
+      value: "Os canais principais ganham uma cópia traduzida só sua.\n_The main channels get a translated copy._",
+      inline: true,
+    },
+    {
+      name: "📤 Você fala no seu idioma",
+      value: "O que você escrever chega traduzido para os outros.\n_What you write reaches everyone translated._",
+      inline: true,
+    },
+    {
+      name: "🔎 Uma mensagem solta",
+      value: "Segure a mensagem → **Apps** → **Translate**.\n_Hold the message → Apps → Translate._",
+      inline: true,
+    },
+  ];
+}
+
+function embedDoConvite(tipo) {
+  const portao = tipo === "portao";
+  return {
+    color: COR,
+    thumbnail: { url: client.user.displayAvatarURL({ extension: "png", size: 128 }) },
+    title: portao
+      ? "🌐 Escolha seu idioma para conversar · Pick your language to chat"
+      : "🌐 Escolha seu idioma · Pick your language",
+    description: portao
+      ? "Este canal virou a entrada. Escolha seu idioma abaixo e você cai na sala da sua língua — " +
+        "lá você escreve normalmente, e sua fala chega traduzida para todo mundo.\n" +
+        "_This channel is now the entrance. Pick your language and you'll land in your own room._"
+      : "Escolha uma vez e o servidor passa a falar com você na sua língua. Dá para trocar quando quiser.\n" +
+        "_Pick once and the server starts speaking your language. You can change it anytime._",
+    fields: colunasDoConvite(),
+    footer: { text: RODAPE_IDIOMAS },
+  };
+}
+
+function componentesDoConvite() {
+  return [
+    ...menuIdioma(),
+    {
+      type: 1,
+      components: [
+        { type: 2, custom_id: "como-funciona", style: 2, emoji: { name: "❓" },
+          label: "Como funciona · How it works" },
+      ],
+    },
+  ];
+}
 
 /* Fechar o portao e' tirar SO o direito de falar, e tirar os tres jeitos de
    falar -- mensagem, topico novo e resposta dentro de topico. Deixar qualquer
@@ -2156,14 +2202,31 @@ async function garantirConvites() {
 
           if (porta.tipo === "portao") await fecharPortao(canal);
 
+          const embed = embedDoConvite(porta.tipo);
+
           if (porta.mensagem_id) {
             const viva = await canal.messages.fetch(porta.mensagem_id).catch(() => null);
-            if (viva) continue; // ja esta la, nao posta de novo
+            if (viva) {
+              /* Ja esta la. Nao posta de novo -- mas ATUALIZA se o desenho
+                 mudou, senao os servidores que ja tinham a mensagem antiga
+                 ficariam com ela pra sempre, e a unica forma de trocar seria
+                 alguem apagar na mao em cada um. */
+              const antes = viva.embeds?.[0]?.toJSON?.();
+              const mudou = !antes || antes.title !== embed.title ||
+                antes.description !== embed.description ||
+                (antes.fields || []).length !== embed.fields.length;
+              if (mudou) {
+                await viva.edit({ content: null, embeds: [embed], components: componentesDoConvite() })
+                  .then(() => console.log(`portaria: convite de #${canal.name} atualizado`))
+                  .catch((e) => console.error("portaria: nao consegui atualizar:", e?.message || e));
+              }
+              continue;
+            }
           }
 
           const posta = await canal.send({
-            content: CONVITE[porta.tipo] || CONVITE.convite,
-            components: menuIdioma(),
+            embeds: [embed],
+            components: componentesDoConvite(),
             allowedMentions: { parse: [] },
           });
           await posta.pin("convite de idioma").catch((e) =>
@@ -3960,6 +4023,12 @@ client.on("interactionCreate", async (inter) => {
        trocar o tipo do componente nao volta a quebrar isto. */
     if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
       return await cliquePainel(inter);
+    }
+    /* O botao da porta de entrada abre a mesma explicacao do /help, efemera e
+       ja traduzida -- e' o unico jeito de essa mensagem publica falar a lingua
+       de cada um que passa por ela. */
+    if (inter.isButton() && inter.customId === "como-funciona") {
+      return await comandoAjuda(inter);
     }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
