@@ -4102,6 +4102,7 @@ async function cliqueAdmin(inter) {
 
   if (acao === "aqui") {
     await porAjuste("admin_guild", inter.guildId);
+    await arrumarOndeMoraOAdmin();
     await montarPainelDoDono();
     return inter.editReply({
       content: "📋 Pronto. Este servidor virou o seu painel: criei os canais de acontecimento e um canal por cliente.",
@@ -5075,7 +5076,12 @@ client.on("messageCreate", async (msg) => {
    publicado e mudo de lugar. Reescrever a mao seria arriscar perder uma opcao,
    uma descricao traduzida, um tipo de campo -- coisas que ja estao certas e
    que eu nao teria como conferir sem testar comando por comando. */
-const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help"]);
+/* "admin" entra nesta lista mesmo nao sendo de todos.
+
+   A lista diz "nao mexa nisto", e nao "todo mundo usa". Sem ele aqui,
+   separarComandos leria /admin como comando do jogo e o empurraria pros
+   servidores com alianca -- exatamente o contrario do que ele e'. */
+const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help", "admin"]);
 
 async function separarComandos() {
   try {
@@ -5195,12 +5201,52 @@ const GLOBAIS_DO_CYRON = [
   },
 ];
 
+/* O /admin some da lista de quem nao e' o dono.
+
+   Ele nasce global porque precisa existir em algum lugar antes de haver
+   painel -- e' com ele que o painel e' criado. Assim que o painel existe,
+   ele vira comando DAQUELE servidor e sai do global. Cliente nenhum volta a
+   ver na lista um comando que nao pode usar.
+
+   A recusa no clique continua existindo de qualquer jeito: comando escondido
+   nao e' comando protegido, e quem souber o nome ainda consegue chamar. */
+async function arrumarOndeMoraOAdmin() {
+  try {
+    const def = GLOBAIS_DO_CYRON.find((d) => d.name === "admin");
+    const globais = await client.application.commands.fetch();
+    const noGlobal = [...globais.values()].find((c) => c.name === "admin");
+    const gid = await guildDoPainel();
+
+    if (!gid) {
+      if (!noGlobal) await client.application.commands.create(def);
+      return;
+    }
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return;   // painel configurado mas eu nao estou nele; nao mexo
+
+    const doGuild = await guild.commands.fetch();
+    if (![...doGuild.values()].some((c) => c.name === "admin")) {
+      await guild.commands.create(def);
+      console.log(`comandos: /admin agora é só de ${guild.name}`);
+    }
+    /* Tira do global DEPOIS de existir no servidor. Na ordem inversa, o dono
+       ficaria alguns minutos sem nenhum /admin em lugar nenhum. */
+    if (noGlobal) {
+      await noGlobal.delete();
+      console.log("comandos: /admin saiu da lista global");
+    }
+  } catch (e) {
+    console.error("comandos: não consegui arrumar o /admin:", e?.message || e);
+  }
+}
+
 async function garantirComandosGlobais() {
   if (!umaVezPorProcesso("comandos-globais")) return;
   try {
     const globais = await client.application.commands.fetch();
     const existem = new Set([...globais.values()].map((c) => c.name));
     for (const def of GLOBAIS_DO_CYRON) {
+      if (def.name === "admin") continue;   // quem cuida dele e' arrumarOndeMoraOAdmin
       if (existem.has(def.name)) continue;
       await client.application.commands.create(def);
       console.log(`comandos: /${def.name} publicado`);
@@ -5233,7 +5279,9 @@ async function umaPassada() {
 
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
-  separarComandos().then(() => garantirComandosGlobais());
+  separarComandos()
+    .then(() => garantirComandosGlobais())
+    .then(() => arrumarOndeMoraOAdmin());
   soltarAsInteracoes();
   /* Uma vez ao subir, pra quem mexeu em algo com o bot fora do ar nao ficar
      esperando dez minutos, e depois de tempos em tempos. */
