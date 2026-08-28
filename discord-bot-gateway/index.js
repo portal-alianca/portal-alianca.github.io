@@ -1437,7 +1437,7 @@ async function sincronizarRecentes() {
         }
       }
     } catch (e) {
-      console.error("espelho: passada curta falhou em", guild.id, e?.message || e);
+      console.error("espelho: passada curta falhou em", guild.name, e?.message || e);
     }
   }
 }
@@ -4063,6 +4063,79 @@ const MAX_ERROS = 60;
 const jaAvisado = new Map();
 const ESPERA_AVISO = 60 * 60 * 1000;
 
+/* O canal de erros falando com gente.
+
+   Ele nascia despejando a frase que o programa usa pra falar consigo mesmo:
+   "passada curta falhou em 1541430419289940069 supabase 504". Quem le isso
+   nao tem como saber tres coisas que sao justamente as unicas que importam:
+   o que aconteceu, se alguem precisa fazer alguma coisa, e o que. Sem elas o
+   canal so' produz preocupacao -- e preocupacao sem acao vira o habito de
+   ignorar o canal, que e' pior do que nao ter canal nenhum.
+
+   Entao cada erro conhecido ganha as tres respostas, e quem NAO precisa de
+   ninguem diz isso com todas as letras. Erro que eu ainda nao sei explicar
+   aparece cru e assumido como tal, em vez de fingir que e' grave. */
+const EXPLICA_ERRO = [
+  {
+    quando: /supabase 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network|EAI_AGAIN/i,
+    titulo: "O banco de dados piscou",
+    precisaDeVoce: false,
+    oque: "O Supabase ficou fora do ar por alguns segundos, e a varredura daquele momento foi pulada. " +
+      "A seguinte, dez minutos depois, faz o que ficou para trás — nada se perde.",
+    fazer: "Nada. Só vale olhar se isso ficar repetindo por mais de uma hora: aí é o Supabase fora do ar de " +
+      "verdade, e dá para conferir em status.supabase.com.",
+  },
+  {
+    /* O 429 tem que vir COM a palavra tradutor. Solto, ele casaria com
+       qualquer mensagem que por acaso contivesse esses tres digitos -- um id,
+       um contador, um trecho de texto -- e o erro apareceria explicado
+       errado, que e' pior do que nao explicado. */
+    quando: /tradutor.{0,40}\b429\b/i,
+    titulo: "O tradutor grátis mandou desacelerar",
+    precisaDeVoce: true,
+    oque: "O endereço gratuito do Google recusou a tradução por excesso de chamadas. A mensagem chega " +
+      "do outro lado, mas **sem traduzir** — que num bot de tradução é a falha que mais aparece para quem usa.",
+    fazer: "Ligar um motor com chave (DeepL ou Google Cloud) nos ajustes do `/admin`. " +
+      "Enquanto o volume for baixo isso é raro; quanto mais gente usar, mais vai aparecer.",
+  },
+  {
+    quando: /tradutor devolveu HTTP|tradutor fora do ar|traducao falhou/i,
+    titulo: "O tradutor recusou uma tradução",
+    precisaDeVoce: false,
+    oque: "Uma chamada de tradução voltou com erro. A mensagem chega sem traduzir, e a próxima " +
+      "tentativa costuma passar.",
+    fazer: "Nada, se for esporádico. Se virar rotina, é hora de um motor com chave.",
+  },
+  {
+    quando: /Unknown interaction/i,
+    titulo: "Alguém clicou num botão vencido",
+    precisaDeVoce: false,
+    oque: "O Discord dá três segundos para o bot acusar um clique. Ou o clique veio de uma mensagem " +
+      "antiga, ou o bot estava ocupado naquele instante.",
+    fazer: "Nada. Quem clicou vê “Esta interação falhou” e resolve clicando de novo.",
+  },
+  {
+    quando: /Unknown Message|Unknown Channel|Unknown Webhook/i,
+    titulo: "Apagaram algo que eu ainda usava",
+    precisaDeVoce: false,
+    oque: "Um canal, uma mensagem ou um webhook que eu tinha anotado não existe mais — alguém apagou " +
+      "na mão. Eu refaço sozinho na próxima varredura.",
+    fazer: "Nada.",
+  },
+  {
+    quando: /rate limit|Too Many Requests/i,
+    titulo: "O Discord pediu para eu ir mais devagar",
+    precisaDeVoce: false,
+    oque: "Fiz chamadas demais em pouco tempo e o Discord segurou. A biblioteca espera e repete sozinha.",
+    fazer: "Nada. Se aparecer muito, me avise: é sinal de que alguma rotina minha está trabalhando à toa.",
+  },
+];
+
+function explicarErro(onde, porque) {
+  const texto = `${onde} ${porque}`;
+  return EXPLICA_ERRO.find((e) => e.quando.test(texto)) || null;
+}
+
 /* Nem todo erro e' do dono.
 
    "nao consegui dar o cargo" e' configuracao do servidor do CLIENTE: o cargo
@@ -4088,12 +4161,51 @@ function anotarErro(onde, porque) {
   const texto = `${onde} ${porque}`;
   if (ERRO_DO_CLIENTE.some((r) => r.test(texto))) return;
 
-  const chave = `${onde}|${String(porque).slice(0, 60)}`;
+  const explicacao = explicarErro(onde, porque);
+
+  /* A repeticao junta pela EXPLICACAO, nao pelo texto cru.
+
+     O Supabase caiu por trinta segundos e saiu uma linha por servidor: seis
+     mensagens seguidas dizendo a mesma coisa com um numero diferente no meio.
+     Pra quem le, seis problemas. Era um. Agrupando pelo que aquilo QUER
+     DIZER, o mesmo tombo vira uma mensagem, e a janela de silencio depois
+     dela vale pro problema inteiro. */
+  const chave = explicacao ? `explicado|${explicacao.titulo}` : `${onde}|${String(porque).slice(0, 60)}`;
   const ultimo = jaAvisado.get(chave) || 0;
   if (Date.now() - ultimo < ESPERA_AVISO) return;
   jaAvisado.set(chave, Date.now());
-  avisarNoPainel(CANAL_ERROS,
-    `\`${new Date().toLocaleTimeString("pt-BR")}\` **${onde}** — ${porque}`).catch(() => {});
+
+  const hora = new Date().toLocaleTimeString("pt-BR");
+  if (!explicacao) {
+    /* Erro que eu ainda nao sei explicar. Aparece cru e ASSUMIDO como cru --
+       fingir gravidade que eu nao sei medir seria pedir preocupacao no
+       escuro. */
+    avisarNoPainel(CANAL_ERROS, {
+      embeds: [{
+        color: 0x9aa0a6,
+        title: "❔ Um erro que eu ainda não sei explicar",
+        description: `Me mostre esta mensagem e eu passo a explicar este aqui também.\n\n` +
+          `\`\`\`\n${onde}: ${porque}\n\`\`\``,
+        footer: { text: `${hora} · sem tradução para o português ainda` },
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  avisarNoPainel(CANAL_ERROS, {
+    embeds: [{
+      color: explicacao.precisaDeVoce ? 0xE03E3E : 0x9aa0a6,
+      title: `${explicacao.precisaDeVoce ? "🔴" : "⚪"} ${explicacao.titulo}`,
+      fields: [
+        { name: "O que aconteceu", value: explicacao.oque.slice(0, 1000) },
+        {
+          name: explicacao.precisaDeVoce ? "O que fazer" : "Precisa de você?",
+          value: (explicacao.precisaDeVoce ? "" : "**Não.** ") + explicacao.fazer.slice(0, 900),
+        },
+      ],
+      footer: { text: `${hora} · ${onde}: ${String(porque).slice(0, 120)}` },
+    }],
+  }).catch(() => {});
 }
 
 const CANAL_NOVOS = "📥-novos";
@@ -4254,7 +4366,10 @@ async function avisarNoPainel(nomeCanal, texto) {
     const canal = guild.channels.cache.find(
       (c) => c.type === ChannelType.GuildText && c.name === nomeCanal);
     if (!canal) return;
-    await canal.send({ content: texto.slice(0, 1900), allowedMentions: { parse: [] } });
+    const corpo = typeof texto === "string"
+      ? { content: texto.slice(0, 1900) }
+      : texto;
+    await canal.send({ ...corpo, allowedMentions: { parse: [] } });
   } catch (e) {
     console.error("painel: nao consegui avisar em", nomeCanal, e?.message || e);
   }
