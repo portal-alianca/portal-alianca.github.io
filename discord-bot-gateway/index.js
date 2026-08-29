@@ -1437,21 +1437,49 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
   const marcados = [...msg.mentions.users.keys()].filter((id) =>
     id !== msg.author.id && new RegExp(`<@!?${id}>`).test(texto || ""));
 
+  /* Traduz ANTES de sair enviando, e uma vez por idioma.
+
+     Antes isto vivia dentro do laco de envio, o que fazia duas coisas bobas:
+     mascarava o mesmo texto sete vezes (o resultado e' identico pros sete
+     destinos) e, pior, esperava cada traducao terminar pra pedir a proxima.
+     Com sete idiomas a ultima sala recebia segundos depois da primeira.
+
+     O vantajosoTraduzir e' economia, nao filtro: "ok", "kkkk", um link solto e
+     um emoji atravessam iguais em qualquer lingua, e traduzir isso seria
+     gastar sete chamadas pra devolver a mesma palavra. */
+  const vale = texto && vantajosoTraduzir(texto, 1200, 2);
+  const idiomas = vale
+    ? [...new Set(lista
+      .filter((d) => d.canal_id !== origem.canal_id && d.idioma !== origem.idioma)
+      .map((d) => d.idioma))]
+    : [];
+  const { marcado, pecas } = vale ? protegerDoTradutor(texto, termos) : { marcado: "", pecas: [] };
+  const traduzido = new Map();
+
+  const traduzirUm = async (idioma) => {
+    /* Tradutor fora do ar nao pode calar a conversa: manda o original e deixa
+       a pessoa se virar, que e' melhor do que a mensagem sumir. */
+    const saiu = await traduzirComCache(marcado, idioma, motor);
+    traduzido.set(idioma, saiu ? devolverPecas(saiu, pecas) : texto);
+  };
+
+  /* Em paralelo so' com chave. Medido: 7 idiomas caem de 2814ms para 850ms na
+     DeepL, sem uma recusa.
+
+     Mas paralelo e' privilegio de quem tem contrato. Sete chamadas ao mesmo
+     tempo no endereco gratuito do Google viram 429 na certa -- e viraria
+     justamente na hora em que a chave falhou e o gratuito e' tudo que restou.
+     Piorar o plano B e' o tipo de otimizacao que se paga caro. */
+  if (motor.chave || motoresDoDono().length) {
+    await Promise.all(idiomas.map((i) => traduzirUm(i).catch(() => {})));
+  } else {
+    for (const idioma of idiomas) await traduzirUm(idioma).catch(() => {});
+  }
+
   for (const destino of lista) {
     if (destino.canal_id === origem.canal_id) continue;
 
-    let corpo = texto;
-    if (texto && destino.idioma !== origem.idioma && vantajosoTraduzir(texto, 1200, 2)) {
-      /* Tradutor fora do ar nao pode calar a conversa: manda o original e
-         deixa a pessoa se virar, que e' melhor do que a mensagem sumir.
-
-         O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
-         um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
-         isso seria gastar seis chamadas pra devolver a mesma palavra. */
-      const { marcado, pecas } = protegerDoTradutor(texto, termos);
-      const saiu = await traduzirComCache(marcado, destino.idioma, motor);
-      corpo = saiu ? devolverPecas(saiu, pecas) : texto;
-    }
+    const corpo = traduzido.get(destino.idioma) ?? texto;
 
     /* A assinatura fica no PE do card, miuda.
 
