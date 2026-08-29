@@ -22,6 +22,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
+/* Do discord.js so' a tabela de permissoes -- ela e' constante, e importar a
+   biblioteca nao liga bot nenhum. Quem liga o bot e' o index.js. */
+import { PermissionFlagsBits } from "discord.js";
+globalThis.PermissionFlagsBits = PermissionFlagsBits;
+
 const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
 
@@ -234,6 +239,77 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("título é cortado em 45", j.title.length <= 45);
   verdade("rótulo é cortado em 45", j.components[0].components[0].label.length <= 45);
   verdade("dica é cortada em 100", j.components[0].components[0].placeholder.length <= 100);
+}
+
+
+
+/* ================= as portas das réplicas =================
+   Vieram de uma revisão do código, não de um defeito visto: os dois primeiros
+   casos abaixo derrubariam a montagem inteira de um idioma, e o terceiro
+   entregaria a cópia de um canal privado ao servidor todo. Nenhum tinha
+   acontecido ainda porque nenhum dos sete servidores de hoje usa permissão de
+   pessoa em canal. Bastaria um cliente usar. */
+{
+  const { portasDaReplica } = carregar(["SO_LEITURA", "portasDaReplica"]);
+  /* Dublês do discord.js: só o que a função realmente pergunta. */
+  const bits = (n) => ({ has: (b) => (BigInt(n) & BigInt(b)) === BigInt(b), toArray: () => [] });
+  const V = 1n << 10n, S = 1n << 11n;
+  const guild = (cargos) => ({
+    roles: { everyone: { id: "todos" }, cache: new Map(cargos.map((c) => [c, { id: c }])) },
+  });
+  const fonte = (verQuem, falaQuem, portas = []) => ({
+    permissionsFor: (quem) => bits((verQuem.includes(quem?.id ?? quem) ? V : 0n) | (falaQuem.includes(quem?.id ?? quem) ? S : 0n)),
+    permissionOverwrites: { cache: new Map(portas.map((p) => [p.id, { allow: bits(p.ver ? V | (p.fala ? S : 0n) : 0n) }])) },
+  });
+  globalThis.client = { user: { id: "bot" } };
+
+  /* Toda porta tem que dizer de quem ela é -- sem isso o discord.js tenta
+     adivinhar, não acha, e levanta erro que derruba o idioma inteiro. */
+  {
+    const p = portasDaReplica(guild(["pt", "en", "lider"]), "pt",
+      fonte(["lider", "pessoa1"], ["lider"], [{ id: "lider", ver: true, fala: true }, { id: "pessoa1", ver: true }]),
+      ["en"], true);
+    verdade("toda porta diz se é de cargo ou de pessoa", p.every((x) => x.type === 0 || x.type === 1));
+    ok("a porta do bot é de pessoa", p.find((x) => x.id === "bot").type, 1);
+    ok("a porta de um cargo é de cargo", p.find((x) => x.id === "lider").type, 0);
+    ok("a porta de alguém é de pessoa", p.find((x) => x.id === "pessoa1").type, 1);
+  }
+
+  /* Cargo que foi apagado não pode entrar na lista. */
+  {
+    const p = portasDaReplica(guild(["pt", "lider"]), "pt", fonte(["lider"], ["lider"], [{ id: "lider", ver: true, fala: true }]),
+      ["en-apagado"], true);
+    ok("cargo apagado fica de fora", p.some((x) => x.id === "en-apagado"), false);
+  }
+
+  /* O caso que recriava o vazamento: canal privado sem porta escrita
+     (acesso por Administrator) NÃO pode virar cópia aberta. */
+  {
+    const p = portasDaReplica(guild(["pt", "en"]), "pt", fonte([], [], []), ["en"], true);
+    ok("canal privado sem porta não abre a cópia ao idioma", p.some((x) => x.id === "pt"), false);
+    ok("e continua fechado para todos", p.find((x) => x.id === "todos").deny.length, 1);
+  }
+
+  /* Canal aberto continua sendo do cargo do idioma, como sempre foi. */
+  {
+    const p = portasDaReplica(guild(["pt", "en"]), "pt", fonte(["todos"], ["todos"], []), ["en"], true);
+    const doIdioma = p.find((x) => x.id === "pt");
+    verdade("canal aberto: a réplica é do cargo do idioma", !!doIdioma);
+    verdade("e quem fala na origem fala na réplica", doIdioma.allow.length === 3);
+  }
+
+  /* Canal onde só o administrador escreve: a réplica lê, mas não escreve. */
+  {
+    const p = portasDaReplica(guild(["pt", "en"]), "pt", fonte(["todos"], [], []), ["en"], true);
+    const doIdioma = p.find((x) => x.id === "pt");
+    verdade("origem sem escrita: réplica fica só de leitura", (doIdioma.deny || []).length > 0);
+  }
+
+  /* No plano grátis ninguém fala, nem quem fala na origem. */
+  {
+    const p = portasDaReplica(guild(["pt"]), "pt", fonte(["todos"], ["todos"], []), [], false);
+    verdade("plano grátis: réplica é só leitura", (p.find((x) => x.id === "pt").deny || []).length > 0);
+  }
 }
 
 /* ---- o resultado ---- */

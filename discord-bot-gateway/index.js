@@ -2167,19 +2167,32 @@ function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
      sorte -- o mesmo tropeco que o comentario da criacao ja' avisava. Em Mapa,
      quem chega depois manda, e a ordem aqui poe a negativa por ultimo: entre
      "e' lider" e "nao fala esta lingua", quem decide e' a lingua. */
+  /* O `type` vai escrito em toda porta, e nao e' detalhe.
+
+     Sem ele o discord.js tenta adivinhar de quem e' o id procurando na
+     memoria dele: primeiro nos cargos, depois nas pessoas. Cargo apagado ou
+     pessoa que ele nunca viu -- o que e' o normal, porque eu nao carrego a
+     lista de membros -- nao esta em memoria nenhuma, e ai ele nao adivinha:
+     levanta erro. O erro derruba a montagem inteira daquele idioma, a cada
+     varredura, por causa de UMA porta.
+
+     Isto nunca aconteceu nos sete servidores de hoje porque nenhum deles poe
+     permissao de PESSOA em canal. Bastaria um cliente fazer isso. */
+  const CARGO = 0, PESSOA = 1;
   const portas = new Map();
-  portas.set(todos.id, { id: todos.id, deny: [V] });
+  portas.set(todos.id, { id: todos.id, type: CARGO, deny: [V] });
   portas.set(client.user.id, {
     id: client.user.id,
+    type: PESSOA,
     allow: [V, S, PermissionFlagsBits.ManageWebhooks],
   });
   const fala = (quem) => podeConversar && !!fonte?.permissionsFor(quem)?.has(S);
-  const entrada = (id, podeFalar) => portas.set(id, podeFalar
-    ? { id, allow: [V, R, S] }
-    : { id, allow: [V, R], deny: soLeitura });
+  const entrada = (id, tipo, podeFalar) => portas.set(id, podeFalar
+    ? { id, type: tipo, allow: [V, R, S] }
+    : { id, type: tipo, allow: [V, R], deny: soLeitura });
 
   if (!fonte || fonte.permissionsFor(todos)?.has(V)) {
-    entrada(cargoId, fala(todos));
+    entrada(cargoId, CARGO, fala(todos));
     return [...portas.values()];
   }
 
@@ -2187,32 +2200,40 @@ function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
      no overwrite: um cargo costuma ganhar "ver" explicito e herdar "falar" do
      cargo em si. Lendo so' o overwrite, esse cargo entraria como leitor mudo
      numa sala que ele deveria poder usar. */
-  let herdou = false;
   for (const [id, porta] of fonte.permissionOverwrites.cache) {
     if (id === todos.id || id === client.user.id) continue;
     const cargo = guild.roles.cache.get(id);
     if (cargo) {
       if (!fonte.permissionsFor(cargo)?.has(V)) continue;
-      entrada(id, fala(cargo));
+      entrada(id, CARGO, fala(cargo));
     } else {
       /* Permissao de PESSOA, nao de cargo. Aqui vale o que esta escrito na
          porta, e nao a permissao efetiva: a pessoa pode nao estar em cache
          (a lista de membros nao e' garantida) e eu perderia o acesso dela
          calado, que e' pior do que copiar a porta como ela e'. */
       if (!porta.allow.has(V)) continue;
-      entrada(id, podeConversar && porta.allow.has(S));
+      entrada(id, PESSOA, podeConversar && porta.allow.has(S));
     }
-    herdou = true;
   }
 
-  /* Fonte fechada de que ninguem alem de mim tem chave: sem esta rede a
-     replica nasceria trancada pra todos, e um canal que so' o bot enxerga nao
-     e' recurso, e' lixo. Volta a ser do cargo do idioma, so' leitura. */
-  if (!herdou) entrada(cargoId, false);
+  /* Fonte fechada sem NENHUMA porta explicita: a replica fica fechada tambem.
 
+     Eu tinha posto aqui uma rede que devolvia a sala pro cargo do idioma,
+     com o argumento de que canal que ninguem ve e' lixo. O argumento estava
+     errado e recriava, em silencio, exatamente o vazamento que este codigo
+     existe pra fechar: um canal privado cujo acesso vem de Administrator --
+     e nao de porta escrita -- nao tem porta nenhuma pra eu copiar, e a rede
+     entregava a copia dele ao servidor inteiro.
+
+     E o "ninguem ve" nem era verdade: Administrator fura tranca de canal, e
+     por isso quem enxerga a fonte por ser administrador continua enxergando
+     a replica. Fechada, ela espelha a origem; aberta, ela vazava. */
+
+  /* Cargo apagado nao entra: o id ficou no banco, o cargo nao existe mais, e
+     mandar uma porta pra ele derruba a montagem inteira do idioma. */
   for (const outro of outrosCargos) {
-    if (outro === cargoId) continue;
-    portas.set(outro, { id: outro, deny: [V] });
+    if (outro === cargoId || !guild.roles.cache.has(outro)) continue;
+    portas.set(outro, { id: outro, type: CARGO, deny: [V] });
   }
   return [...portas.values()];
 }
@@ -2537,8 +2558,13 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            dono fecha o #leaders na terca e a replica precisa fechar junto, ou
            o vazamento continua com cara de resolvido. Comparar antes de
            escrever mantem isso barato -- ver mesmasPortas. */
-        const assunto = `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. ` +
-          "O que se escreve aqui aparece traduzido nos outros idiomas.";
+        /* O texto segue o PLANO. No gratis a replica continua so' leitura,
+           e prometer conversa num canal onde a pessoa nao consegue escrever
+           e' pior do que nao dizer nada -- ela tenta, nao vai, e o recado do
+           bot diz o contrario do topico logo acima. */
+        const assunto = `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. ` + (pago
+          ? "O que se escreve aqui aparece traduzido nos outros idiomas."
+          : "Cópia traduzida do canal original.");
         if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
           await canal.setTopic(assunto, "réplica deixou de ser só leitura")
             .catch(() => { /* assunto e' capricho */ });
