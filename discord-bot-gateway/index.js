@@ -951,6 +951,87 @@ async function baixarAnexos(msg) {
   return { arquivos, links };
 }
 
+/* O que o tradutor nao pode encostar.
+
+   Mencao, emoji do servidor, canal e link nao sao palavras -- sao codigo que o
+   Discord desenha. `<@866033442688073748>` passando por um tradutor volta com
+   espaco no meio, com o sinal trocado ou traduzido ao pe da letra, e o que era
+   uma pessoa marcada vira lixo na tela. Este defeito estava calado desde
+   sempre: marcar alguem numa sala e ver a marcacao chegar quebrada na outra.
+
+   Entao eles saem do texto antes da traducao e voltam depois, no lugar. A
+   volta aceita espaco a mais dentro do marcador, porque tradutor mexe no
+   espacamento; e o que nao voltar vai pro fim, que e' feio mas e' melhor do
+   que sumir com a marcacao de alguem. */
+const PEDACOS_INTOCAVEIS = /(<a?:\w+:\d+>|<@[!&]?\d+>|<#\d+>|<t:\d+(?::[tTdDfFR])?>|https?:\/\/\S+)/g;
+
+function protegerDoTradutor(texto) {
+  const pecas = [];
+  const marcado = String(texto).replace(PEDACOS_INTOCAVEIS, (achado) => {
+    pecas.push(achado);
+    return ` %%${pecas.length - 1}%% `;
+  });
+  return { marcado, pecas };
+}
+
+function devolverPecas(texto, pecas) {
+  if (!pecas.length) return texto;
+  const usadas = new Set();
+  let volta = String(texto).replace(/%\s*%\s*(\d+)\s*%\s*%/g, (tudo, n) => {
+    const i = Number(n);
+    if (!pecas[i]) return tudo;
+    usadas.add(i);
+    return pecas[i];
+  });
+  const perdidas = pecas.filter((_, i) => !usadas.has(i));
+  if (perdidas.length) volta = `${volta.trim()} ${perdidas.join(" ")}`;
+  return volta.replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/* Uma cor por pessoa, sempre a mesma.
+
+   A barra colorida do card e' o que faz a conversa ser lida de relance: o olho
+   acha "as falas do Tiago" pela cor antes de ler o nome. Sorteada a cada
+   mensagem ela viraria enfeite; presa ao id da pessoa, vira identidade.
+
+   Paleta escolhida a dedo em vez de cor calculada do id: calcular da' cinza,
+   marrom e quase-preto, que somem no fundo escuro do Discord. */
+const CORES_DE_PESSOA = [
+  0x5865F2, 0xE67E22, 0x2ECC71, 0xE91E63, 0x1ABC9C,
+  0xF1C40F, 0x9B59B6, 0x3498DB, 0xE74C3C, 0x11806A,
+];
+
+function corDaPessoa(id) {
+  let soma = 0;
+  for (const c of String(id)) soma = (soma * 31 + c.charCodeAt(0)) % 100000;
+  return CORES_DE_PESSOA[soma % CORES_DE_PESSOA.length];
+}
+
+/* A quem a mensagem responde.
+
+   Responder e' metade de uma conversa: sem isso, do outro lado chega um "Sim"
+   solto e ninguem sabe sim pra que. Webhook nao consegue criar resposta de
+   verdade -- o Discord nao deixa --, entao a resposta vira o cabecalho pequeno
+   do card, que e' o mesmo lugar onde o Discord desenha a dele.
+
+   So o nome, sem trecho do texto: o trecho viria na lingua de quem escreveu e
+   estragaria justamente o card que existe pra deixar tudo na lingua de quem
+   le. Traduzir o trecho tambem seria uma chamada a mais por destino, por
+   pedaco de mensagem que a pessoa ja leu. */
+async function aQuemResponde(msg) {
+  if (!msg.reference?.messageId) return null;
+  try {
+    const alvo = await msg.fetchReference();
+    if (!alvo) return null;
+    return {
+      name: `↩ ${(alvo.member?.displayName || alvo.author?.username || "alguém").slice(0, 60)}`,
+      icon_url: alvo.author?.displayAvatarURL?.({ extension: "png", size: 64 }),
+    };
+  } catch {
+    return null; // mensagem respondida foi apagada, ou veio de longe demais
+  }
+}
+
 async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
@@ -959,6 +1040,23 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
   const { arquivos, links: anexos } = msg.attachments.size
     ? await baixarAnexos(msg)
     : { arquivos: [], links: [] };
+  const respondendo = await aQuemResponde(msg);
+  const cor = corDaPessoa(msg.author.id);
+
+  /* Quem foi marcado de verdade LEVA o toque, e leva uma vez so'.
+
+     Antes nao tocava sino pra ninguem, com medo de avisar a mesma pessoa sete
+     vezes. So' que cada um enxerga UMA sala -- a da propria lingua --, entao
+     as sete copias chegam a sete publicos diferentes e cada marcado e' tocado
+     exatamente uma vez. Marcar alguem e nao chamar essa pessoa era esvaziar a
+     unica coisa que marcar faz.
+
+     O autor sai da lista: a assinatura do proprio card marca ele, e seria um
+     sino por mensagem que ele mesmo escreveu. Cargo e @everyone continuam de
+     fora -- um deles acorda o servidor inteiro, e nao e' o espelho que tem que
+     decidir isso. */
+  const marcados = [...msg.mentions.users.keys()].filter((id) =>
+    id !== msg.author.id && new RegExp(`<@!?${id}>`).test(texto || ""));
 
   for (const destino of lista) {
     if (destino.canal_id === origem.canal_id) continue;
@@ -971,29 +1069,39 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
          O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
          um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
          isso seria gastar seis chamadas pra devolver a mesma palavra. */
-      corpo = (await traduzirComCache(texto, destino.idioma, motor)) || texto;
+      const { marcado, pecas } = protegerDoTradutor(texto);
+      const saiu = await traduzirComCache(marcado, destino.idioma, motor);
+      corpo = saiu ? devolverPecas(saiu, pecas) : texto;
     }
 
-    /* A mencao vai junto pra dar de volta o que o webhook tira: identidade
-       clicavel. Nome e foto o webhook copia, mas sao pintura -- tocar neles
-       nao abre nada, e a mensagem fica com jeito de perfil fantasma. Com
-       <@id> o Discord desenha a pilha de verdade: toca e abre o perfil, da
-       pra mandar mensagem, ver cargo, tudo.
+    /* A assinatura fica no PE do card, miuda.
 
-       Nao notifica ninguem: allowed_mentions vazio faz a mencao aparecer sem
-       tocar sino. Seria barulho puro -- avisaria a propria pessoa, seis vezes,
-       em salas que ela nem enxerga. */
-    const conteudo = [`<@${msg.author.id}> ${corpo}`.trim(), ...anexos]
-      .filter(Boolean).join("\n").slice(0, 1900);
-    if (!conteudo && !arquivos.length) continue;
+       Ela existe porque o perfil que assina a mensagem e' um fantasma: nome e
+       foto o webhook copia, mas sao pintura, e tocar neles nao abre nada. O
+       <@id> devolve a pessoa de verdade -- toca e abre o perfil, da pra
+       mandar mensagem, ver cargo.
+
+       Ela estava na frente da fala, e era a primeira coisa que se lia: um
+       bloco azul antes de cada frase, em toda mensagem, empurrando a conversa
+       pra direita. No fim e miuda ela some do caminho da leitura e continua
+       ali pra quem precisar.
+
+       No corpo do embed, e nao no rodape: o Discord nao transforma mencao em
+       link no rodape -- la' ela apareceria como <@866033442688073748> cru. */
+    const descricao = [corpo, ...anexos].filter(Boolean).join("\n").slice(0, 3800);
+    if (!descricao && !arquivos.length) continue;
 
     await clienteDoWebhook(destino.webhook).send({
-      content: conteudo || undefined,
       username: nome,
       avatarURL: foto,
       files: arquivos,
-      /* Texto de terceiro nao pode virar @everyone do outro lado. */
-      allowedMentions: { parse: [] },
+      embeds: [{
+        color: cor,
+        ...(respondendo ? { author: respondendo } : {}),
+        description: `${descricao}\n-# <@${msg.author.id}>`,
+      }],
+      /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
+      allowedMentions: { parse: [], users: marcados },
     }).catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
   }
 }
