@@ -6764,8 +6764,26 @@ async function separarComandos() {
     for (const guildId of guildsComAlianca) {
       const guild = client.guilds.cache.get(guildId);
       if (!guild) continue;
-      await guild.commands.set(carga);
-      console.log(`comandos: ${carga.length} comandos do jogo agora são só de ${guild.name}`);
+
+      /* Os comandos que o dono escreveu vao JUNTO nesta carga.
+
+         `set` nao acrescenta: ele substitui a lista inteira daquele servidor.
+         Mandando so' a carga do jogo, /ranking e qualquer outro comando do
+         banco sumiriam do menu -- e sumiriam calados, porque publicarComandos-
+         DoDono ja' tinha rodado e nao roda de novo ate' o proximo reinicio.
+         Pior: os dois saem no mesmo instante ao subir, entao qual dos dois
+         ganharia dependia de quem terminasse por ultimo. Levando os do dono
+         na carga, as duas ordens dao no mesmo resultado. */
+      const meus = (await comandosDoDono(guildId))
+        .filter((c) => !carga.some((j) => j.name === c.nome))
+        .map((c) => ({
+          name: c.nome,
+          description: (c.descricao || `comando de ${c.nome}`).slice(0, 100),
+        }));
+
+      await guild.commands.set([...carga, ...meus]);
+      console.log(`comandos: ${carga.length} comandos do jogo agora são só de ${guild.name}` +
+        (meus.length ? ` (+${meus.length} do dono)` : ""));
     }
 
     const ficam = [...globais.values()].filter((c) => COMANDOS_DE_TODOS.has(c.name)).map((c) => c.toJSON());
