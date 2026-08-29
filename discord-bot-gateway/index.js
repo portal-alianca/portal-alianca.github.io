@@ -1340,6 +1340,46 @@ function lembrarFala(familia, canalId, msgId, familiaId, servidorId) {
   }
 }
 
+/* Falas seguidas da mesma pessoa entram no MESMO cartao.
+
+   No Discord, tres frases seguidas de alguem aparecem como um bloco so': o
+   nome sai uma vez e o resto vem embaixo. O espelho nao fazia isso -- cada
+   fala virava um cartao proprio, com moldura e assinatura -- e uma frase
+   partida em tres, que e' como as pessoas escrevem no celular, virava tres
+   caixas empilhadas. Do lado de la a conversa lia pior do que o original.
+
+   Em vez de segurar a mensagem esperando pra ver se vem outra (o que atrasaria
+   TODA fala pra melhorar algumas), a primeira sai na hora e as seguintes sao
+   ACRESCENTADAS ao cartao que ja' esta la'.
+
+   Guardo por sala de origem, so' na memoria: se o bot reiniciar, a proxima
+   fala comeca cartao novo. E' o unico jeito de errar aqui, e o erro e' o
+   comportamento de antes -- diferente do endereco das falas, onde esquecer
+   deixava um botao quebrado e por isso foi pro banco. */
+const ultimaFalaDaSala = new Map(); // canal de origem -> { autor, quando, cartoes }
+const JANELA_DE_GRUPO = 7 * 60 * 1000; // a mesma do Discord
+const MAX_SALAS_LEMBRADAS = 2000;
+const LIMITE_DO_CARTAO = 3800; // o embed aceita 4096; sobra pra assinatura
+
+/* A decisao de emendar, separada em duas e sem efeito nenhum.
+
+   Puras de proposito: sao sete condicoes, duas delas com consequencia
+   invisivel (sino que nao toca, ordem que mente), e a funcao que as usava
+   e' a mais quente do produto -- nao da' pra conferir isso subindo bot. */
+function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos }) {
+  return !!anterior
+    && anterior.autor === autor
+    && agora - anterior.quando < JANELA_DE_GRUPO
+    && !respondeAlguem
+    && !marcados.length
+    && !arquivos.length;
+}
+
+/* E, por sala: as sete andam em ritmos diferentes. */
+function emendaNestaSala(velho, ultimoDaSala, juntas) {
+  return !!velho && !!velho.id && ultimoDaSala === velho.id && juntas.length <= LIMITE_DO_CARTAO;
+}
+
 /* Onde a fala respondida mora, quando a memoria ja' esqueceu.
 
    Duas perguntas ao banco em vez de uma consulta so' com juncao: a primeira
@@ -1405,11 +1445,6 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
   const respondendo = await aQuemResponde(msg);
   const cor = corDaPessoa(msg.author.id);
 
-  /* A familia desta fala comeca pela propria original: quem responder a ela
-     mais tarde, em qualquer sala, chega aqui por qualquer um dos ids. */
-  const familia = ondeMoraAFala.get(msg.id) || new Map();
-  lembrarFala(familia, msg.channel.id, msg.id, msg.id, servidorId);
-
   /* E a familia da fala RESPONDIDA, se houver: e' dela que sai o endereco do
      cabecalho, um por sala. Memoria primeiro; se ela ja' esqueceu -- ou se o
      bot reiniciou depois daquela fala --, pergunta ao banco. */
@@ -1436,6 +1471,45 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      decidir isso. */
   const marcados = [...msg.mentions.users.keys()].filter((id) =>
     id !== msg.author.id && new RegExp(`<@!?${id}>`).test(texto || ""));
+
+  /* Da' pra emendar esta fala na anterior?
+
+     As tres primeiras condicoes sao o que o leitor espera de um bloco: mesma
+     pessoa, pouco tempo depois, e sem cabecalho proprio (responder a alguem
+     abre assunto novo -- o cabecalho tem que ficar em cima da frase dele).
+
+     As duas ultimas nao sao estetica, sao funcionamento:
+
+     - Marcacao exige mensagem NOVA. Editar uma mensagem pra incluir um <@id>
+       nao toca sino em ninguem: o Discord so' avisa no envio. Emendar uma fala
+       que marca alguem seria entregar a fala e engolir o aviso, calado.
+
+     - Anexo tambem exige mensagem nova. O arquivo vai preso ao envio, e
+       emendar deixaria a legenda no cartao de cima e o arquivo sem dono. */
+  const anterior = ultimaFalaDaSala.get(msg.channel.id);
+  const podeEmendar = emendaNaFalaAnterior(anterior, {
+    autor: msg.author.id,
+    agora: Date.now(),
+    respondeAlguem: !!msg.reference,
+    marcados,
+    arquivos,
+  });
+
+  /* A familia desta fala: onde ela mora em cada sala. Quem responder a ela
+     mais tarde, em qualquer sala, chega aqui por qualquer um dos ids.
+
+     Fala emendada entra na familia da fala de cima, e nao abre familia
+     propria -- porque ela nao tem cartao proprio: o texto dela esta' DENTRO
+     daquele cartao. Responder a ela tem que levar ao mesmo lugar.
+
+     Onde isto fica torto: se numa das salas o cartao de cima ja' nao era o
+     ultimo, aquela sala recebe cartao novo e a familia passa a apontar pra
+     ele. Um cabecalho que aponta pra fala vizinha, do mesmo autor, segundos
+     antes -- e' impreciso e nao e' quebrado, e o preco de nao guardar uma
+     familia por sala. */
+  const familia = (podeEmendar && anterior.familia) || ondeMoraAFala.get(msg.id) || new Map();
+  const familiaId = (podeEmendar && anterior.familiaId) || msg.id;
+  lembrarFala(familia, msg.channel.id, msg.id, familiaId, servidorId);
 
   /* Traduz ANTES de sair enviando, e uma vez por idioma.
 
@@ -1476,6 +1550,8 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     for (const idioma of idiomas) await traduzirUm(idioma).catch(() => {});
   }
 
+  const cartoes = new Map(); // canal de destino -> { id, linhas, cabecalho }
+
   for (const destino of lista) {
     if (destino.canal_id === origem.canal_id) continue;
 
@@ -1502,33 +1578,120 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
        o Discord nao desenha link nenhum -- o nome apareceria morto, e a
        assinatura existe justamente pra ser tocada. */
-    const descricao = [corpo, ...anexos].filter(Boolean).join("\n").slice(0, 3800);
-    if (!descricao && !arquivos.length) continue;
+    const linhaNova = [corpo, ...anexos].filter(Boolean).join("\n");
+    if (!linhaNova && !arquivos.length) continue;
 
-    await clienteDoWebhook(destino.webhook).send({
-      username: nome,
-      avatarURL: foto,
-      files: arquivos,
-      embeds: [{
-        color: cor,
-        ...(respondendo ? {
-          author: {
-            ...respondendo,
-            /* Endereco da copia que existe NA SALA DE DESTINO. Sem ela
-               conhecida, o cabecalho vai sem toque -- melhor mudo do que
-               levando a uma sala que a pessoa nao enxerga. */
-            ...(familiaAlvo?.get(destino.canal_id)
-              ? { url: `https://discord.com/channels/${msg.guild.id}/${destino.canal_id}/${familiaAlvo.get(destino.canal_id)}` }
-              : {}),
-          },
-        } : {}),
-        description: `${descricao}\n-# [${assinatura}](https://discord.com/users/${msg.author.id})`,
-      }],
-      /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
-      allowedMentions: { parse: [], users: marcados },
-    })
-      .then((posta) => lembrarFala(familia, destino.canal_id, posta?.id, msg.id, servidorId))
-      .catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
+    const cabecalho = respondendo ? {
+      ...respondendo,
+      /* Endereco da copia que existe NA SALA DE DESTINO. Sem ela
+         conhecida, o cabecalho vai sem toque -- melhor mudo do que
+         levando a uma sala que a pessoa nao enxerga. */
+      ...(familiaAlvo?.get(destino.canal_id)
+        ? { url: `https://discord.com/channels/${msg.guild.id}/${destino.canal_id}/${familiaAlvo.get(destino.canal_id)}` }
+        : {}),
+    } : null;
+
+    /* Emendar so' vale se aquele cartao ainda for a ULTIMA coisa da sala.
+
+       Esta e' a condicao que se decide por sala, e nao pela fala: as sete
+       salas andam em ritmos diferentes. Se alguem falou embaixo do cartao
+       enquanto isso, editar jogaria a frase nova pra cima da fala dessa
+       pessoa -- a conversa passaria a mentir sobre a ordem em que aconteceu.
+       Nessa sala sai cartao novo; nas outras, emenda. */
+    const velho = podeEmendar ? anterior.cartoes.get(destino.canal_id) : null;
+    const salaDestino = msg.guild.channels.cache.get(destino.canal_id);
+    const linhas = velho ? [...velho.linhas, linhaNova] : [linhaNova];
+    const juntas = linhas.join("\n");
+    const emendavel = emendaNestaSala(velho, salaDestino?.lastMessageId, juntas);
+
+    /* A assinatura fica no PE do card, miuda.
+
+       Ela existe porque o perfil que assina a mensagem e' um fantasma: nome e
+       foto o webhook copia, mas sao pintura, e tocar neles nao abre nada. O
+       <@id> devolve a pessoa de verdade -- toca e abre o perfil, da pra
+       mandar mensagem, ver cargo.
+
+       Ela estava na frente da fala, e era a primeira coisa que se lia: um
+       bloco azul antes de cada frase, em toda mensagem, empurrando a conversa
+       pra direita. No fim e miuda ela some do caminho da leitura e continua
+       ali pra quem precisar.
+
+       Vai como NOME em link, nao como <@id>. As duas coisas levam ao mesmo
+       perfil, mas a mencao o Discord desenha como um bloco azul do tamanho da
+       fala -- pesado demais pra uma assinatura, e sobrava embaixo do texto
+       parecendo peca solta. O nome em link fica do tamanho do subtexto e some
+       na moldura do card.
+
+       No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
+       o Discord nao desenha link nenhum -- o nome apareceria morto, e a
+       assinatura existe justamente pra ser tocada. */
+    const montar = (corpoDoCartao, cabecalhoDoCartao) => ({
+      color: cor,
+      ...(cabecalhoDoCartao ? { author: cabecalhoDoCartao } : {}),
+      description: `${corpoDoCartao.slice(0, LIMITE_DO_CARTAO)}` +
+        `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})`,
+    });
+
+    const webhook = clienteDoWebhook(destino.webhook);
+    let emendou = false;
+
+    if (emendavel) {
+      /* Se a edicao falhar, a fala NAO pode ir junto: o cartao pode ter sido
+         apagado por alguem, e emendar em algo que nao existe mais e' o unico
+         caminho por onde uma mensagem sumiria calada. Cai pro envio normal. */
+      try {
+        const cabecalhoQueFica = cabecalho || velho.cabecalho;
+        await webhook.editMessage(velho.id, { embeds: [montar(juntas, cabecalhoQueFica)] });
+        cartoes.set(destino.canal_id, { id: velho.id, linhas, cabecalho: cabecalhoQueFica });
+        /* A fala nova passa a morar no cartao de cima: quem responder a ela
+           tem que cair onde o texto dela esta', que agora e' ali.
+
+           Sem gravar: esta sala ja' foi gravada quando o cartao nasceu, e a
+           familia e' a mesma. Repetir seria bater na chave primaria da tabela
+           sete vezes por fala emendada -- erro engolido, trabalho jogado
+           fora. */
+        lembrarFala(familia, destino.canal_id, velho.id, null, servidorId);
+        emendou = true;
+      } catch (e) {
+        console.error("espelho: nao consegui emendar em", destino.idioma, e?.message || e);
+      }
+    }
+
+    if (emendou) continue;
+
+    try {
+      const posta = await webhook.send({
+        username: nome,
+        avatarURL: foto,
+        files: arquivos,
+        embeds: [montar(linhaNova, cabecalho)],
+        /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
+        allowedMentions: { parse: [], users: marcados },
+      });
+      if (posta?.id) {
+        cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], cabecalho });
+        lembrarFala(familia, destino.canal_id, posta.id, familiaId, servidorId);
+      }
+    } catch (e) {
+      console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e);
+    }
+  }
+
+  /* O que ficou por ultimo em cada sala, pra proxima fala saber onde emendar.
+
+     O delete antes do set nao e' enfeite: `set` numa chave que ja existe NAO
+     muda a posicao dela na ordem do Map, e e' essa ordem que a poda usa pra
+     escolher quem sai. Sem ele, a sala mais movimentada do produto seria a
+     primeira a ser descartada. */
+  ultimaFalaDaSala.delete(msg.channel.id);
+  if (cartoes.size) {
+    ultimaFalaDaSala.set(msg.channel.id,
+      { autor: msg.author.id, quando: Date.now(), cartoes, familia, familiaId });
+  }
+  /* Map percorre na ordem de insercao, entao a primeira chave e' a sala que
+     ficou mais tempo sem falar. */
+  while (ultimaFalaDaSala.size > MAX_SALAS_LEMBRADAS) {
+    ultimaFalaDaSala.delete(ultimaFalaDaSala.keys().next().value);
   }
 }
 

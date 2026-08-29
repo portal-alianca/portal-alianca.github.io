@@ -30,6 +30,60 @@ globalThis.PermissionFlagsBits = PermissionFlagsBits;
 const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
 
+/* Escapado é quem tem um número ÍMPAR de barras antes.
+
+   Olhar só a barra anterior erra em `\\]`, onde a primeira barra escapa a
+   segunda e o colchete fecha de verdade. Esse erro fazia a classe nunca
+   fechar, a expressão regular nunca terminar, e a extração engolir o arquivo
+   inteiro -- 282 mil caracteres em vez de 300. */
+function escapado(k) {
+  let n = 0;
+  while (fonte[k - 1 - n] === "\\") n++;
+  return n % 2 === 1;
+}
+
+/* Anda pelo texto a partir de `j` contando chaves, colchetes e parênteses,
+   pulando o que estiver dentro de texto, de comentário ou de expressão
+   regular, e devolve a posição logo depois do fecha que zera a conta (ou do
+   `;` solto, para as constantes).
+
+   A expressão regular é a parte chata, e foi ela que quebrou a primeira
+   versão disto: `/<@[!&]?\d+>/` tem um colchete que fecharia a contagem no
+   meio da regra. Saber se uma barra começa uma regra ou é divisão depende do
+   que veio antes -- depois de `(`, `=`, `,` e afins é regra; depois de um
+   valor é divisão. É heurística, e basta para este arquivo. */
+function fimDoBloco(j) {
+  let nivel = 0, dentro = null, k = j;
+  for (; k < fonte.length; k++) {
+    const c = fonte[k], d = fonte[k + 1];
+    if (dentro === "//") { if (c === "\n") dentro = null; continue; }
+    if (dentro === "/*") { if (c === "*" && d === "/") { dentro = null; k++; } continue; }
+    if (dentro === "re") {
+      if (escapado(k)) continue;
+      if (c === "[") dentro = "re[";
+      else if (c === "/") dentro = null;
+      continue;
+    }
+    if (dentro === "re[") { if (c === "]" && !escapado(k)) dentro = "re"; continue; }
+    if (dentro) { if (c === dentro && !escapado(k)) dentro = null; continue; }
+
+    if (c === "/" && d === "/") { dentro = "//"; k++; continue; }
+    if (c === "/" && d === "*") { dentro = "/*"; k++; continue; }
+    if (c === "/") {
+      const antes = fonte.slice(0, k).replace(/\s+$/, "").slice(-1);
+      if (antes === "" || "(,=:[!&|?{};+return".includes(antes)) { dentro = "re"; continue; }
+    }
+    if (c === '"' || c === "'" || c === "`") { dentro = c; continue; }
+    /* Parênteses contam junto: `new Set([...])` fecha o colchete ANTES do
+       parêntese, e sem contar os dois a extração parava no `]` e devolvia
+       código pela metade. */
+    if (c === "{" || c === "[" || c === "(") nivel++;
+    else if (c === "}" || c === "]" || c === ")") { nivel--; if (nivel === 0) { k++; break; } }
+    else if (c === ";" && nivel === 0) { k++; break; }
+  }
+  return k;
+}
+
 function pedaco(nome) {
   /* `async function` vem ANTES de `function` nesta lista, e a ordem é o
      conserto de um defeito: `indexOf("function X(")` casa lá dentro de
@@ -40,57 +94,19 @@ function pedaco(nome) {
   for (const abre of [`async function ${nome}(`, `function ${nome}(`, `const ${nome} = `]) {
     const i = fonte.indexOf(abre);
     if (i < 0) continue;
-    let j = abre.endsWith("= ") ? i + abre.length : fonte.indexOf("{", i);
 
-    /* Anda pelo texto contando chaves e colchetes, pulando o que estiver
-       dentro de texto, de comentario ou de expressao regular.
+    /* Achar o corpo pulando a lista de parâmetros, e não pela primeira chave.
 
-       A expressao regular e' a parte chata, e foi ela que quebrou a primeira
-       versao disto: `/<@[!&]?\d+>/` tem um colchete que fecharia a contagem
-       no meio da regra. Saber se uma barra comeca uma regra ou e' divisao
-       depende do que veio antes -- depois de `(`, `=`, `,` e afins e' regra;
-       depois de um valor e' divisao. E' heuristica, e basta para este
-       arquivo. */
-    /* Escapado e' quem tem um numero IMPAR de barras antes.
+       Parâmetro desestruturado tem chave PRÓPRIA, e ela vem antes:
+       `function f(a, { b, c })` fazia a contagem começar no `{` do parâmetro
+       e terminar no `}` dele, devolvendo uma assinatura sem corpo nenhum. O
+       erro saía como "Unexpected token 'function'", apontando para a função
+       seguinte -- longe de onde o problema estava. */
+    const j = abre.endsWith("= ")
+      ? i + abre.length
+      : fonte.indexOf("{", fimDoBloco(fonte.indexOf("(", i)));
 
-       Olhar so' a barra anterior erra em `\\]`, onde a primeira barra escapa a
-       segunda e o colchete fecha de verdade. Esse erro fazia a classe nunca
-       fechar, a expressao regular nunca terminar, e a extracao engolir o
-       arquivo inteiro -- 282 mil caracteres em vez de 300. */
-    const escapado = (k) => {
-      let n = 0;
-      while (fonte[k - 1 - n] === "\\") n++;
-      return n % 2 === 1;
-    };
-
-    let nivel = 0, dentro = null, k = j;
-    for (; k < fonte.length; k++) {
-      const c = fonte[k], d = fonte[k + 1];
-      if (dentro === "//") { if (c === "\n") dentro = null; continue; }
-      if (dentro === "/*") { if (c === "*" && d === "/") { dentro = null; k++; } continue; }
-      if (dentro === "re") {
-        if (escapado(k)) continue;
-        if (c === "[") dentro = "re[";
-        else if (c === "/") dentro = null;
-        continue;
-      }
-      if (dentro === "re[") { if (c === "]" && !escapado(k)) dentro = "re"; continue; }
-      if (dentro) { if (c === dentro && !escapado(k)) dentro = null; continue; }
-
-      if (c === "/" && d === "/") { dentro = "//"; k++; continue; }
-      if (c === "/" && d === "*") { dentro = "/*"; k++; continue; }
-      if (c === "/") {
-        const antes = fonte.slice(0, k).replace(/\s+$/, "").slice(-1);
-        if (antes === "" || "(,=:[!&|?{};+return".includes(antes)) { dentro = "re"; continue; }
-      }
-      if (c === '"' || c === "'" || c === "`") { dentro = c; continue; }
-      /* Parenteses contam junto: `new Set([...])` fecha o colchete ANTES do
-         parentese, e sem contar os dois a extracao parava no `]` e devolvia
-         codigo pela metade. */
-      if (c === "{" || c === "[" || c === "(") nivel++;
-      else if (c === "}" || c === "]" || c === ")") { nivel--; if (nivel === 0) { k++; break; } }
-      else if (c === ";" && nivel === 0) { k++; break; }
-    }
+    const k = fimDoBloco(j);
     return fonte.slice(i, k).replace(/^const /, "var ");
   }
   throw new Error(`não achei "${nome}" no index.js — foi renomeada?`);
@@ -566,6 +582,188 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
       { linhaExistente: { id: "linha1", discord_id: "meu-id" } });
     ok("nome já existente edita, não cria", r.post, []);
     ok("nome já existente grava o código novo", r.patch[0]?.corpo?.codigo, "return 2;");
+  }
+}
+
+/* ========== falas seguidas da mesma pessoa entram no mesmo cartão ==========
+
+   Três frases seguidas viravam três caixas empilhadas, cada uma com moldura e
+   assinatura. Do lado de lá a conversa lia pior do que o original.
+
+   Duas das sete condições não são estética, e são as que estes testes
+   guardam: emendar uma fala que marca alguém entrega o texto e engole o sino
+   (editar não notifica ninguém), e emendar num cartão que já não é o último
+   da sala joga a frase para cima da fala de outra pessoa. */
+{
+  const { emendaNaFalaAnterior, emendaNestaSala } =
+    carregar(["JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "emendaNaFalaAnterior", "emendaNestaSala"]);
+
+  const agora = 1_700_000_000_000;
+  const antes = { autor: "tiago", quando: agora - 5000 };
+  const fala = (mudar = {}) => ({
+    autor: "tiago", agora, respondeAlguem: false, marcados: [], arquivos: [], ...mudar,
+  });
+
+  verdade("mesma pessoa, logo depois: emenda", emendaNaFalaAnterior(antes, fala()));
+  verdade("primeira fala da sala: não tem onde emendar", !emendaNaFalaAnterior(undefined, fala()));
+  verdade("outra pessoa: não emenda", !emendaNaFalaAnterior(antes, fala({ autor: "mirian" })));
+
+  /* Sete minutos é a janela do próprio Discord: passou disso, ele já mostra o
+     nome de novo, e o cartão emendado ficaria diferente do que está do lado. */
+  verdade("seis minutos depois: ainda emenda",
+    emendaNaFalaAnterior({ autor: "tiago", quando: agora - 6 * 60 * 1000 }, fala()));
+  verdade("oito minutos depois: cartão novo",
+    !emendaNaFalaAnterior({ autor: "tiago", quando: agora - 8 * 60 * 1000 }, fala()));
+
+  /* Responder abre assunto: o cabeçalho tem que ficar em cima da frase dele. */
+  verdade("fala que responde alguém: cartão novo",
+    !emendaNaFalaAnterior(antes, fala({ respondeAlguem: true })));
+
+  /* Estas duas são o motivo de a regra existir em função separada. */
+  verdade("fala que marca alguém: cartão novo, senão o sino não toca",
+    !emendaNaFalaAnterior(antes, fala({ marcados: ["mirian"] })));
+  verdade("fala com anexo: cartão novo, senão o arquivo fica sem dono",
+    !emendaNaFalaAnterior(antes, fala({ arquivos: [{ name: "a.png" }] })));
+
+  /* E a metade que se decide sala por sala. */
+  const velho = { id: "cartao1", linhas: ["oi"] };
+  verdade("cartão ainda é o último da sala: emenda",
+    emendaNestaSala(velho, "cartao1", "oi\ntudo bem"));
+  verdade("alguém falou embaixo: cartão novo, senão a ordem mente",
+    !emendaNestaSala(velho, "outra-mensagem", "oi\ntudo bem"));
+  verdade("sem cartão anterior nesta sala: cartão novo",
+    !emendaNestaSala(null, "cartao1", "oi"));
+  verdade("sala vazia (nenhuma última mensagem): cartão novo",
+    !emendaNestaSala(velho, undefined, "oi"));
+  verdade("texto junto estourando o embed: cartão novo",
+    !emendaNestaSala(velho, "cartao1", "x".repeat(3801)));
+  verdade("texto junto no limite: ainda emenda",
+    emendaNestaSala(velho, "cartao1", "x".repeat(3800)));
+}
+
+/* ---- e o espelho inteiro rodando, com Discord de mentira ----
+
+   A regra acima é pura, mas quem erra de verdade é a costura. Aqui a função
+   quente do produto roda de ponta a ponta contra um Discord de brinquedo, e
+   se confere o que apareceu na sala do outro idioma. */
+{
+  const { espelharMensagem, ultimaFalaDaSala } = carregar([
+    "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "ultimaFalaDaSala",
+    "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
+
+  /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
+     webhooks que guardam o que mandaram, e edição que troca o embed no lugar. */
+  const montarMundo = () => {
+    const salas = new Map([["en", { lastMessageId: null }], ["es", { lastMessageId: null }]]);
+    const mensagens = new Map();
+    let seq = 0;
+    globalThis.clienteDoWebhook = (url) => ({
+      send: async (o) => {
+        const id = `m${++seq}`;
+        mensagens.set(id, { canal: url, embed: o.embeds[0], mencoes: o.allowedMentions?.users || [] });
+        salas.get(url).lastMessageId = id;
+        return { id };
+      },
+      editMessage: async (id, o) => {
+        if (!mensagens.has(id)) throw new Error("mensagem apagada");
+        mensagens.get(id).embed = o.embeds[0];
+      },
+    });
+    return { salas, mensagens, quantas: () => mensagens.size };
+  };
+
+  globalThis.baixarAnexos = async () => ({ arquivos: [], links: [] });
+  globalThis.aQuemResponde = async () => null;
+  globalThis.corDaPessoa = () => 0x5865f2;
+  globalThis.ondeMoraAFala = new Map();
+  globalThis.procurarFamilia = async () => null;
+  globalThis.lembrarFala = (familia, canalId, msgId) => {
+    if (canalId && msgId) familia.set(canalId, msgId);
+  };
+  /* Sem tradução: o que interessa aqui é a montagem do cartão, e texto igual
+     dos dois lados deixa a conferência legível. */
+  globalThis.vantajosoTraduzir = () => false;
+  globalThis.protegerDoTradutor = (t) => ({ marcado: t, pecas: [] });
+  globalThis.devolverPecas = (t) => t;
+  globalThis.traduzirComCache = async (t) => t;
+  globalThis.MOTOR_AUTO = { tipo: "auto", chave: null };
+  globalThis.motoresDoDono = () => [];
+
+  const lista = [
+    { canal_id: "pt", idioma: "pt", webhook: "pt" },
+    { canal_id: "en", idioma: "en", webhook: "en" },
+    { canal_id: "es", idioma: "es", webhook: "es" },
+  ];
+  const origem = { canal_id: "pt", idioma: "pt" };
+
+  const falar = async (mundo, texto, mudar = {}) => {
+    const msg = {
+      id: `o${Math.random().toString(36).slice(2)}`,
+      author: { id: "tiago", username: "Tiago", displayAvatarURL: () => "http://foto" },
+      member: { displayName: "Tiago" },
+      attachments: { size: 0 },
+      mentions: { users: new Map() },
+      reference: null,
+      channel: { id: "pt" },
+      guild: { id: "g", channels: { cache: mundo.salas } },
+      ...mudar,
+    };
+    await espelharMensagem(msg, lista, origem, texto);
+    return msg;
+  };
+
+  /* O caso do relato: três frases seguidas viravam três caixas. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "I'm about to go in");
+    await falar(mundo, "I was tweaking my translation system");
+    await falar(mundo, "😅");
+
+    ok("três falas seguidas: um cartão por sala, não três", mundo.quantas(), 2);
+    const emIngles = [...mundo.mensagens.values()].find((m) => m.canal === "en");
+    verdade("as três frases estão no mesmo cartão",
+      /I'm about to go in\nI was tweaking my translation system\n😅/.test(emIngles.embed.description));
+    verdade("a assinatura aparece uma vez só",
+      emIngles.embed.description.split("discord.com/users/").length - 1 === 1);
+  }
+
+  /* Marcar alguém abre cartão novo: editar não toca sino em ninguém. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "hey");
+    await falar(mundo, "<@mirian> come to the bear",
+      { mentions: { users: new Map([["mirian", {}]]) } });
+
+    ok("fala que marca alguém sai em cartão novo", mundo.quantas(), 4);
+    const comSino = [...mundo.mensagens.values()].filter((m) => m.mencoes.includes("mirian"));
+    ok("e o sino toca uma vez em cada sala", comSino.length, 2);
+  }
+
+  /* Se alguém falou embaixo, aquela sala recebe cartão novo -- senão a frase
+     apareceria ACIMA da fala dessa pessoa, e a ordem passaria a mentir. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "primeira");
+    mundo.salas.get("en").lastMessageId = "alguem-falou";
+    await falar(mundo, "segunda");
+
+    ok("sala mexida recebe cartão novo; a outra emenda", mundo.quantas(), 3);
+    const es = [...mundo.mensagens.values()].filter((m) => m.canal === "es");
+    ok("a sala parada continua com um cartão só", es.length, 1);
+    verdade("e ele tem as duas falas", /primeira\nsegunda/.test(es[0].embed.description));
+  }
+
+  /* Cartão apagado no meio do caminho não pode levar a fala junto. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "primeira");
+    for (const id of [...mundo.mensagens.keys()]) mundo.mensagens.delete(id);
+    await falar(mundo, "segunda");
+    ok("emenda que falha vira envio novo, a fala não some", mundo.quantas(), 2);
   }
 }
 
