@@ -3707,7 +3707,7 @@ function comoEstaOMotor(servidor) {
   const nome = MOTORES[tipo]?.nome || tipo;
   const falha = falhaDoMotor.get(servidor.id);
   if (falha) {
-    const quando = new Date(falha.quando).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const quando = quandoFoi(falha.quando, "f");
     return `🔴 **${nome}** recusou\n\`${falha.porque.slice(0, 90)}\`\n_${quando} — estou traduzindo pelo grátis. Refaça a chave no botão 🌐._`;
   }
   return `🟢 **${nome}**\nchave deste servidor`;
@@ -4719,6 +4719,21 @@ const ERRO_DO_CLIENTE = [
   /Missing Access/i,
 ];
 
+/* A hora no relogio de QUEM LE, nao no meu.
+
+   A maquina roda em UTC, e eu formatava com toLocaleTimeString("pt-BR"): o
+   cartao dizia 06:06 enquanto o Discord, dois centimetros ao lado, dizia
+   03:06. Duas horas para o mesmo instante na mesma tela -- e a errada era a
+   minha, com cara de certa porque estava em portugues.
+
+   O <t:...> e' o formato do proprio Discord: mando o instante, cada pessoa ve
+   no fuso dela. Ele nao vale em rodape nem em titulo, so' no corpo -- e onde
+   a hora precisava ficar no rodape, quem resolve e' o campo `timestamp` do
+   embed, que o Discord tambem desenha no fuso de quem le. */
+function quandoFoi(ms = Date.now(), estilo = "T") {
+  return `<t:${Math.floor(ms / 1000)}:${estilo}>`;
+}
+
 function anotarErro(onde, porque) {
   errosRecentes.push({ quando: Date.now(), onde, porque: String(porque || "").slice(0, 300) });
   if (errosRecentes.length > MAX_ERROS) errosRecentes.shift();
@@ -4740,7 +4755,6 @@ function anotarErro(onde, porque) {
   if (Date.now() - ultimo < ESPERA_AVISO) return;
   jaAvisado.set(chave, Date.now());
 
-  const hora = new Date().toLocaleTimeString("pt-BR");
   if (!explicacao) {
     /* Erro que eu ainda nao sei explicar. Aparece cru e ASSUMIDO como cru --
        fingir gravidade que eu nao sei medir seria pedir preocupacao no
@@ -4751,7 +4765,8 @@ function anotarErro(onde, porque) {
         title: "❔ Um erro que eu ainda não sei explicar",
         description: `Me mostre esta mensagem e eu passo a explicar este aqui também.\n\n` +
           `\`\`\`\n${onde}: ${porque}\n\`\`\``,
-        footer: { text: `${hora} · sem tradução para o português ainda` },
+        footer: { text: "sem tradução para o português ainda" },
+        timestamp: new Date().toISOString(),
       }],
     }).catch(() => {});
     return;
@@ -4768,7 +4783,8 @@ function anotarErro(onde, porque) {
           value: (explicacao.precisaDeVoce ? "" : "**Não.** ") + explicacao.fazer.slice(0, 900),
         },
       ],
-      footer: { text: `${hora} · ${onde}: ${String(porque).slice(0, 120)}` },
+      footer: { text: `${onde}: ${String(porque).slice(0, 120)}` },
+      timestamp: new Date().toISOString(),
     }],
   }).catch(() => {});
 }
@@ -4967,7 +4983,7 @@ async function cartaoDoCliente(guild, servidor) {
     color: servidor.saiu_em ? 0x8A3A33 : plano === "pago" ? 0x2E8B7A : 0xB08A2E,
     title: servidor.nome || nomeDeCanal(servidor.nome, servidor.guild_id),
     description: servidor.saiu_em
-      ? `⚠️ **Me tiraram deste servidor** em ${new Date(servidor.saiu_em).toLocaleString("pt-BR")}.`
+      ? `⚠️ **Me tiraram deste servidor** ${quandoFoi(Date.parse(servidor.saiu_em), "R")}.`
       : `${cliente ? `${cliente.memberCount} membros` : "_não estou vendo este servidor agora_"}`,
     fields: [
       { name: "Plano", value: plano === "pago" ? "🟢 pago" : "⚪ grátis", inline: true },
@@ -5158,7 +5174,7 @@ async function embedDoResumo() {
           : "_nada ainda_" },
       { name: "Erros guardados", value: errosRecentes.length ? `${errosRecentes.length} — veja em 🐛` : "_nenhum_", inline: true },
     ],
-    footer: { text: `de pé desde ${new Date(Date.now() - process.uptime() * 1000).toLocaleString("pt-BR")}` },
+    footer: { text: "os contadores zeram quando eu reinicio" },
   };
 }
 
@@ -5191,7 +5207,7 @@ function embedDeErros() {
     title: "🐛 Últimos erros do bot",
     description: errosRecentes.length
       ? errosRecentes.slice(-12).reverse().map((e) =>
-          `\`${new Date(e.quando).toLocaleTimeString("pt-BR")}\` **${e.onde}**\n${e.porque.slice(0, 140)}`).join("\n\n").slice(0, 3800)
+          `${quandoFoi(e.quando)} **${e.onde}**\n${e.porque.slice(0, 140)}`).join("\n\n").slice(0, 3800)
       : "_nenhum erro desde que subi_",
     footer: { text: "guardados em memória; somem quando eu reinicio" },
   };
@@ -5601,7 +5617,7 @@ async function embedDeSaude() {
     fields: [
       { name: "Última volta do relógio", value: idade == null ? "_ainda não rodou_"
           : `há ${idade}s${atrasada ? " ⚠️ **atrasada**" : ""}\ndurou ${(duracaoPassada / 1000).toFixed(1)}s`, inline: true },
-      { name: "De pé há", value: `${Math.floor(process.uptime() / 3600)}h ${Math.floor((process.uptime() % 3600) / 60)}min`, inline: true },
+      { name: "De pé desde", value: quandoFoi(Date.now() - process.uptime() * 1000, "R"), inline: true },
       { name: "Servidores no gateway", value: String(client.guilds.cache.size), inline: true },
       { name: "Tradutor", value: tradutorFalhas.erros
           ? `⚠️ **${tradutorFalhas.erros}** falhas desde que subi\n${tradutorFalhas.quedas} caíram no grátis\n\`${tradutorFalhas.ultimoErro.slice(0, 80)}\``
@@ -5658,7 +5674,7 @@ async function procurarServidor(inter) {
     embeds: [{
       color: s.saiu_em ? 0x8A3A33 : planoDe(s) === "pago" ? 0x2E8B7A : 0xB08A2E,
       title: s.nome,
-      description: s.saiu_em ? `⚠️ saiu em ${new Date(s.saiu_em).toLocaleString("pt-BR")}` : "no ar",
+      description: s.saiu_em ? `⚠️ saiu ${quandoFoi(Date.parse(s.saiu_em), "R")}` : "no ar",
       fields: [
         { name: "Plano", value: planoDe(s), inline: true },
         { name: "Hoje", value: `${uso.traducoes} traduções`, inline: true },
