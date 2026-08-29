@@ -989,6 +989,26 @@ function motoresDoDono() { return reservasDoDono; }
 function lerReservasDoDono(a) {
   const fora = [];
   for (const tipo of ["azure", "deepl"]) {
+    /* Duas origens, e o cofre da maquina vem primeiro.
+
+       O painel existe pra quem esta no celular e nao tem outro jeito. Mas
+       chave do DONO tem lugar melhor: o mesmo cofre onde ja moram o token do
+       Discord e a chave do Supabase. La ela nunca passa pelo banco, nunca
+       aparece numa tela, e some junto com a maquina.
+
+       Quem esta no cofre ganha, porque mexer no cofre exige acesso a maquina
+       -- e' a decisao mais deliberada das duas. */
+    const doCofre = process.env[`${tipo.toUpperCase()}_CHAVE`];
+    if (doCofre) {
+      fora.push({
+        tipo,
+        chave: doCofre.trim(),
+        regiao: process.env[`${tipo.toUpperCase()}_REGIAO`] || a[`${tipo}_regiao`] || null,
+        servidorId: null,
+      });
+      continue;
+    }
+
     const guardada = a[`${tipo}_chave`];
     if (!guardada) continue;
     const chave = decifrar(guardada);
@@ -5385,20 +5405,26 @@ async function refazerFicha(servidorId) {
    basta pra saber o que fazer. */
 async function janelaDasChaves() {
   const a = await ajustes();
-  const tem = (k) => (a[k] ? " (tenho uma; escreva pra trocar)" : "");
+  /* O rotulo diz de ONDE veio a chave. Sem isso o painel mostraria "não
+     tenho" para uma chave que esta no cofre e funcionando, e a pessoa colaria
+     outra por cima achando que faltava. */
+  const tem = (tipo) => {
+    if (process.env[`${tipo.toUpperCase()}_CHAVE`]) return " (no cofre da máquina)";
+    return a[`${tipo}_chave`] ? " (tenho uma; escreva pra trocar)" : "";
+  };
   return {
     custom_id: "admin:chaves",
     title: "Chaves de tradução (reserva)",
     components: [
       { type: 1, components: [{ type: 4, custom_id: "azure_chave", style: 1, required: false, max_length: 200,
-        label: `Azure${tem("azure_chave")}`.slice(0, 45),
+        label: `Azure${tem("azure")}`.slice(0, 45),
         placeholder: "2 milhões de caracteres por mês, de graça" }] },
       { type: 1, components: [{ type: 4, custom_id: "azure_regiao", style: 1, required: false, max_length: 40,
         label: "Região da Azure",
         placeholder: "brazilsouth",
         ...(a.azure_regiao ? { value: a.azure_regiao } : {}) }] },
       { type: 1, components: [{ type: 4, custom_id: "deepl_chave", style: 1, required: false, max_length: 200,
-        label: `DeepL${tem("deepl_chave")}`.slice(0, 45),
+        label: `DeepL${tem("deepl")}`.slice(0, 45),
         placeholder: "a chave grátis termina em :fx" }] },
       { type: 1, components: [{ type: 4, custom_id: "apagar", style: 1, required: false, max_length: 20,
         label: "Apagar alguma? (azure, deepl)",
