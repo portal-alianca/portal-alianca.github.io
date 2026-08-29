@@ -476,6 +476,99 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   }
 }
 
+/* ============ o formulário de criar comando, do começo ao fim ============
+
+   Ele não tinha teste nenhum, e é a função que mais mudou no conserto acima.
+   Aqui o formulário é preenchido de mentira e se confere o que ele gravou. */
+{
+  const { salvarComando } = carregar(["NOMES_MEUS", "salvarComando"]);
+
+  const preencher = async (campos, { noDiscord = [], linhaExistente = null } = {}) => {
+    const feito = { post: [], patch: [], del: [], publicou: 0, resposta: "" };
+    globalThis.ehDono = async () => true;
+    globalThis.cacheComandos = new Map();
+    globalThis.publicarComandosDoDono = async () => { feito.publicou++; };
+    globalThis.sb = async () => (linhaExistente ? [linhaExistente] : []);
+    globalThis.sbPost = async (rota, corpo) => { feito.post.push({ rota, corpo }); };
+    globalThis.sbPatch = async (rota, corpo) => { feito.patch.push({ rota, corpo }); };
+    globalThis.sbDel = async (rota) => { feito.del.push(rota); };
+
+    const inter = {
+      user: { id: "dono1" },
+      guildId: "g1",
+      guild: { commands: { fetch: async () => new Map(noDiscord.map((c) => [c.id, c])) } },
+      fields: { getTextInputValue: (n) => (n in campos ? campos[n] : "") },
+      deferReply: async () => {},
+      reply: async (r) => { feito.resposta = typeof r === "string" ? r : r.content; },
+      editReply: async (r) => { feito.resposta = typeof r === "string" ? r : r.content; },
+    };
+    await salvarComando(inter);
+    return feito;
+  };
+
+  /* O caminho feliz: nome livre, código colado, comando gravado. */
+  {
+    const r = await preencher({ nome: "reino", descricao: "ranking do reino", codigo: "return 1;", quem_pode: "todos" });
+    ok("criar comando novo: grava uma linha", r.post.length, 1);
+    ok("criar comando novo: grava o nome certo", r.post[0]?.corpo?.nome, "reino");
+    ok("criar comando novo: grava quem pode", r.post[0]?.corpo?.quem_pode, "todos");
+    ok("criar comando novo: nasce ativo", r.post[0]?.corpo?.ativo, true);
+    ok("criar comando novo: publica no Discord", r.publicou, 1);
+    verdade("criar comando novo: confirma pro dono", /Criei/.test(r.resposta));
+  }
+
+  /* Quem não escolhe, não vira "todos" por acidente. */
+  {
+    const r = await preencher({ nome: "reino", codigo: "return 1;" });
+    ok("quem pode em branco nasce em 'dono'", r.post[0]?.corpo?.quem_pode, "dono");
+  }
+
+  /* O defeito de hoje, barrado uma casa antes: nome ocupado por comando alheio. */
+  {
+    const r = await preencher(
+      { nome: "ranking2", codigo: "return 1;" },
+      { noDiscord: [{ id: "do-jogo", name: "ranking2", description: "Alliance power ranking" }] });
+    ok("nome ocupado por comando alheio: não grava nada", r.post.concat(r.patch), []);
+    verdade("nome ocupado por comando alheio: diz que não gravou", /Não gravei nada/.test(r.resposta));
+  }
+
+  /* Nome que é meu: recusado pela lista, sem nem perguntar ao Discord. */
+  {
+    const r = await preencher({ nome: "ranking", codigo: "return 1;" });
+    ok("nome do jogo é recusado", r.post.concat(r.patch), []);
+  }
+
+  /* O Discord não aceita maiúscula; recusar aqui explica, lá dá erro em inglês. */
+  {
+    const r = await preencher({ nome: "Reino", codigo: "return 1;" });
+    ok("nome com maiúscula vira minúscula e passa", r.post[0]?.corpo?.nome, "reino");
+  }
+  {
+    const r = await preencher({ nome: "cla$$", codigo: "return 1;" });
+    ok("nome com símbolo é recusado", r.post.concat(r.patch), []);
+  }
+
+  /* Apagar desliga a linha em vez de sumir com ela -- o discord_id mora nela,
+     e sem ele o comando ficaria pendurado no menu do servidor para sempre. */
+  {
+    const r = await preencher(
+      { nome: "reino", apagar: "SIM" },
+      { linhaExistente: { id: "linha1", discord_id: "meu-id" } });
+    ok("apagar não deleta a linha", r.del, []);
+    ok("apagar desliga a linha", r.patch.map((p) => p.corpo.ativo), [false]);
+    ok("apagar manda republicar (é quem tira do Discord)", r.publicou, 1);
+  }
+
+  /* Nome que já existe no banco edita aquele, em vez de criar um segundo. */
+  {
+    const r = await preencher(
+      { nome: "reino", codigo: "return 2;" },
+      { linhaExistente: { id: "linha1", discord_id: "meu-id" } });
+    ok("nome já existente edita, não cria", r.post, []);
+    ok("nome já existente grava o código novo", r.patch[0]?.corpo?.codigo, "return 2;");
+  }
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
