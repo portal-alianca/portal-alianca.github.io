@@ -858,6 +858,91 @@ async function traduzirComCache(texto, alvo, motor = MOTOR_AUTO) {
    Guardando a falha, o painel dele conta. */
 const falhaDoMotor = new Map();
 
+/* A fila dos gratuitos.
+
+   Eram dois, e os dois eram o MESMO Google no mesmo endereco de saida. Quando
+   ele responde 429 -- "voce esta chamando demais" --, os dois caem no mesmo
+   segundo, e a fila inteira acaba antes de ter servido pra alguma coisa. Foi
+   exatamente o que aconteceu no primeiro 429 que apareceu no canal de erros.
+
+   Cascata de verdade precisa de PROVEDORES diferentes, nao de enderecos
+   diferentes do mesmo provedor: o que esgota e' a cota de quem atende, entao
+   dois caminhos pra mesma porta contam como um. O Lingva atende por conta
+   propria, e cada instancia tem limite proprio.
+
+   Ordem: Google primeiro porque e' o que traduz melhor; os outros existem
+   pra hora em que ele fecha a porta. */
+const GRATUITOS = [
+  {
+    nome: "google-dict",
+    url: (texto, alvo) => `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${alvo}&q=${encodeURIComponent(texto)}`,
+    ler: (j) => (Array.isArray(j) ? j.map((p) => (Array.isArray(p) ? p[0] : p)).join("") : ""),
+  },
+  {
+    nome: "google-gtx",
+    url: (texto, alvo) => `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
+    ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
+  },
+  {
+    /* Provedor proprio, cota propria: e' o unico da fila que continua de pe
+       quando o Google fecha. Testei quatro instancias de Lingva antes desta e
+       as quatro estavam fora do ar (500, 500, 503, 403) -- tradutor morto na
+       fila nao e' rede de seguranca, e' espera a mais em toda falha.
+
+       So' pra fala curta: o limite dele e' 500 caracteres, e recado comprido
+       nao e' o caso que precisa de socorro -- conversa e' curta. */
+    nome: "mymemory",
+    cabe: (texto) => texto.length <= 500,
+    url: (texto, alvo) => `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}&langpair=Autodetect|${alvo}`,
+    /* Ele responde HTTP 200 ATE' quando recusa, com o motivo escrito no campo
+       da traducao. Sem esta conferencia, "QUERY LENGTH LIMIT EXCEEDED" ou
+       "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY"
+       iriam pro chat das pessoas como se fossem a fala traduzida. Confirmado
+       na mao antes de entrar aqui. */
+    ler: (j) => {
+      if (Number(j?.responseStatus) !== 200) return "";
+      const saiu = String(j?.responseData?.translatedText || "");
+      if (/MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID/i.test(saiu)) return "";
+      return saiu;
+    },
+  },
+];
+
+/* Quem levou nao, descansa.
+
+   Sem isto, um 429 do Google era pago de novo em CADA mensagem: a fila
+   sempre comecava por ele, sempre tomava o mesmo nao, e cada fala carregava
+   uma chamada perdida e um pedido a mais pra quem ja tinha mandado parar --
+   que e' a receita pra o castigo durar mais.
+
+   Dez minutos de canto: tempo de a janela de cota do outro lado virar, sem
+   ser tanto que a gente fique no tradutor pior por horas depois de um
+   tropeco unico. */
+const descansoDoGratuito = new Map(); // nome -> ate quando
+const DESCANSO_APOS_NAO = 10 * 60 * 1000;
+const DESCANSO_APOS_QUEDA = 2 * 60 * 1000;
+
+function porDeCastigo(nome, quanto) {
+  descansoDoGratuito.set(nome, Date.now() + quanto);
+}
+
+function estaDescansando(nome) {
+  const ate = descansoDoGratuito.get(nome) || 0;
+  if (Date.now() >= ate) { descansoDoGratuito.delete(nome); return false; }
+  return true;
+}
+
+/* A fila da vez: quem nao esta de castigo, na ordem.
+
+   Se TODOS estiverem, a fila volta inteira. Preferir uma chamada que
+   provavelmente falha a nao tentar nada: o castigo existe pra economizar
+   chamada, nao pra impedir a unica tentativa que ainda poderia dar certo. */
+function gratuitosDaVez(texto) {
+  const servem = GRATUITOS.filter((g) => !g.cabe || g.cabe(texto));
+  const livres = servem.filter((g) => !estaDescansando(g.nome));
+  return livres.length ? livres : servem;
+}
+
 async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
   const escolhido = MOTORES[motor.tipo];
   if (escolhido && motor.chave) {
@@ -879,24 +964,20 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
     }
   }
 
-  const tentativas = [
-    {
-      url: `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${alvo}&q=${encodeURIComponent(texto)}`,
-      ler: (j) => (Array.isArray(j) ? j.map((p) => (Array.isArray(p) ? p[0] : p)).join("") : ""),
-    },
-    {
-      url: `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
-      ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
-    },
-  ];
-  for (const t of tentativas) {
+  for (const t of gratuitosDaVez(texto)) {
     try {
-      const r = await fetch(t.url, { signal: AbortSignal.timeout(8000) });
+      const r = await fetch(t.url(texto, alvo), { signal: AbortSignal.timeout(8000) });
       if (!r.ok) {
-        tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `HTTP ${r.status} no gratuito`;
-        console.error("espelho: tradutor devolveu HTTP", r.status); continue;
+        /* 429 e' cota estourada: esse demora a voltar. 5xx e' o servico
+           passando mal: costuma voltar rapido. Castigos diferentes, porque
+           tratar os dois igual ou desperdica chamada ou abandona um tradutor
+           bom por causa de um tropeco de meio minuto. */
+        porDeCastigo(t.nome, r.status === 429 ? DESCANSO_APOS_NAO : DESCANSO_APOS_QUEDA);
+        tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `HTTP ${r.status} no ${t.nome}`;
+        console.error(`espelho: tradutor ${t.nome} devolveu HTTP ${r.status}`); continue;
       }
       const saiu = t.ler(await r.json());
+      if (!saiu) { porDeCastigo(t.nome, DESCANSO_APOS_QUEDA); continue; }
       if (saiu) {
         /* Sempre "auto" aqui, mesmo quando o servidor tem chave propria: se
            chegou nesta linha e' porque o motor dele recusou e eu caí no
@@ -906,7 +987,8 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
         return saiu;
       }
     } catch (e) {
-      console.error("espelho: tradutor falhou:", String(e).slice(0, 100));
+      porDeCastigo(t.nome, DESCANSO_APOS_QUEDA);
+      console.error(`espelho: tradutor ${t.nome} falhou:`, String(e).slice(0, 100));
     }
   }
   return null;
