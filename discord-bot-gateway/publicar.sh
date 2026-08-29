@@ -47,7 +47,13 @@ if [ "$SUJO" -gt 0 ]; then
 fi
 
 node --check index.js || { echo "RECUSADO: index.js nao compila."; exit 1; }
-echo "ok: ramo $RAMO, em dia com o GitHub, index.js compila."
+
+# Os testes rodam AQUI, sem rede e sem Discord -- nenhuma frase deles chega em
+# servidor nenhum. Levam menos de um segundo, e sao a unica coisa neste script
+# que olha o que o codigo FAZ, e nao apenas se ele compila.
+node testes.js || { echo "RECUSADO: teste(s) falhando -- veja acima."; exit 1; }
+
+echo "ok: ramo $RAMO, em dia com o GitHub, compila e passa nos testes."
 echo "publicando $(git rev-parse --short HEAD)..."
 
 exec fly deploy --remote-only --depot=false "$@"
