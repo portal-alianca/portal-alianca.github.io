@@ -970,7 +970,35 @@ function estaDescansando(nome) {
    Se TODOS estiverem, a fila volta inteira. Preferir uma chamada que
    provavelmente falha a nao tentar nada: o castigo existe pra economizar
    chamada, nao pra impedir a unica tentativa que ainda poderia dar certo. */
-let extrasDoPainel = []; // recarregado junto com os ajustes
+let extrasDoPainel = [];   // tradutores publicos, recarregados com os ajustes
+let reservasDoDono = [];   // chaves do dono, idem
+
+/* As chaves do DONO, que valem pra todos os servidores.
+
+   Diferente da chave por servidor, que ja existia: aquela e' do cliente, ele
+   escolheu e paga; esta e' sua, e existe pra nao deixar NENHUM servidor sem
+   traducao quando o gratuito recusa. As duas convivem -- a do cliente e'
+   tentada primeiro, porque ele contratou aquela qualidade.
+
+   Guardadas cifradas, como as dos clientes. A tabela de ajustes so' e' lida
+   pela chave de servico, mas chave em texto puro no banco e' o tipo de coisa
+   que envelhece mal: basta um dia alguem exportar a tabela pra depurar. */
+function motoresDoDono() { return reservasDoDono; }
+
+function lerReservasDoDono(a) {
+  const fora = [];
+  for (const tipo of ["azure", "deepl"]) {
+    const guardada = a[`${tipo}_chave`];
+    if (!guardada) continue;
+    const chave = decifrar(guardada);
+    if (!chave) {
+      console.error(`tradutor: nao consegui decifrar a chave ${tipo} do dono -- precisa ser colada de novo`);
+      continue;
+    }
+    fora.push({ tipo, chave, regiao: a[`${tipo}_regiao`] || null, servidorId: null });
+  }
+  return fora;
+}
 
 function gratuitosDaVez(texto) {
   const todos = [...GRATUITOS, ...extrasDoPainel];
@@ -1000,6 +1028,16 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
     }
   }
 
+  /* Os gratuitos primeiro; a chave do dono depois.
+
+     Parece invertido -- a chave e' mais confiavel --, e nao e'. A camada
+     gratuita da Azure e' 2 milhoes de caracteres por MES, com teto rigido:
+     estourou, ela recusa ate' virar o mes. Gastar isso nas falas que o Google
+     ja atenderia de graca seria queimar a reserva justamente para o dia em que
+     o Google fechar a porta.
+
+     Entao a chave fica guardada pra quando precisa, que e' o que reserva
+     quer dizer. */
   for (const t of gratuitosDaVez(texto)) {
     try {
       /* Lingva pede o texto na URL; LibreTranslate pede num POST. Um `corpo`
@@ -1034,6 +1072,27 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
     } catch (e) {
       porDeCastigo(t.nome, DESCANSO_APOS_QUEDA);
       console.error(`espelho: tradutor ${t.nome} falhou:`, String(e).slice(0, 100));
+    }
+  }
+
+  /* Nenhum gratuito atendeu. Agora sim a reserva paga do dono -- se houver. */
+  for (const reserva of motoresDoDono()) {
+    if (estaDescansando(`dono:${reserva.tipo}`)) continue;
+    try {
+      const saiu = await MOTORES[reserva.tipo].traduzir(texto, alvo, reserva);
+      if (saiu) {
+        anotarUso(motor.servidorId, `dono-${reserva.tipo}`, { caracteres: texto.length, traducoes: 1 });
+        console.log(`tradutor: ${reserva.tipo} do dono salvou uma fala que o gratuito recusou`);
+        return saiu;
+      }
+    } catch (e) {
+      /* Cota do mes estourada demora a voltar; erro de rede, nao. A Azure diz
+         403 quando acaba o mes, e insistir nisso a cada fala nao traz o mes
+         de volta. */
+      const porque = String(e?.message || e);
+      porDeCastigo(`dono:${reserva.tipo}`, /403|quota|limit/i.test(porque) ? 6 * 60 * 60 * 1000 : DESCANSO_APOS_QUEDA);
+      tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `${reserva.tipo} do dono: ${porque.slice(0, 90)}`;
+      console.error(`tradutor: reserva ${reserva.tipo} do dono falhou:`, porque.slice(0, 120));
     }
   }
   return null;
@@ -1525,6 +1584,13 @@ async function recarregarAjustes() {
   const agora = extrasDoPainel.map((e) => e.nome).join();
   if (antes !== agora) {
     console.log(`tradutor: reservas do painel agora sao [${agora || "nenhuma"}]`);
+  }
+
+  const antesDono = reservasDoDono.map((r) => r.tipo).join();
+  reservasDoDono = lerReservasDoDono(a);
+  const agoraDono = reservasDoDono.map((r) => r.tipo).join();
+  if (antesDono !== agoraDono) {
+    console.log(`tradutor: chaves do dono agora sao [${agoraDono || "nenhuma"}]`);
   }
 }
 
@@ -5099,6 +5165,7 @@ async function cliqueAdmin(inter) {
 
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
+  if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
   if (acao === "busca" && inter.isButton()) return inter.showModal(janelaValida(janelaDeBusca()));
 
   await inter.deferUpdate();
@@ -5271,6 +5338,71 @@ async function refazerFicha(servidorId) {
    Sao as decisoes que hoje exigem um deploy meu. Cada campo vem preenchido
    com o que esta valendo: formulario em branco faz a pessoa apagar sem querer
    o que ja estava certo. */
+/* As chaves de tradução do dono.
+
+   Janela separada da de ajustes porque aquela ja' esta com cinco campos, que
+   e' o teto do Discord por formulario -- e porque chave e configuracao sao
+   coisas diferentes: uma se digita uma vez e se esquece, a outra se mexe.
+
+   O campo volta VAZIO mesmo com chave gravada, de proposito. Devolver a chave
+   pra tela seria mostra-la a quem abrir o painel, e formulario nao e' lugar de
+   guardar segredo -- o estado ("tenho" ou "nao tenho") aparece no rotulo, que
+   basta pra saber o que fazer. */
+async function janelaDasChaves() {
+  const a = await ajustes();
+  const tem = (k) => (a[k] ? " (tenho uma; escreva pra trocar)" : "");
+  return {
+    custom_id: "admin:chaves",
+    title: "Chaves de tradução (reserva)",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "azure_chave", style: 1, required: false, max_length: 200,
+        label: `Azure${tem("azure_chave")}`.slice(0, 45),
+        placeholder: "2 milhões de caracteres por mês, de graça" }] },
+      { type: 1, components: [{ type: 4, custom_id: "azure_regiao", style: 1, required: false, max_length: 40,
+        label: "Região da Azure",
+        placeholder: "brazilsouth",
+        ...(a.azure_regiao ? { value: a.azure_regiao } : {}) }] },
+      { type: 1, components: [{ type: 4, custom_id: "deepl_chave", style: 1, required: false, max_length: 200,
+        label: `DeepL${tem("deepl_chave")}`.slice(0, 45),
+        placeholder: "a chave grátis termina em :fx" }] },
+      { type: 1, components: [{ type: 4, custom_id: "apagar", style: 1, required: false, max_length: 20,
+        label: "Apagar alguma? (azure, deepl)",
+        placeholder: "vazio mantém as duas" }] },
+    ],
+  };
+}
+
+async function salvarChaves(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+  const apagar = campo("apagar").toLowerCase();
+  const feito = [];
+
+  for (const tipo of ["azure", "deepl"]) {
+    if (apagar.includes(tipo)) {
+      await porAjuste(`${tipo}_chave`, null);
+      feito.push(`🗑️ ${tipo}: apagada`);
+      continue;
+    }
+    const nova = campo(`${tipo}_chave`);
+    if (!nova) continue;
+    /* Cifrada antes de encostar no banco, igual as dos clientes. */
+    await porAjuste(`${tipo}_chave`, cifrar(nova));
+    feito.push(`🔑 ${tipo}: guardada`);
+  }
+  const regiao = campo("azure_regiao");
+  if (regiao) { await porAjuste("azure_regiao", regiao); feito.push("📍 região da Azure gravada"); }
+
+  await recarregarAjustes();
+  return inter.editReply(feito.length
+    ? `${feito.join("\n")}\n\nEla entra **só quando o gratuito recusar** — é reserva, não substituto. ` +
+      "Assim a cota do mês fica guardada para o dia em que fizer falta."
+    : "Nada mudou — todos os campos vieram vazios.");
+}
+
 async function janelaDeAjustes() {
   const a = await ajustes();
   const cheio = (v) => (v ? { value: String(v).slice(0, 300) } : {});
@@ -6152,6 +6284,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
+      if (inter.customId === "admin:chaves") return await salvarChaves(inter);
       if (inter.customId === "admin:busca") return await procurarServidor(inter);
       return;
     }
