@@ -880,6 +880,28 @@ const falhaDoMotor = new Map();
    Mensagem sem traducao e' ruim; mensagem no idioma errado e' pior, porque
    parece certa e ninguem confere. Entre uma reserva que as vezes entrega
    coisa errada e nao ter reserva, nao ter e' mais honesto. */
+/* Como se fala com cada tipo de tradutor publico.
+
+   Sao dois formatos no mundo -- Lingva e LibreTranslate -- e quase toda
+   instancia publica e' uma das duas. Sabendo os dois, aceitar um endereco novo
+   passa a ser uma linha de texto no painel em vez de uma alteracao de codigo.
+
+   Isso importa porque estes enderecos MORREM: dos oito que testei pra montar
+   esta lista, sete estavam fora do ar. Nao e' acidente, e' a natureza de
+   servico mantido por voluntario. Se cada morte exigir publicar o bot de novo,
+   o tradutor fica quebrado ate' alguem ter tempo. */
+const FORMATOS = {
+  lingva: (base) => ({
+    url: (texto, alvo) => `${String(base).replace(/\/+$/, "")}/api/v1/auto/${alvo}/${encodeURIComponent(texto)}`,
+    ler: (j) => j?.translation || "",
+  }),
+  libre: (base) => ({
+    url: () => `${String(base).replace(/\/+$/, "")}/translate`,
+    corpo: (texto, alvo) => ({ q: texto, source: "auto", target: alvo, format: "text" }),
+    ler: (j) => j?.translatedText || "",
+  }),
+};
+
 const GRATUITOS = [
   {
     nome: "google-dict",
@@ -891,7 +913,33 @@ const GRATUITOS = [
     url: (texto, alvo) => `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
     ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
   },
+  /* Lingva repassa o Google: a qualidade e' a de la', mas a cota e' do IP
+     DELE. E' isso que o torna reserva de verdade, enquanto os dois de cima nao
+     servem um pro outro -- sao duas portas da mesma casa, e quando ela fecha,
+     fecham as duas.
+
+     Custa uns 2 segundos por chamada, entao vem por ultimo: quem esta de pe
+     responde mais rapido, e reserva boa e' a que so' aparece quando precisa. */
+  { nome: "lingva-dialectapp", ...FORMATOS.lingva("https://lingva.dialectapp.org") },
 ];
+
+/* Os enderecos que voce acrescentou pelo painel.
+
+   Uma linha por tradutor: `formato|endereco`. Formato invalido some em
+   silencio de proposito -- linha errada no meio da lista nao pode derrubar as
+   que estao certas, e o painel confere na hora de salvar. */
+function tradutoresDoPainel(texto) {
+  const extras = [];
+  for (const linha of String(texto || "").split(/[\n,]+/)) {
+    const [formato, ...resto] = linha.split("|").map((x) => x.trim());
+    const base = resto.join("|");
+    if (!base || !/^https:\/\//i.test(base)) continue;
+    const molde = FORMATOS[String(formato).toLowerCase()];
+    if (!molde) continue;
+    extras.push({ nome: `extra:${base.replace(/^https:\/\//, "").slice(0, 40)}`, ...molde(base) });
+  }
+  return extras;
+}
 
 /* Quem levou nao, descansa.
 
@@ -922,8 +970,11 @@ function estaDescansando(nome) {
    Se TODOS estiverem, a fila volta inteira. Preferir uma chamada que
    provavelmente falha a nao tentar nada: o castigo existe pra economizar
    chamada, nao pra impedir a unica tentativa que ainda poderia dar certo. */
+let extrasDoPainel = []; // recarregado junto com os ajustes
+
 function gratuitosDaVez(texto) {
-  const servem = GRATUITOS.filter((g) => !g.cabe || g.cabe(texto));
+  const todos = [...GRATUITOS, ...extrasDoPainel];
+  const servem = todos.filter((g) => !g.cabe || g.cabe(texto));
   const livres = servem.filter((g) => !estaDescansando(g.nome));
   return livres.length ? livres : servem;
 }
@@ -951,7 +1002,16 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
 
   for (const t of gratuitosDaVez(texto)) {
     try {
-      const r = await fetch(t.url(texto, alvo), { signal: AbortSignal.timeout(8000) });
+      /* Lingva pede o texto na URL; LibreTranslate pede num POST. Um `corpo`
+         no molde e' o que diz qual dos dois. */
+      const r = t.corpo
+        ? await fetch(t.url(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(t.corpo(texto, alvo)),
+          signal: AbortSignal.timeout(12000),
+        })
+        : await fetch(t.url(texto, alvo), { signal: AbortSignal.timeout(12000) });
       if (!r.ok) {
         /* 429 e' cota estourada: esse demora a voltar. 5xx e' o servico
            passando mal: costuma voltar rapido. Castigos diferentes, porque
@@ -1455,6 +1515,17 @@ async function recarregarAjustes() {
   BETA = a.beta != null ? a.beta === "1" || a.beta === "sim" : BETA_DO_AMBIENTE;
   BETA_ATE = a.beta_ate || BETA_ATE_DO_AMBIENTE;
   LINK_PAGAMENTO_VIVO = a.stripe_link || LINK_PAGAMENTO;
+
+  /* Os tradutores de reserva sao lidos aqui, e nao a cada mensagem: enderecos
+     mudam de mes em mes, nao de fala em fala. A cada minuto os ajustes voltam
+     do banco, entao trocar um endereco morto vale em ate' um minuto -- sem
+     publicar o bot. */
+  const antes = extrasDoPainel.map((e) => e.nome).join();
+  extrasDoPainel = tradutoresDoPainel(a.tradutores_extras);
+  const agora = extrasDoPainel.map((e) => e.nome).join();
+  if (antes !== agora) {
+    console.log(`tradutor: reservas do painel agora sao [${agora || "nenhuma"}]`);
+  }
 }
 
 function planoDe(servidor) {
@@ -5215,6 +5286,13 @@ async function janelaDeAjustes() {
         label: "Beta acaba em (AAAA-MM-DD, vazio = sem data)", placeholder: "2027-03-31", ...cheio(a.beta_ate) }] },
       { type: 1, components: [{ type: 4, custom_id: "donos", style: 1, required: false, max_length: 200,
         label: "Outras contas suas (ids)", placeholder: "866033442688073748, 577245717114912830", ...cheio(a.donos) }] },
+      /* Uma linha por tradutor de reserva. Fica aqui, e nao no codigo, porque
+         instancia publica morre: das oito que testei, sete estavam fora do ar.
+         Trocar um endereco tem que ser digitar, nao publicar. */
+      { type: 1, components: [{ type: 4, custom_id: "tradutores_extras", style: 2, required: false, max_length: 600,
+        label: "Tradutores de reserva (formato|endereço)",
+        placeholder: "lingva|https://lingva.dialectapp.org\nlibre|https://libretranslate.exemplo.com",
+        ...cheio(a.tradutores_extras) }] },
     ],
   };
 }
@@ -5235,8 +5313,26 @@ async function salvarAjustes(inter) {
     return inter.editReply("O link de pagamento precisa começar com https://. **Não gravei nada.**");
   }
 
+  /* Confere ANTES de gravar, e diz qual linha esta errada.
+
+     Sem isto a linha ruim seria descartada em silencio na leitura, e o painel
+     mostraria uma reserva configurada que nunca e' chamada -- mentira exata
+     sobre o que esta protegendo o servidor. */
+  const extras = campo("tradutores_extras");
+  const linhasRuins = String(extras).split(/[\n,]+/)
+    .map((l) => l.trim()).filter(Boolean)
+    .filter((l) => !tradutoresDoPainel(l).length);
+  if (linhasRuins.length) {
+    return inter.editReply(
+      `Não entendi ${linhasRuins.length === 1 ? "esta linha" : "estas linhas"} de tradutor:\n` +
+      linhasRuins.map((l) => `\`${l.slice(0, 80)}\``).join("\n") +
+      "\n\nO formato é `lingva|https://...` ou `libre|https://...`, e o endereço precisa ser **https**. " +
+      "**Não gravei nada.**");
+  }
+
   for (const [chave, valor] of [
     ["stripe_link", link], ["beta", campo("beta")], ["beta_ate", beta_ate], ["donos", campo("donos")],
+    ["tradutores_extras", extras],
   ]) {
     await porAjuste(chave, valor || null);
   }
