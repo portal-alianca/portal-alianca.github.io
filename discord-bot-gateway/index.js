@@ -1007,6 +1007,38 @@ function corDaPessoa(id) {
   return CORES_DE_PESSOA[soma % CORES_DE_PESSOA.length];
 }
 
+/* Onde cada fala mora em cada sala.
+
+   Uma fala vira oito mensagens: a original e as sete traduzidas, cada uma com
+   id proprio na sala dela. Sem guardar isso, o cabecalho "↩ Fulano" e' enfeite:
+   ele diz a quem se respondeu mas nao leva a lugar nenhum, porque eu nao sei
+   qual das oito mostrar pra quem esta lendo.
+
+   E tem que ser a copia DA SALA DELE. Apontar pra original seria pior do que
+   nao apontar: quem le em alemao nao enxerga a sala de portugues, entao o
+   toque levaria a uma mensagem que o Discord vai recusar a mostrar.
+
+   Guardado na memoria, e nao no banco. Responder e' coisa de conversa viva --
+   quase sempre a poucos minutos da fala original --, entao um teto de falas
+   recentes cobre o caso real; e a alternativa seria uma escrita no banco por
+   mensagem por sala, oito vezes o custo, pra salvar um toque em mensagem de
+   uma semana atras. Depois de um reinicio, ou de muita conversa, o cabecalho
+   volta a ser enfeite -- que e' exatamente o que ele era antes. */
+const ondeMoraAFala = new Map(); // id de qualquer copia -> Map(canal -> id da copia de la')
+const MAX_FALAS_LEMBRADAS = 6000;
+
+function lembrarFala(familia, canalId, msgId) {
+  if (!canalId || !msgId) return;
+  familia.set(canalId, msgId);
+  ondeMoraAFala.set(msgId, familia);
+  /* Map do JavaScript percorre na ordem em que se inseriu, entao a primeira
+     chave e' sempre a mais velha: dá um descarte por ordem de chegada sem eu
+     precisar guardar hora nenhuma. */
+  while (ondeMoraAFala.size > MAX_FALAS_LEMBRADAS) {
+    ondeMoraAFala.delete(ondeMoraAFala.keys().next().value);
+  }
+}
+
 /* A quem a mensagem responde.
 
    Responder e' metade de uma conversa: sem isso, do outro lado chega um "Sim"
@@ -1042,6 +1074,17 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
     : { arquivos: [], links: [] };
   const respondendo = await aQuemResponde(msg);
   const cor = corDaPessoa(msg.author.id);
+
+  /* A familia desta fala comeca pela propria original: quem responder a ela
+     mais tarde, em qualquer sala, chega aqui por qualquer um dos ids. */
+  const familia = ondeMoraAFala.get(msg.id) || new Map();
+  lembrarFala(familia, msg.channel.id, msg.id);
+
+  /* E a familia da fala RESPONDIDA, se houver: e' dela que sai o endereco do
+     cabecalho, um por sala. */
+  const familiaAlvo = msg.reference?.messageId
+    ? ondeMoraAFala.get(msg.reference.messageId)
+    : null;
   /* Colchete no apelido quebraria o link e o nome sairia cru, com a URL do
      lado. Apelido e' texto que a pessoa escolhe: mais cedo ou mais tarde
      alguem se chama [TOP]Tiago. */
@@ -1108,12 +1151,24 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
       files: arquivos,
       embeds: [{
         color: cor,
-        ...(respondendo ? { author: respondendo } : {}),
+        ...(respondendo ? {
+          author: {
+            ...respondendo,
+            /* Endereco da copia que existe NA SALA DE DESTINO. Sem ela
+               conhecida, o cabecalho vai sem toque -- melhor mudo do que
+               levando a uma sala que a pessoa nao enxerga. */
+            ...(familiaAlvo?.get(destino.canal_id)
+              ? { url: `https://discord.com/channels/${msg.guild.id}/${destino.canal_id}/${familiaAlvo.get(destino.canal_id)}` }
+              : {}),
+          },
+        } : {}),
         description: `${descricao}\n-# [${assinatura}](https://discord.com/users/${msg.author.id})`,
       }],
       /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
       allowedMentions: { parse: [], users: marcados },
-    }).catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
+    })
+      .then((posta) => lembrarFala(familia, destino.canal_id, posta?.id))
+      .catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
   }
 }
 
