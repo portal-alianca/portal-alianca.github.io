@@ -1042,6 +1042,10 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
     : { arquivos: [], links: [] };
   const respondendo = await aQuemResponde(msg);
   const cor = corDaPessoa(msg.author.id);
+  /* Colchete no apelido quebraria o link e o nome sairia cru, com a URL do
+     lado. Apelido e' texto que a pessoa escolhe: mais cedo ou mais tarde
+     alguem se chama [TOP]Tiago. */
+  const assinatura = nome.replace(/[[\]]/g, "").trim() || "perfil";
 
   /* Quem foi marcado de verdade LEVA o toque, e leva uma vez so'.
 
@@ -1086,8 +1090,15 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
        pra direita. No fim e miuda ela some do caminho da leitura e continua
        ali pra quem precisar.
 
-       No corpo do embed, e nao no rodape: o Discord nao transforma mencao em
-       link no rodape -- la' ela apareceria como <@866033442688073748> cru. */
+       Vai como NOME em link, nao como <@id>. As duas coisas levam ao mesmo
+       perfil, mas a mencao o Discord desenha como um bloco azul do tamanho da
+       fala -- pesado demais pra uma assinatura, e sobrava embaixo do texto
+       parecendo peca solta. O nome em link fica do tamanho do subtexto e some
+       na moldura do card.
+
+       No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
+       o Discord nao desenha link nenhum -- o nome apareceria morto, e a
+       assinatura existe justamente pra ser tocada. */
     const descricao = [corpo, ...anexos].filter(Boolean).join("\n").slice(0, 3800);
     if (!descricao && !arquivos.length) continue;
 
@@ -1098,7 +1109,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
       embeds: [{
         color: cor,
         ...(respondendo ? { author: respondendo } : {}),
-        description: `${descricao}\n-# <@${msg.author.id}>`,
+        description: `${descricao}\n-# [${assinatura}](https://discord.com/users/${msg.author.id})`,
       }],
       /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
       allowedMentions: { parse: [], users: marcados },
