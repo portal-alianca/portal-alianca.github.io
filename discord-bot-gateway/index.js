@@ -5520,6 +5520,47 @@ let ultimaPassada = 0;
 let duracaoPassada = 0;
 const tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
 
+/* Os campos de cota, um por chave sua que souber responder. */
+async function camposDeCota() {
+  const campos = [];
+  for (const reserva of motoresDoDono()) {
+    if (reserva.tipo !== "deepl") {
+      campos.push({ name: "Cota da Azure", value: "_ela não informa por aqui — veja no portal.azure.com_" });
+      continue;
+    }
+    try {
+      campos.push({ name: "Cota do DeepL neste mês", value: await cotaDoDeepL(reserva) });
+    } catch (e) {
+      campos.push({ name: "Cota do DeepL neste mês", value: `_não consegui perguntar: ${String(e.message || e).slice(0, 60)}_` });
+    }
+  }
+  return campos;
+}
+
+/* Quanto da cota do mes ja foi.
+
+   O DeepL responde isso; a Azure nao tem endereco equivalente e so' mostra no
+   portal dela. Vale a pena ler ao vivo em vez de eu contar por aqui: quem
+   conta e' quem cobra, e a minha contagem erraria nas falas que outro caminho
+   traduziu, nas repetidas que sairam do cache, e em qualquer teste feito fora
+   do bot -- como os quatro que eu mesmo fiz pra conferir a chave. */
+async function cotaDoDeepL(reserva) {
+  const base = reserva.chave.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+  const r = await fetch(`${base}/v2/usage`, {
+    headers: { Authorization: `DeepL-Auth-Key ${reserva.chave}` },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  const usado = Number(j.character_count || 0);
+  const teto = Number(j.character_limit || 0);
+  if (!teto) return "sem teto informado";
+  const pct = Math.round((usado / teto) * 100);
+  const barra = "█".repeat(Math.round(pct / 10)) + "░".repeat(10 - Math.round(pct / 10));
+  const alerta = pct >= 90 ? " 🔴" : pct >= 70 ? " ⚠️" : "";
+  return `\`${barra}\` **${pct}%**${alerta}\n${usado.toLocaleString("pt-BR")} de ${teto.toLocaleString("pt-BR")} caracteres`;
+}
+
 async function embedDeSaude() {
   const agora = Date.now();
   const idade = ultimaPassada ? Math.round((agora - ultimaPassada) / 1000) : null;
@@ -5540,6 +5581,7 @@ async function embedDeSaude() {
           ? `⚠️ **${tradutorFalhas.erros}** falhas desde que subi\n${tradutorFalhas.quedas} caíram no grátis\n\`${tradutorFalhas.ultimoErro.slice(0, 80)}\``
           : "🟢 sem falhas desde que subi" },
       { name: "Chaves próprias", value: `${(motores || []).length} servidores`, inline: true },
+      ...(await camposDeCota()),
       { name: "Memória", value: `${Math.round(process.memoryUsage().rss / 1048576)} MB`, inline: true },
     ],
     footer: { text: "os contadores zeram quando eu reinicio" },
