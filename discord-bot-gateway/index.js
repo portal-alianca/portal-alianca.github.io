@@ -870,8 +870,16 @@ const falhaDoMotor = new Map();
    dois caminhos pra mesma porta contam como um. O Lingva atende por conta
    propria, e cada instancia tem limite proprio.
 
-   Ordem: Google primeiro porque e' o que traduz melhor; os outros existem
-   pra hora em que ele fecha a porta. */
+   O MyMemory entrou aqui e saiu no mesmo dia. Ele nao e' um tradutor: e' um
+   ACERVO de traducoes que gente contribuiu, e devolve a mais parecida que
+   achar. Alguem cadastrou "vamos no urso" -> "let's go on the bear" e marcou
+   como alemao; pedindo alemao, ele devolveu isso, com `target: de-DE` escrito
+   num texto em ingles. Nao da' pra filtrar -- a resposta mente sobre si
+   mesma.
+
+   Mensagem sem traducao e' ruim; mensagem no idioma errado e' pior, porque
+   parece certa e ninguem confere. Entre uma reserva que as vezes entrega
+   coisa errada e nao ter reserva, nao ter e' mais honesto. */
 const GRATUITOS = [
   {
     nome: "google-dict",
@@ -882,29 +890,6 @@ const GRATUITOS = [
     nome: "google-gtx",
     url: (texto, alvo) => `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${alvo}&dt=t&q=${encodeURIComponent(texto)}`,
     ler: (j) => (j?.[0] || []).map((p) => p?.[0] || "").join(""),
-  },
-  {
-    /* Provedor proprio, cota propria: e' o unico da fila que continua de pe
-       quando o Google fecha. Testei quatro instancias de Lingva antes desta e
-       as quatro estavam fora do ar (500, 500, 503, 403) -- tradutor morto na
-       fila nao e' rede de seguranca, e' espera a mais em toda falha.
-
-       So' pra fala curta: o limite dele e' 500 caracteres, e recado comprido
-       nao e' o caso que precisa de socorro -- conversa e' curta. */
-    nome: "mymemory",
-    cabe: (texto) => texto.length <= 500,
-    url: (texto, alvo) => `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}&langpair=Autodetect|${alvo}`,
-    /* Ele responde HTTP 200 ATE' quando recusa, com o motivo escrito no campo
-       da traducao. Sem esta conferencia, "QUERY LENGTH LIMIT EXCEEDED" ou
-       "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY"
-       iriam pro chat das pessoas como se fossem a fala traduzida. Confirmado
-       na mao antes de entrar aqui. */
-    ler: (j) => {
-      if (Number(j?.responseStatus) !== 200) return "";
-      const saiu = String(j?.responseData?.translatedText || "");
-      if (/MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID/i.test(saiu)) return "";
-      return saiu;
-    },
   },
 ];
 
@@ -1047,9 +1032,50 @@ async function baixarAnexos(msg) {
    que sumir com a marcacao de alguem. */
 const PEDACOS_INTOCAVEIS = /(<a?:\w+:\d+>|<@[!&]?\d+>|<#\d+>|<t:\d+(?::[tTdDfFR])?>|https?:\/\/\S+)/g;
 
-function protegerDoTradutor(texto) {
+/* As palavras que sao DESTE servidor.
+
+   Testado num tradutor de verdade: "alguem no rally?" virou em alemao "hat
+   jemand an der Kundgebung teilgenommen?" -- alguem participou da
+   MANIFESTACAO. E "abre os baus" virou "öffnet den Bus", abre o onibus.
+
+   Nenhum tradutor vai acertar isso, porque o erro nao e' de traducao: rally e
+   baú tem significado proprio dentro daquele servidor, e ele nao esta em
+   dicionario nenhum. Trocar de motor -- inclusive por inteligencia
+   artificial -- nao resolve sozinho; ensinar as palavras resolve.
+
+   Vai pelo mesmo caminho que ja protege mencao e emoji, entao custa zero e
+   vale pra qualquer motor. E' a unica parte do tradutor que e' de verdade
+   nossa: os outros sabem lingua, so' nos sabemos as palavras da casa.
+
+   Do mais longo pro mais curto, senao um termo curto quebraria um longo pelo
+   meio ("urso" comendo o "urso polar" de quem cadastrou os dois). */
+function regraDosTermos(termos) {
+  const limpos = [...new Set((termos || []).map((t) => String(t).trim()).filter((t) => t.length > 1))]
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!limpos.length) return null;
+  /* Fronteira feita na mao em vez de \b: \b nao entende acento, entao "baú"
+     nao casaria direito -- e acento e' justamente o que aparece nas palavras
+     que se cadastra aqui. */
+  /* O plural entra junto. Quem cadastra "baú" quer "baús" protegido tambem --
+     obrigar a cadastrar as duas formas seria transferir pra pessoa um trabalho
+     que a regra faz. So' "s" e "es", que cobrem portugues, ingles e espanhol
+     sem virar adivinhacao: "urso" pega "ursos" e continua nao pegando
+     "ursinho". */
+  return new RegExp(`(?<![\\p{L}\\p{N}])(${limpos.join("|")})(es|s)?(?![\\p{L}\\p{N}])`, "giu");
+}
+
+function protegerDoTradutor(texto, termos) {
   const pecas = [];
-  const marcado = String(texto).replace(PEDACOS_INTOCAVEIS, (achado) => {
+  let marcado = String(texto);
+  const regra = regraDosTermos(termos);
+  if (regra) {
+    marcado = marcado.replace(regra, (achado) => {
+      pecas.push(achado);
+      return ` %%${pecas.length - 1}%% `;
+    });
+  }
+  marcado = marcado.replace(PEDACOS_INTOCAVEIS, (achado) => {
     pecas.push(achado);
     return ` %%${pecas.length - 1}%% `;
   });
@@ -1067,7 +1093,18 @@ function devolverPecas(texto, pecas) {
   });
   const perdidas = pecas.filter((_, i) => !usadas.has(i));
   if (perdidas.length) volta = `${volta.trim()} ${perdidas.join(" ")}`;
-  return volta.replace(/[ \t]{2,}/g, " ").trim();
+
+  /* Tira o espaco que EU coloquei, nao o que a pessoa escreveu.
+
+     O marcador vai cercado de espaco pra o tradutor nao grudar ele na palavra
+     do lado. Isso resolve a traducao e estraga a pontuacao na volta: "no
+     rally?" voltava "no rally ?", e "[TOP]" voltava "[ TOP ]". Ninguem escreve
+     assim, e ficava na cara em toda mensagem com mencao. */
+  return volta
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\s+([,.;:!?)\]}»…])/g, "$1")
+    .replace(/([(\[{«¿¡])\s+/g, "$1")
+    .trim();
 }
 
 /* Uma cor por pessoa, sempre a mesma.
@@ -1180,7 +1217,12 @@ async function aQuemResponde(msg) {
   }
 }
 
-async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null) {
+/* Os termos da casa, do jeito que a pessoa escreveu: um por linha. */
+function termosDoServidor(servidor) {
+  return String(servidor?.glossario || "").split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
+}
+
+async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null, termos = []) {
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -1234,7 +1276,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
          O vantajosoTraduzir la em cima e' economia, nao filtro: "ok", "kkkk",
          um link solto e um emoji atravessam iguais em qualquer idioma. Traduzir
          isso seria gastar seis chamadas pra devolver a mesma palavra. */
-      const { marcado, pecas } = protegerDoTradutor(texto);
+      const { marcado, pecas } = protegerDoTradutor(texto, termos);
       const saiu = await traduzirComCache(marcado, destino.idioma, motor);
       corpo = saiu ? devolverPecas(saiu, pecas) : texto;
     }
@@ -3364,6 +3406,7 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
         label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
       },
       { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
+      { type: 2, custom_id: "cyron:palavras", style: 2, emoji: { name: "📖" }, label: "Palavras da casa" },
       { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
     ],
@@ -3961,6 +4004,7 @@ async function cliquePainel(inter) {
   /* showModal so' vale em interacao ainda nao respondida -- por isso vem
      antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
   if (acao === "motor") return inter.showModal(janelaValida(janelaDoMotor(servidor)));
+  if (acao === "palavras") return inter.showModal(janelaValida(janelaDasPalavras(servidor)));
   if (acao === "codigo") return inter.showModal(janelaValida(janelaDoCodigo()));
 
   await inter.deferUpdate();
@@ -4081,6 +4125,43 @@ async function cliquePainel(inter) {
 
    Isso so' passou a ser possivel agora: enquanto as interacoes iam pra funcao
    HTTP, o bot nao tinha como abrir modal nenhum. */
+/* A janela das palavras que nao se traduz.
+
+   Texto livre, uma por linha, do jeito que a pessoa pensa nelas. Nao inventei
+   lista pronta: os termos sao do servidor, nao meus -- num servidor de jogo
+   sao "urso" e "rally", num de empresa sao os nomes dos produtos, e eu nao
+   tenho como adivinhar nem devo. */
+function janelaDasPalavras(servidor) {
+  return {
+    custom_id: "cyron:palavras",
+    title: "Palavras que não devem ser traduzidas",
+    components: [
+      { type: 1, components: [{
+        type: 4, custom_id: "termos", style: 2, required: false, max_length: 1500,
+        label: "Uma por linha",
+        placeholder: "urso\nrally\nbaú\nnome da aliança",
+        ...(servidor.glossario ? { value: String(servidor.glossario).slice(0, 1500) } : {}),
+      }] },
+    ],
+  };
+}
+
+async function salvarPalavras(inter) {
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return;
+  const termos = String(inter.fields.getTextInputValue("termos") || "").trim();
+  await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { glossario: termos || null });
+  cacheServidor.delete(inter.guildId); // a próxima fala já usa a lista nova
+  const quantos = termos.split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean).length;
+  await inter.reply({
+    content: quantos
+      ? `📖 Guardei **${quantos}** ${quantos === 1 ? "palavra" : "palavras"}. ` +
+        "De agora em diante elas atravessam a tradução sem mudar."
+      : "📖 Lista vazia — volto a traduzir tudo.",
+    flags: 64,
+  });
+}
+
 function janelaDoMotor(servidor) {
   return {
     custom_id: "cyron:motor",
@@ -5971,6 +6052,7 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
+      if (inter.customId === "cyron:palavras") return await salvarPalavras(inter);
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
@@ -6129,7 +6211,7 @@ client.on("messageCreate", async (msg) => {
         return;
       }
       const irmas = replicas.filter((r) => r.tipo === aqui.tipo);
-      await espelharMensagem(msg, irmas, aqui, texto, motorDe(servidor), servidorId);
+      await espelharMensagem(msg, irmas, aqui, texto, motorDe(servidor), servidorId, termosDoServidor(servidor));
       return;
     }
 
@@ -6159,7 +6241,7 @@ client.on("messageCreate", async (msg) => {
          no espelho a mensagem descartada nao e' uma caixinha a menos -- e' uma
          FALA que some. A pessoa do outro lado ve a conversa com buraco e nao
          tem como saber. Vale mais deixar passar. */
-      await espelharMensagem(msg, espelho, origem, texto, motorDe(servidor), servidorId);
+      await espelharMensagem(msg, espelho, origem, texto, motorDe(servidor), servidorId, termosDoServidor(servidor));
       return;
     }
 
