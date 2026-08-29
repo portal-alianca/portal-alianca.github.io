@@ -31,7 +31,13 @@ const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
 
 function pedaco(nome) {
-  for (const abre of [`function ${nome}(`, `async function ${nome}(`, `const ${nome} = `]) {
+  /* `async function` vem ANTES de `function` nesta lista, e a ordem é o
+     conserto de um defeito: `indexOf("function X(")` casa lá dentro de
+     `async function X(`, no meio da palavra. A extração começava depois do
+     `async`, e o primeiro `await` do corpo estourava com "await is only valid
+     in async functions" -- erro que aponta pro código do bot, que está certo.
+     Só apareceu agora porque nenhuma função assíncrona tinha sido testada. */
+  for (const abre of [`async function ${nome}(`, `function ${nome}(`, `const ${nome} = `]) {
     const i = fonte.indexOf(abre);
     if (i < 0) continue;
     let j = abre.endsWith("= ") ? i + abre.length : fonte.indexOf("{", i);
@@ -338,7 +344,16 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   for (const n of ["cyron", "help", "admin", "mylanguage"]) {
     verdade(`/${n} é meu e não pode ser reaproveitado`, NOMES_MEUS.has(n));
   }
-  verdade("nome livre continua livre", !NOMES_MEUS.has("ranking"));
+
+  /* Este teste dizia `!NOMES_MEUS.has("ranking")` -- ele afirmava o defeito.
+
+     A lista trazia "ranking-oficial", nome que não existe em lugar nenhum, e
+     o /ranking do Kingshot ficava desprotegido. Um comando do dono com esse
+     nome passou pela peneira e adotou o comando do jogo. */
+  for (const n of ["ranking", "player", "events", "settings", "portal"]) {
+    verdade(`/${n} é do jogo e não pode ser reaproveitado`, NOMES_MEUS.has(n));
+  }
+  verdade("nome livre continua livre", !NOMES_MEUS.has("reino"));
 
   /* O Discord só aceita minúsculas, números, hífen e sublinhado, até 32. */
   const valido = (n) => /^[a-z0-9_-]{1,32}$/.test(n);
@@ -349,6 +364,116 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("nome com acento não passa", valido("classificação"), false);
   ok("nome vazio não passa", valido(""), false);
   ok("nome de 33 letras não passa", valido("x".repeat(33)), false);
+}
+
+/* ========== de quem é o comando: pelo id gravado, nunca pelo nome ==========
+
+   Esta seção existe por um estrago de verdade, em produção. O publicador
+   decidia "é meu" comparando NOME. O dono criou um /ranking; o /ranking do
+   Kingshot já morava naquele servidor; o publicador achou que era o dele,
+   reescreveu a descrição do comando do jogo -- calado, porque o ramo de
+   editar não logava -- e teria apagado o comando do jogo no dia em que o
+   dono desativasse o seu.
+
+   Nenhum teste pegou isso na época porque não havia teste desta função. */
+{
+  const { publicarComandosDoDono } = carregar(["publicarComandosDoDono"]);
+
+  /* O que a função toca no mundo, trocado por bonecos. */
+  const fingirGuild = (comandos) => {
+    const mexeu = { criou: [], editou: [], apagou: [] };
+    const mapa = new Map();
+    for (const c of comandos) {
+      mapa.set(c.id, {
+        ...c,
+        edit: async (mudanca) => { mexeu.editou.push({ id: c.id, ...mudanca }); },
+        delete: async () => { mexeu.apagou.push(c.id); },
+      });
+    }
+    return {
+      mexeu,
+      guild: {
+        id: "g1",
+        name: "servidor de teste",
+        commands: {
+          fetch: async () => mapa,
+          create: async ({ name, description }) => {
+            const novo = { id: `novo-${name}`, name, description };
+            mexeu.criou.push(novo);
+            return novo;
+          },
+        },
+      },
+    };
+  };
+
+  /* `carregar` avalia no escopo global, então as dependências moram nele. */
+  const cenario = async ({ noDiscord, ativos, todasAsLinhas }) => {
+    const { mexeu, guild } = fingirGuild(noDiscord);
+    const gravou = [];
+    globalThis.cacheComandos = new Map();
+    globalThis.comandosDoDono = async () => ativos.map((c) => ({ ...c }));
+    globalThis.sb = async () => todasAsLinhas;
+    globalThis.sbPatch = async (rota, corpo) => { gravou.push({ rota, corpo }); };
+    await publicarComandosDoDono(guild);
+    return { ...mexeu, gravou };
+  };
+
+  /* O caso exato do estrago. */
+  {
+    const r = await cenario({
+      noDiscord: [{ id: "do-jogo", name: "ranking", description: "Alliance power ranking" }],
+      ativos: [{ id: "linha1", nome: "ranking", descricao: "ranking do reino 2311", discord_id: null }],
+      todasAsLinhas: [{ nome: "ranking", discord_id: null }],
+    });
+    ok("nome ocupado por comando alheio: não edita", r.editou, []);
+    ok("nome ocupado por comando alheio: não cria", r.criou, []);
+    ok("nome ocupado por comando alheio: não apaga", r.apagou, []);
+  }
+
+  /* Comando meu de verdade: tem id gravado, e aí sim eu mexo. */
+  {
+    const r = await cenario({
+      noDiscord: [{ id: "meu-id", name: "reino", description: "descrição velha" }],
+      ativos: [{ id: "linha1", nome: "reino", descricao: "descrição nova", discord_id: "meu-id" }],
+      todasAsLinhas: [{ nome: "reino", discord_id: "meu-id" }],
+    });
+    ok("comando meu com descrição mudada: edita", r.editou.map((e) => e.description), ["descrição nova"]);
+    ok("comando meu com descrição mudada: não cria outro", r.criou, []);
+  }
+
+  /* Nome livre: cria e guarda o id, senão ele vira órfão no próximo reinício. */
+  {
+    const r = await cenario({
+      noDiscord: [{ id: "do-jogo", name: "ranking", description: "Alliance power ranking" }],
+      ativos: [{ id: "linha1", nome: "reino", descricao: "ranking do reino 2311", discord_id: null }],
+      todasAsLinhas: [{ nome: "reino", discord_id: null }],
+    });
+    ok("nome livre: cria", r.criou.map((c) => c.name), ["reino"]);
+    ok("nome livre: grava o id do Discord", r.gravou.map((g) => g.corpo.discord_id), ["novo-reino"]);
+    ok("nome livre: não encosta no comando do jogo", r.editou.concat(r.apagou), []);
+  }
+
+  /* Desativado sai do Discord -- mas só o que tem id meu. */
+  {
+    const r = await cenario({
+      noDiscord: [{ id: "meu-id", name: "reino", description: "x" }],
+      ativos: [],
+      todasAsLinhas: [{ nome: "reino", discord_id: "meu-id" }],
+    });
+    ok("comando desativado sai do Discord", r.apagou, ["meu-id"]);
+  }
+
+  /* E o contrário: linha sem id nunca pode virar ordem de apagar. Era este o
+     caminho que levaria o /ranking do Kingshot embora. */
+  {
+    const r = await cenario({
+      noDiscord: [{ id: "do-jogo", name: "ranking", description: "Alliance power ranking" }],
+      ativos: [],
+      todasAsLinhas: [{ nome: "ranking", discord_id: null }],
+    });
+    ok("linha sem id não apaga comando alheio de mesmo nome", r.apagou, []);
+  }
 }
 
 /* ---- o resultado ---- */

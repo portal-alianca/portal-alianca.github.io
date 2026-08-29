@@ -6765,25 +6765,18 @@ async function separarComandos() {
       const guild = client.guilds.cache.get(guildId);
       if (!guild) continue;
 
-      /* Os comandos que o dono escreveu vao JUNTO nesta carga.
+      await guild.commands.set(carga);
+      console.log(`comandos: ${carga.length} comandos do jogo agora são só de ${guild.name}`);
 
-         `set` nao acrescenta: ele substitui a lista inteira daquele servidor.
-         Mandando so' a carga do jogo, /ranking e qualquer outro comando do
-         banco sumiriam do menu -- e sumiriam calados, porque publicarComandos-
-         DoDono ja' tinha rodado e nao roda de novo ate' o proximo reinicio.
-         Pior: os dois saem no mesmo instante ao subir, entao qual dos dois
-         ganharia dependia de quem terminasse por ultimo. Levando os do dono
-         na carga, as duas ordens dao no mesmo resultado. */
-      const meus = (await comandosDoDono(guildId))
-        .filter((c) => !carga.some((j) => j.name === c.nome))
-        .map((c) => ({
-          name: c.nome,
-          description: (c.descricao || `comando de ${c.nome}`).slice(0, 100),
-        }));
+      /* `set` nao acrescenta: ele troca a lista inteira daquele servidor, e
+         leva junto os comandos que o dono escreveu. Mandar os dele dentro da
+         carga nao resolveria -- `set` cria tudo com id novo, e o id gravado no
+         banco e' justamente como o publicador sabe que o comando e' dele.
 
-      await guild.commands.set([...carga, ...meus]);
-      console.log(`comandos: ${carga.length} comandos do jogo agora são só de ${guild.name}` +
-        (meus.length ? ` (+${meus.length} do dono)` : ""));
+         Entao deixo o `set` limpar e mando publicar de novo logo atras: ele
+         recria o que falta e grava os ids novos. Some por um segundo, e volta
+         sabendo de quem e'. */
+      await publicarComandosDoDono(guild);
     }
 
     const ficam = [...globais.values()].filter((c) => COMANDOS_DE_TODOS.has(c.name)).map((c) => c.toJSON());
@@ -6827,7 +6820,7 @@ async function comandosDoDono(guildId) {
   let v = [];
   try {
     v = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}&ativo=is.true` +
-      "&select=id,nome,descricao,codigo,quem_pode") || [];
+      "&select=id,nome,descricao,codigo,quem_pode,discord_id") || [];
   } catch { /* tenta de novo na proxima */ }
   cacheComandos.set(guildId, { v, t: Date.now() });
   return v;
@@ -6842,31 +6835,59 @@ async function comandosDoDono(guildId) {
 async function publicarComandosDoDono(guild) {
   try {
     const querem = await comandosDoDono(guild.id);
-    const nomes = new Set(querem.map((c) => c.nome));
     const jaLa = await guild.commands.fetch();
 
+    /* Quem e' meu se decide pelo ID gravado, nunca pelo nome.
+
+       Decidir por nome foi um erro caro e silencioso: um comando do dono
+       chamado "ranking" batia no /ranking do Kingshot, que ja' morava neste
+       servidor. O codigo achava "ja' existe, entao e' o meu" e reescrevia a
+       descricao do comando do jogo -- sem log, porque o ramo de editar nao
+       logava nada. E na hora que o dono desativasse o dele, o laco de baixo
+       apagaria o /ranking do jogo de vez.
+
+       Com o id: comando sem id gravado nao e' meu, e eu nao encosto nele. */
     for (const c of querem) {
-      const existe = [...jaLa.values()].find((x) => x.name === c.nome);
       const descricao = (c.descricao || `comando de ${c.nome}`).slice(0, 100);
-      if (existe && existe.description === descricao) continue;
-      if (existe) await existe.edit({ description: descricao });
-      else {
-        await guild.commands.create({ name: c.nome, description: descricao });
-        console.log(`comando do dono: /${c.nome} publicado em ${guild.name}`);
+      const meu = c.discord_id ? jaLa.get(c.discord_id) : null;
+
+      if (meu) {
+        if (meu.name !== c.nome || meu.description !== descricao) {
+          await meu.edit({ name: c.nome, description: descricao });
+          console.log(`comando do dono: /${c.nome} atualizado em ${guild.name}`);
+        }
+        continue;
       }
+
+      /* Nome ocupado por um comando que nao e' meu: nao publico e nao roubo.
+         Falo no log, porque calado o dono so' descobriria pelo comando que
+         nunca aparece. O caminho certo e' ele escolher outro nome -- e
+         salvarComando ja' recusa esse nome antes de gravar. */
+      const alheio = [...jaLa.values()].find((x) => x.name === c.nome);
+      if (alheio) {
+        console.error(`comando do dono: /${c.nome} nao publicado em ${guild.name} ` +
+          "-- ja' existe um comando com esse nome que nao e' meu");
+        continue;
+      }
+
+      const novo = await guild.commands.create({ name: c.nome, description: descricao });
+      await sbPatch(`cyron_comando?id=eq.${encodeURIComponent(c.id)}`, { discord_id: novo.id });
+      c.discord_id = novo.id; // o laco de apagar, la' embaixo, le' daqui
+      cacheComandos.delete(guild.id);
+      console.log(`comando do dono: /${c.nome} publicado em ${guild.name}`);
     }
 
-    /* Apaga so' o que EU criei e que sumiu da tabela. O jeito de saber que e'
-       meu: estar na lista de nomes que ja' foram meus alguma vez. Sem isso eu
-       apagaria /cyron, /help e os comandos do jogo junto. */
+    /* Apaga so' o que EU criei e que saiu da tabela -- e de novo pelo id.
+       Um id gravado e' prova de que aquele comando nasceu aqui; nome nao e'. */
+    const vivos = new Set(querem.map((c) => c.discord_id).filter(Boolean));
     const meusAlgumDia = await sb(
-      `cyron_comando?guild_id=eq.${encodeURIComponent(guild.id)}&select=nome`) || [];
-    for (const nome of new Set(meusAlgumDia.map((m) => m.nome))) {
-      if (nomes.has(nome)) continue;
-      const velho = [...jaLa.values()].find((x) => x.name === nome);
+      `cyron_comando?guild_id=eq.${encodeURIComponent(guild.id)}&select=nome,discord_id`) || [];
+    for (const m of meusAlgumDia) {
+      if (!m.discord_id || vivos.has(m.discord_id)) continue;
+      const velho = jaLa.get(m.discord_id);
       if (velho) {
         await velho.delete();
-        console.log(`comando do dono: /${nome} tirado de ${guild.name}`);
+        console.log(`comando do dono: /${velho.name} tirado de ${guild.name}`);
       }
     }
   } catch (e) {
@@ -6984,8 +7005,13 @@ async function janelaDeComando(existente) {
 /* Nomes que eu ja uso. Deixar o dono criar um /cyron dele nao daria erro
    nenhum -- simplesmente o dele nunca seria chamado, porque os meus vem
    antes. Silencio desses e' o pior tipo: parece que funcionou. */
+/* "ranking" estava escrito aqui como "ranking-oficial" -- um nome que nao
+   existe em lugar nenhum. A lista parecia cobrir o comando do jogo e nao
+   cobria nada, e foi por essa fresta que um /ranking do dono passou e tomou o
+   lugar do /ranking do Kingshot. Lista escrita a mao erra assim, calada;
+   por isso salvarComando tambem pergunta ao Discord o que ja' existe. */
 const NOMES_MEUS = new Set([
-  "cyron", "help", "admin", "mylanguage", "settings", "portal", "player", "events", "ranking-oficial",
+  "cyron", "help", "admin", "mylanguage", "settings", "portal", "player", "events", "ranking",
 ]);
 
 async function salvarComando(inter) {
@@ -7007,14 +7033,36 @@ async function salvarComando(inter) {
   }
 
   const jaExiste = (await sb(
-    `cyron_comando?guild_id=eq.${encodeURIComponent(inter.guildId)}&nome=eq.${encodeURIComponent(nome)}&select=id`))?.[0];
+    `cyron_comando?guild_id=eq.${encodeURIComponent(inter.guildId)}&nome=eq.${encodeURIComponent(nome)}` +
+    "&select=id,discord_id"))?.[0];
 
   if (campo("apagar").toLowerCase() === "sim") {
     if (!jaExiste) return inter.editReply(`Não tenho nenhum \`/${nome}\` aqui para apagar.`);
-    await sbDel(`cyron_comando?id=eq.${encodeURIComponent(jaExiste.id)}`);
+    /* Desligo em vez de apagar a linha, e e' de proposito: o `discord_id` mora
+       nela, e e' ele que diz ao publicador qual comando do Discord tirar. Com
+       a linha apagada eu perdia o id junto, e o comando ficava pendurado no
+       menu do servidor pra sempre, sem ninguem atras dele. */
+    await sbPatch(`cyron_comando?id=eq.${encodeURIComponent(jaExiste.id)}`, { ativo: false });
     cacheComandos.delete(inter.guildId);
     await publicarComandosDoDono(inter.guild);
     return inter.editReply(`🗑️ \`/${nome}\` apagado e tirado do servidor.`);
+  }
+
+  /* Pergunto ao Discord antes de gravar: o nome pode estar ocupado por um
+     comando que nao e' meu (os do Kingshot, por exemplo, moram no servidor).
+     Recusar aqui e' a unica hora em que da' pra explicar o porque -- depois
+     de gravado, o sintoma seria "criei e nao apareceu". */
+  if (!jaExiste) {
+    try {
+      const jaLa = await inter.guild.commands.fetch();
+      const ocupado = [...jaLa.values()].find((x) => x.name === nome);
+      if (ocupado) {
+        return inter.editReply(
+          `Já existe um \`/${nome}\` neste servidor que não é seu — *${ocupado.description}*.\n` +
+          "Se eu gravasse o seu, ou ele nunca apareceria, ou tomaria o lugar do outro. " +
+          "Escolha outro nome. **Não gravei nada.**");
+      }
+    } catch { /* se o Discord nao respondeu, sigo: o publicador recusa de novo */ }
   }
 
   const quem = ["dono", "admin", "todos"].includes(campo("quem_pode")) ? campo("quem_pode") : "dono";
