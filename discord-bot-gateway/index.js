@@ -1018,24 +1018,58 @@ function corDaPessoa(id) {
    nao apontar: quem le em alemao nao enxerga a sala de portugues, entao o
    toque levaria a uma mensagem que o Discord vai recusar a mostrar.
 
-   Guardado na memoria, e nao no banco. Responder e' coisa de conversa viva --
-   quase sempre a poucos minutos da fala original --, entao um teto de falas
-   recentes cobre o caso real; e a alternativa seria uma escrita no banco por
-   mensagem por sala, oito vezes o custo, pra salvar um toque em mensagem de
-   uma semana atras. Depois de um reinicio, ou de muita conversa, o cabecalho
-   volta a ser enfeite -- que e' exatamente o que ele era antes. */
+   Memoria E banco, nesta ordem. A memoria responde na hora; o banco e' quem
+   sobrevive.
+
+   A primeira versao era so' memoria, por um calculo meu que estava errado: eu
+   achei caro gravar uma linha por copia e barato perder as antigas. E' o
+   contrario. Sao umas 350 linhas por dia, perto de 1 MB por mes com limpeza --
+   e o que se perdia era o recurso funcionando nas falas da ultima hora e
+   falhando calado no resto. "As vezes funciona" nao ensina a regra a ninguem,
+   so' ensina a nao confiar no botao. */
 const ondeMoraAFala = new Map(); // id de qualquer copia -> Map(canal -> id da copia de la')
 const MAX_FALAS_LEMBRADAS = 6000;
 
-function lembrarFala(familia, canalId, msgId) {
+function lembrarFala(familia, canalId, msgId, familiaId, servidorId) {
   if (!canalId || !msgId) return;
   familia.set(canalId, msgId);
   ondeMoraAFala.set(msgId, familia);
+  if (familiaId) {
+    /* Sem await: a conversa nao pode esperar o banco pra continuar, e perder
+       uma linha aqui custa um cabecalho mudo, nao uma fala. */
+    sbPost("discord_fala_espelhada",
+      { msg_id: msgId, familia_id: familiaId, canal_id: canalId, servidor_id: servidorId || null })
+      .catch(() => { /* o cabecalho fica mudo; a fala chegou, que e' o que importa */ });
+  }
   /* Map do JavaScript percorre na ordem em que se inseriu, entao a primeira
      chave e' sempre a mais velha: dá um descarte por ordem de chegada sem eu
      precisar guardar hora nenhuma. */
   while (ondeMoraAFala.size > MAX_FALAS_LEMBRADAS) {
     ondeMoraAFala.delete(ondeMoraAFala.keys().next().value);
+  }
+}
+
+/* Onde a fala respondida mora, quando a memoria ja' esqueceu.
+
+   Duas perguntas ao banco em vez de uma consulta so' com juncao: a primeira
+   acha de que familia esta mensagem e', a segunda traz as irmas. Vale porque
+   isto so' roda quando alguem RESPONDE algo antigo -- nao em toda fala -- e
+   duas consultas simples sao mais faceis de ler daqui a um ano do que uma
+   esperta. */
+async function procurarFamilia(msgId) {
+  try {
+    const eu = await sb(`discord_fala_espelhada?msg_id=eq.${encodeURIComponent(msgId)}&select=familia_id`);
+    const familiaId = eu?.[0]?.familia_id;
+    if (!familiaId) return null;
+    const irmas = await sb(
+      `discord_fala_espelhada?familia_id=eq.${encodeURIComponent(familiaId)}&select=canal_id,msg_id`) || [];
+    if (!irmas.length) return null;
+    const familia = new Map(irmas.map((i) => [i.canal_id, i.msg_id]));
+    /* Volta pra memoria: quem respondeu uma vez costuma responder de novo. */
+    for (const i of irmas) ondeMoraAFala.set(i.msg_id, familia);
+    return familia;
+  } catch {
+    return null; // cabecalho mudo e' melhor do que fala travada
   }
 }
 
@@ -1064,7 +1098,7 @@ async function aQuemResponde(msg) {
   }
 }
 
-async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
+async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null) {
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -1078,12 +1112,14 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
   /* A familia desta fala comeca pela propria original: quem responder a ela
      mais tarde, em qualquer sala, chega aqui por qualquer um dos ids. */
   const familia = ondeMoraAFala.get(msg.id) || new Map();
-  lembrarFala(familia, msg.channel.id, msg.id);
+  lembrarFala(familia, msg.channel.id, msg.id, msg.id, servidorId);
 
   /* E a familia da fala RESPONDIDA, se houver: e' dela que sai o endereco do
-     cabecalho, um por sala. */
-  const familiaAlvo = msg.reference?.messageId
-    ? ondeMoraAFala.get(msg.reference.messageId)
+     cabecalho, um por sala. Memoria primeiro; se ela ja' esqueceu -- ou se o
+     bot reiniciou depois daquela fala --, pergunta ao banco. */
+  const respondido = msg.reference?.messageId;
+  const familiaAlvo = respondido
+    ? (ondeMoraAFala.get(respondido) || await procurarFamilia(respondido))
     : null;
   /* Colchete no apelido quebraria o link e o nome sairia cru, com a URL do
      lado. Apelido e' texto que a pessoa escolhe: mais cedo ou mais tarde
@@ -1167,7 +1203,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO) {
       /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
       allowedMentions: { parse: [], users: marcados },
     })
-      .then((posta) => lembrarFala(familia, destino.canal_id, posta?.id))
+      .then((posta) => lembrarFala(familia, destino.canal_id, posta?.id, msg.id, servidorId))
       .catch((e) => console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e));
   }
 }
@@ -6011,7 +6047,7 @@ client.on("messageCreate", async (msg) => {
         return;
       }
       const irmas = replicas.filter((r) => r.tipo === aqui.tipo);
-      await espelharMensagem(msg, irmas, aqui, texto, motorDe(servidor));
+      await espelharMensagem(msg, irmas, aqui, texto, motorDe(servidor), servidorId);
       return;
     }
 
@@ -6041,7 +6077,7 @@ client.on("messageCreate", async (msg) => {
          no espelho a mensagem descartada nao e' uma caixinha a menos -- e' uma
          FALA que some. A pessoa do outro lado ve a conversa com buraco e nao
          tem como saber. Vale mais deixar passar. */
-      await espelharMensagem(msg, espelho, origem, texto, motorDe(servidor));
+      await espelharMensagem(msg, espelho, origem, texto, motorDe(servidor), servidorId);
       return;
     }
 
@@ -6321,6 +6357,17 @@ client.once("clientReady", () => {
      esperando dez minutos, e depois de tempos em tempos. */
   recarregarAjustes().then(() => umaPassada());
   setInterval(umaPassada, INTERVALO_SINCRONIA);
+
+  /* Varre as falas velhas uma vez por dia.
+
+     Responder e' coisa de conversa viva. Quem responde a uma fala de duas
+     semanas atras e' raro o bastante pra valer o cabecalho mudo, e sem esta
+     limpeza a tabela cresceria pra sempre por causa desse caso raro. */
+  const limparFalasVelhas = () => sbDel(
+    `discord_fala_espelhada?criado_em=lt.${new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString()}`)
+    .catch((e) => console.error("espelho: nao consegui limpar falas velhas:", e?.message || e));
+  limparFalasVelhas();
+  setInterval(limparFalasVelhas, 24 * 60 * 60 * 1000);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
     descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));
