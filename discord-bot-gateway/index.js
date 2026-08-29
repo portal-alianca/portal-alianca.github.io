@@ -5202,6 +5202,13 @@ function linhasDoAdmin() {
     { type: 2, custom_id: "admin:busca", style: 2, emoji: { name: "🔎" }, label: "Procurar" },
     { type: 2, custom_id: "admin:ajustes", style: 1, emoji: { name: "⚙️" }, label: "Ajustes" },
     { type: 2, style: 5, emoji: { name: "➕" }, label: "Link para instalar o CYRON", url: linkDeConvite() },
+  /* Fileira propria porque cinco e' o teto do Discord por fileira, e a de
+     cima ja' estava cheia. Estourar isso nao avisa bonito: a mensagem
+     inteira e' recusada, e o painel some. */
+  ] }, { type: 1, components: [
+    { type: 2, custom_id: "admin:chaves", style: 1, emoji: { name: "🔑" }, label: "Chaves de tradução" },
+    { type: 2, custom_id: "admin:comandos", style: 2, emoji: { name: "🧪" }, label: "Meus comandos" },
+    { type: 2, custom_id: "admin:novocomando", style: 4, emoji: { name: "➕" }, label: "Novo comando" },
   ] }];
 }
 
@@ -5291,6 +5298,13 @@ async function cliqueAdmin(inter) {
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
   if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
+  if (acao === "novocomando" && inter.isButton()) {
+    return inter.showModal(janelaValida(await janelaDeComando(null)));
+  }
+  if (acao === "comandos" && inter.isButton()) {
+    await inter.deferUpdate();
+    return inter.followUp({ flags: 64, embeds: [await embedDosComandos(inter.guildId)] });
+  }
   if (acao === "busca" && inter.isButton()) return inter.showModal(janelaValida(janelaDeBusca()));
 
   await inter.deferUpdate();
@@ -6326,6 +6340,17 @@ async function comandoDeInteracao(inter) {
   if (nome === "help") return comandoAjuda(inter);
   if (nome === "admin") return comandoAdmin(inter);
 
+  /* Os comandos que o dono escreveu vem DEPOIS dos meus, nao antes.
+
+     Antes, um comando chamado "help" ou "cyron" tomaria o lugar do de verdade
+     e o dono derrubaria o proprio painel sem perceber. Depois, o pior caso e'
+     o dele nao ser chamado -- e o formulario recusa esses nomes na hora de
+     salvar, que e' onde ainda da' pra explicar por que. */
+  if (inter.guildId) {
+    const meu = (await comandosDoDono(inter.guildId)).find((c) => c.nome === nome);
+    if (meu) return rodarComandoDoDono(inter, meu);
+  }
+
   if (nome === "cyron") {
     if (!inter.guildId) {
       return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
@@ -6458,6 +6483,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       if (inter.customId === "admin:chaves") return await salvarChaves(inter);
+      if (inter.customId === "admin:novocomando") return await salvarComando(inter);
       if (inter.customId === "admin:busca") return await procurarServidor(inter);
       return;
     }
@@ -6750,6 +6776,280 @@ async function separarComandos() {
   }
 }
 
+/* ---------------- Comandos que o dono escreve ----------------
+
+   Pedido do dono: um lugar pra colar codigo e o bot passar a atender um
+   comando novo, sem eu publicar nada. Argumentei contra tres vezes, ele
+   manteve o pedido tres vezes -- e' produto dele. O que me cabe e' construir
+   com as travas que nao atrapalham o uso, e deixar escrito o que continua
+   valendo APESAR delas.
+
+   O que as travas cobrem:
+   - So' o dono cria, edita e apaga.
+   - Quem pode CHAMAR e' escolhido por comando, e nasce em "so' o dono".
+   - Tudo em try/catch: trecho que estoura vira mensagem, nao queda do bot.
+   - Prazo de resposta, porque o Discord desiste da interacao em 15 minutos.
+   - O ultimo erro fica gravado: comando que quebra calado e' pior que
+     comando que nao existe.
+   - Registrado so' no servidor onde foi criado, entao nao vaza pros clientes.
+
+   O que as travas NAO cobrem, e por isso esta escrito:
+   - O codigo roda DENTRO do bot e enxerga o token do Discord e as chaves.
+   - `while (true) {}` trava o processo inteiro, e prazo nao resolve:
+     JavaScript nao interrompe codigo que ja esta rodando. So' o Fly
+     reiniciando resolve, e ate' la os sete servidores ficam parados.
+   - Apagar canal e sair de servidor funcionam. Nao ha desfazer.
+   - Nao passa pelos testes nem pela trava de publicacao, por definicao: e'
+     codigo que nenhum dos dois viu. */
+
+const cacheComandos = new Map(); // guildId -> { v, t }
+async function comandosDoDono(guildId) {
+  const achado = cacheComandos.get(guildId);
+  if (achado && Date.now() - achado.t < 30 * 1000) return achado.v;
+  let v = [];
+  try {
+    v = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}&ativo=is.true` +
+      "&select=id,nome,descricao,codigo,quem_pode") || [];
+  } catch { /* tenta de novo na proxima */ }
+  cacheComandos.set(guildId, { v, t: Date.now() });
+  return v;
+}
+
+/* Registra um por um, e nao com um `set` da lista inteira.
+
+   `guild.commands.set(...)` SUBSTITUI todos os comandos daquele servidor --
+   e' assim que separarComandos publica os do jogo. Se eu usasse `set` aqui
+   tambem, um dos dois apagaria o outro, e o ultimo a rodar ganharia. Criar e
+   apagar de um em um custa mais chamadas e nao pisa em ninguem. */
+async function publicarComandosDoDono(guild) {
+  try {
+    const querem = await comandosDoDono(guild.id);
+    const nomes = new Set(querem.map((c) => c.nome));
+    const jaLa = await guild.commands.fetch();
+
+    for (const c of querem) {
+      const existe = [...jaLa.values()].find((x) => x.name === c.nome);
+      const descricao = (c.descricao || `comando de ${c.nome}`).slice(0, 100);
+      if (existe && existe.description === descricao) continue;
+      if (existe) await existe.edit({ description: descricao });
+      else {
+        await guild.commands.create({ name: c.nome, description: descricao });
+        console.log(`comando do dono: /${c.nome} publicado em ${guild.name}`);
+      }
+    }
+
+    /* Apaga so' o que EU criei e que sumiu da tabela. O jeito de saber que e'
+       meu: estar na lista de nomes que ja' foram meus alguma vez. Sem isso eu
+       apagaria /cyron, /help e os comandos do jogo junto. */
+    const meusAlgumDia = await sb(
+      `cyron_comando?guild_id=eq.${encodeURIComponent(guild.id)}&select=nome`) || [];
+    for (const nome of new Set(meusAlgumDia.map((m) => m.nome))) {
+      if (nomes.has(nome)) continue;
+      const velho = [...jaLa.values()].find((x) => x.name === nome);
+      if (velho) {
+        await velho.delete();
+        console.log(`comando do dono: /${nome} tirado de ${guild.name}`);
+      }
+    }
+  } catch (e) {
+    console.error("comando do dono: nao consegui publicar em", guild.name, e?.message || e);
+  }
+}
+
+function podeChamar(inter, comando) {
+  if (comando.quem_pode === "todos") return true;
+  if (comando.quem_pode === "admin") {
+    return inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild) === true;
+  }
+  return null; // "dono": quem decide e' ehDono, que e' assincrono
+}
+
+const PRAZO_DO_COMANDO = 60 * 1000;
+
+async function rodarComandoDoDono(inter, comando) {
+  const liberado = podeChamar(inter, comando);
+  if (liberado === false || (liberado === null && !await ehDono(inter.user.id))) {
+    return inter.reply({ flags: 64, content: "Este comando não é para você." });
+  }
+
+  /* Efemero: resposta de comando escrito as pressas nao devia aparecer pro
+     canal inteiro sem alguem ter decidido isso. */
+  await inter.deferReply({ flags: 64 });
+
+  /* Registro ANTES de rodar. Se o trecho travar o processo, o que ficou no
+     log e' a unica pista do que aconteceu. */
+  console.log(`comando do dono: /${comando.nome} chamado por ${inter.user.tag || inter.user.id}`);
+
+  const comeco = Date.now();
+  let saiu, erro = null;
+  try {
+    /* AsyncFunction, e nao eval: assim `await` funciona sem a pessoa ter que
+       embrulhar tudo. O que o codigo devolver com `return` e' o que aparece. */
+    const Assincrona = Object.getPrototypeOf(async function () {}).constructor;
+    const f = new Assincrona("client", "guild", "inter", "canal", "sb", "sbPost", "sbPatch", "sbDel", comando.codigo);
+    saiu = await Promise.race([
+      f(client, inter.guild, inter, inter.channel, sb, sbPost, sbPatch, sbDel),
+      new Promise((_, x) => setTimeout(
+        () => x(new Error(`passou de ${PRAZO_DO_COMANDO / 1000}s e eu parei de esperar`)), PRAZO_DO_COMANDO)),
+    ]);
+  } catch (e) {
+    erro = String(e?.stack || e?.message || e);
+  }
+  const levou = Date.now() - comeco;
+
+  /* Guarda o resultado da ultima vez. Comando que quebra em silencio faz quem
+     chamou ver "falhou" sem saber por que, e o dono nao ficar sabendo. */
+  sbPatch(`cyron_comando?id=eq.${encodeURIComponent(comando.id)}`,
+    { ultima_vez: new Date().toISOString(), ultimo_erro: erro ? erro.slice(0, 500) : null })
+    .catch(() => { /* anotar e' bonus; a resposta ja' vai sair */ });
+
+  if (erro) {
+    console.error(`comando do dono: /${comando.nome} falhou:`, erro.slice(0, 200));
+    return inter.editReply(`❌ **/${comando.nome}** falhou em ${levou}ms\n\`\`\`js\n${erro.slice(0, 1700)}\n\`\`\``);
+  }
+
+  /* O que voltou vira resposta. Texto sai como texto; objeto sai formatado;
+     e o que ja' e' uma mensagem pronta (embed, componentes) sai como veio --
+     e' o que deixa dar' pra montar cartao de verdade. */
+  if (saiu && typeof saiu === "object" && (saiu.embeds || saiu.content || saiu.files)) {
+    return inter.editReply(saiu);
+  }
+  if (typeof saiu === "string") return inter.editReply(saiu.slice(0, 1900) || "_(vazio)_");
+  if (saiu === undefined) return inter.editReply(`✅ rodou em ${levou}ms, sem nada pra mostrar.`);
+
+  let texto;
+  try {
+    texto = JSON.stringify(saiu, (k, v) => (typeof v === "bigint" ? `${v}n` : v), 2);
+  } catch {
+    texto = String(saiu); // objeto que se referencia, funcao, o que for
+  }
+  return inter.editReply(`\`${levou}ms\`\n\`\`\`json\n${String(texto).slice(0, 1800)}\n\`\`\``);
+}
+
+/* A janela de criar e editar comando.
+
+   Nome vazio na edicao seria ambiguo -- criar outro ou renomear? -- entao o
+   nome e' sempre obrigatorio e e' ele que decide: nome que ja existe neste
+   servidor edita aquele, nome novo cria um. Uma regra, sem botao de modo. */
+async function janelaDeComando(existente) {
+  const c = existente || {};
+  return {
+    custom_id: "admin:novocomando",
+    title: c.nome ? `Comando /${c.nome}`.slice(0, 45) : "Novo comando",
+    components: [
+      { type: 1, components: [{
+        type: 4, custom_id: "nome", style: 1, required: true, max_length: 32,
+        label: "Nome (vira /nome)", placeholder: "ranking",
+        ...(c.nome ? { value: c.nome } : {}) }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "descricao", style: 1, required: false, max_length: 100,
+        label: "Descrição (aparece na lista do Discord)",
+        placeholder: "mostra o ranking do reino",
+        ...(c.descricao ? { value: c.descricao } : {}) }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "quem_pode", style: 1, required: false, max_length: 10,
+        label: "Quem pode: dono, admin ou todos",
+        placeholder: "dono", ...(c.quem_pode ? { value: c.quem_pode } : {}) }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "codigo", style: 2, required: true, max_length: 3500,
+        label: "Código — o que der return vira a resposta",
+        placeholder: "const r = await fetch(\"https://exemplo.com/api\");\nconst j = await r.json();\nreturn `Poder total: ${j.power}`;",
+        ...(c.codigo ? { value: String(c.codigo).slice(0, 3500) } : {}) }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "apagar", style: 1, required: false, max_length: 10,
+        label: "Apagar este comando? escreva SIM",
+        placeholder: "vazio mantém" }] },
+    ],
+  };
+}
+
+/* Nomes que eu ja uso. Deixar o dono criar um /cyron dele nao daria erro
+   nenhum -- simplesmente o dele nunca seria chamado, porque os meus vem
+   antes. Silencio desses e' o pior tipo: parece que funcionou. */
+const NOMES_MEUS = new Set([
+  "cyron", "help", "admin", "mylanguage", "settings", "portal", "player", "events", "ranking-oficial",
+]);
+
+async function salvarComando(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+
+  /* O Discord so' aceita minusculas, numeros, hifen e sublinhado, de 1 a 32.
+     Recusar aqui com o motivo escrito e' melhor do que deixar a API recusar
+     com um erro em ingles que ninguem le. */
+  const nome = campo("nome").toLowerCase().replace(/\s+/g, "-");
+  if (!/^[a-z0-9_-]{1,32}$/.test(nome)) {
+    return inter.editReply("O nome só aceita letras minúsculas, números, `-` e `_`, até 32. **Não gravei nada.**");
+  }
+  if (NOMES_MEUS.has(nome)) {
+    return inter.editReply(`\`/${nome}\` já é meu — o seu nunca seria chamado, e você não descobriria por quê. Escolha outro nome.`);
+  }
+
+  const jaExiste = (await sb(
+    `cyron_comando?guild_id=eq.${encodeURIComponent(inter.guildId)}&nome=eq.${encodeURIComponent(nome)}&select=id`))?.[0];
+
+  if (campo("apagar").toLowerCase() === "sim") {
+    if (!jaExiste) return inter.editReply(`Não tenho nenhum \`/${nome}\` aqui para apagar.`);
+    await sbDel(`cyron_comando?id=eq.${encodeURIComponent(jaExiste.id)}`);
+    cacheComandos.delete(inter.guildId);
+    await publicarComandosDoDono(inter.guild);
+    return inter.editReply(`🗑️ \`/${nome}\` apagado e tirado do servidor.`);
+  }
+
+  const quem = ["dono", "admin", "todos"].includes(campo("quem_pode")) ? campo("quem_pode") : "dono";
+  const linha = {
+    nome,
+    descricao: campo("descricao") || `comando ${nome}`,
+    codigo: campo("codigo"),
+    quem_pode: quem,
+    guild_id: inter.guildId,
+    ativo: true,
+    ultimo_erro: null,
+  };
+
+  if (jaExiste) await sbPatch(`cyron_comando?id=eq.${encodeURIComponent(jaExiste.id)}`, linha);
+  else await sbPost("cyron_comando", linha);
+
+  cacheComandos.delete(inter.guildId);
+  await publicarComandosDoDono(inter.guild);
+
+  return inter.editReply(
+    `${jaExiste ? "✏️ Atualizei" : "✅ Criei"} \`/${nome}\` — quem pode usar: **${quem}**.\n` +
+    "Pode levar alguns segundos até aparecer na lista do Discord.\n\n" +
+    "⚠️ Este código roda **dentro do bot**: ele enxerga as chaves, e um laço infinito trava os 7 servidores. " +
+    "Teste com calma.");
+}
+
+/* A lista, pra saber o que existe e o que quebrou na ultima vez. */
+async function embedDosComandos(guildId) {
+  const meus = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}` +
+    "&select=nome,descricao,quem_pode,ativo,ultima_vez,ultimo_erro&order=nome.asc") || [];
+  if (!meus.length) {
+    return {
+      color: 0x9aa0a6,
+      title: "🧪 Comandos que você escreveu",
+      description: "_nenhum ainda_\n\nO botão **Novo comando** cria o primeiro.",
+    };
+  }
+  return {
+    color: meus.some((c) => c.ultimo_erro) ? 0xE03E3E : 0x2E8B7A,
+    title: "🧪 Comandos que você escreveu",
+    fields: meus.slice(0, 20).map((c) => ({
+      name: `/${c.nome}${c.ativo ? "" : " (desligado)"}`,
+      value: [
+        c.descricao || "_sem descrição_",
+        `quem pode: **${c.quem_pode}**`,
+        c.ultima_vez ? `última vez: ${quandoFoi(Date.parse(c.ultima_vez), "R")}` : "_nunca foi chamado_",
+        c.ultimo_erro ? `❌ \`${String(c.ultimo_erro).split("\n")[0].slice(0, 90)}\`` : "",
+      ].filter(Boolean).join("\n"),
+    })),
+    footer: { text: "para editar, crie de novo com o mesmo nome" },
+  };
+}
+
 /* ---------------- Tirar a trava de HTTP ----------------
 
    Enquanto o aplicativo tem um "interactions endpoint URL" configurado, o
@@ -6915,6 +7215,14 @@ async function umaPassada() {
 
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
+  /* Os comandos do dono voltam a existir depois de cada reinicio. Eles moram
+     no banco, mas quem os registra no Discord e' o bot ao subir -- sem isto,
+     um reinicio deixaria /ranking na lista do Discord apontando pra um bot
+     que nao sabe mais o que fazer com ele. */
+  for (const [, g] of client.guilds.cache) {
+    publicarComandosDoDono(g).catch(() => { /* ja' registrado no log */ });
+  }
+
   separarComandos()
     .then(() => garantirComandosGlobais())
     .then(() => arrumarOndeMoraOAdmin());

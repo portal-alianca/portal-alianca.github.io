@@ -45,19 +45,31 @@ function pedaco(nome) {
        depende do que veio antes -- depois de `(`, `=`, `,` e afins e' regra;
        depois de um valor e' divisao. E' heuristica, e basta para este
        arquivo. */
+    /* Escapado e' quem tem um numero IMPAR de barras antes.
+
+       Olhar so' a barra anterior erra em `\\]`, onde a primeira barra escapa a
+       segunda e o colchete fecha de verdade. Esse erro fazia a classe nunca
+       fechar, a expressao regular nunca terminar, e a extracao engolir o
+       arquivo inteiro -- 282 mil caracteres em vez de 300. */
+    const escapado = (k) => {
+      let n = 0;
+      while (fonte[k - 1 - n] === "\\") n++;
+      return n % 2 === 1;
+    };
+
     let nivel = 0, dentro = null, k = j;
     for (; k < fonte.length; k++) {
-      const c = fonte[k], d = fonte[k + 1], ant = fonte[k - 1];
+      const c = fonte[k], d = fonte[k + 1];
       if (dentro === "//") { if (c === "\n") dentro = null; continue; }
       if (dentro === "/*") { if (c === "*" && d === "/") { dentro = null; k++; } continue; }
       if (dentro === "re") {
-        if (ant === "\\") continue;
+        if (escapado(k)) continue;
         if (c === "[") dentro = "re[";
         else if (c === "/") dentro = null;
         continue;
       }
-      if (dentro === "re[") { if (c === "]" && ant !== "\\") dentro = "re"; continue; }
-      if (dentro) { if (c === dentro && ant !== "\\") dentro = null; continue; }
+      if (dentro === "re[") { if (c === "]" && !escapado(k)) dentro = "re"; continue; }
+      if (dentro) { if (c === dentro && !escapado(k)) dentro = null; continue; }
 
       if (c === "/" && d === "/") { dentro = "//"; k++; continue; }
       if (c === "/" && d === "*") { dentro = "/*"; k++; continue; }
@@ -66,8 +78,11 @@ function pedaco(nome) {
         if (antes === "" || "(,=:[!&|?{};+return".includes(antes)) { dentro = "re"; continue; }
       }
       if (c === '"' || c === "'" || c === "`") { dentro = c; continue; }
-      if (c === "{" || c === "[") nivel++;
-      else if (c === "}" || c === "]") { nivel--; if (nivel === 0) { k++; break; } }
+      /* Parenteses contam junto: `new Set([...])` fecha o colchete ANTES do
+         parentese, e sem contar os dois a extracao parava no `]` e devolvia
+         codigo pela metade. */
+      if (c === "{" || c === "[" || c === "(") nivel++;
+      else if (c === "}" || c === "]" || c === ")") { nivel--; if (nivel === 0) { k++; break; } }
       else if (c === ";" && nivel === 0) { k++; break; }
     }
     return fonte.slice(i, k).replace(/^const /, "var ");
@@ -310,6 +325,30 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     const p = portasDaReplica(guild(["pt"]), "pt", fonte(["todos"], ["todos"], []), [], false);
     verdade("plano grátis: réplica é só leitura", (p.find((x) => x.id === "pt").deny || []).length > 0);
   }
+}
+
+
+
+/* ================= os comandos que o dono escreve ================= */
+{
+  const { NOMES_MEUS } = carregar(["NOMES_MEUS"]);
+  /* Um comando do dono chamado "cyron" nunca seria chamado, porque os meus
+     vem antes no despacho -- e ele nao descobriria por que. O formulario tem
+     que recusar na hora, que e' onde ainda dá para explicar. */
+  for (const n of ["cyron", "help", "admin", "mylanguage"]) {
+    verdade(`/${n} é meu e não pode ser reaproveitado`, NOMES_MEUS.has(n));
+  }
+  verdade("nome livre continua livre", !NOMES_MEUS.has("ranking"));
+
+  /* O Discord só aceita minúsculas, números, hífen e sublinhado, até 32. */
+  const valido = (n) => /^[a-z0-9_-]{1,32}$/.test(n);
+  ok("nome simples passa", valido("ranking"), true);
+  ok("nome com hífen passa", valido("meu-ranking"), true);
+  ok("nome com maiúscula não passa", valido("Ranking"), false);
+  ok("nome com espaço não passa", valido("meu ranking"), false);
+  ok("nome com acento não passa", valido("classificação"), false);
+  ok("nome vazio não passa", valido(""), false);
+  ok("nome de 33 letras não passa", valido("x".repeat(33)), false);
 }
 
 /* ---- o resultado ---- */
