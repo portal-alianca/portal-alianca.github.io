@@ -970,6 +970,7 @@ function estaDescansando(nome) {
    Se TODOS estiverem, a fila volta inteira. Preferir uma chamada que
    provavelmente falha a nao tentar nada: o castigo existe pra economizar
    chamada, nao pra impedir a unica tentativa que ainda poderia dar certo. */
+let CHAVE_PRIMEIRO = true; // a chave do dono na frente da fila? ver traduzir()
 let extrasDoPainel = [];   // tradutores publicos, recarregados com os ajustes
 let reservasDoDono = [];   // chaves do dono, idem
 
@@ -1007,6 +1008,31 @@ function gratuitosDaVez(texto) {
   return livres.length ? livres : servem;
 }
 
+/* As chaves do dono, na ordem em que ele cadastrou. */
+async function tentarChavesDoDono(texto, alvo, motor) {
+  for (const reserva of motoresDoDono()) {
+    if (estaDescansando(`dono:${reserva.tipo}`)) continue;
+    try {
+      const saiu = await MOTORES[reserva.tipo].traduzir(texto, alvo, reserva);
+      if (saiu) {
+        anotarUso(motor.servidorId, `dono-${reserva.tipo}`, { caracteres: texto.length, traducoes: 1 });
+        return saiu;
+      }
+    } catch (e) {
+      /* Cota do mes estourada demora a voltar; erro de rede, nao. Insistir a
+         cada fala nao traz o mes de volta -- seis horas de canto, e a fila
+         segue nos gratuitos ate' la. */
+      const porque = String(e?.message || e);
+      const acabou = /40[36]|quota|limit/i.test(porque);
+      porDeCastigo(`dono:${reserva.tipo}`, acabou ? 6 * 60 * 60 * 1000 : DESCANSO_APOS_QUEDA);
+      tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `${reserva.tipo} do dono: ${porque.slice(0, 90)}`;
+      console.error(`tradutor: chave ${reserva.tipo} do dono falhou${acabou ? " (cota do mês?)" : ""}:`,
+        porque.slice(0, 120));
+    }
+  }
+  return null;
+}
+
 async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
   const escolhido = MOTORES[motor.tipo];
   if (escolhido && motor.chave) {
@@ -1038,6 +1064,24 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
 
      Entao a chave fica guardada pra quando precisa, que e' o que reserva
      quer dizer. */
+  /* A chave do dono vem ANTES dos gratuitos.
+
+     Eu tinha posto depois, com o argumento de guardar a cota pro dia em que o
+     gratuito fechasse a porta. A chave de verdade derrubou o argumento: 1
+     milhao de caracteres por mes contra 377 mil de uso -- folga de 2,6x --,
+     250ms contra os 2,2s do Lingva, e traducao melhor que a de todos ("Bear
+     Rally" onde o gratuito escreveu "manifestacao").
+
+     Guardar a melhor e a mais rapida pra usar a pior seria economizar o que
+     nao falta. E se o mes acabar, o castigo rebaixa ela sozinha por seis horas
+     e a fila cai nos gratuitos -- que e' de onde ela veio.
+
+     A ordem inverte pelo painel, sem publicar o bot. */
+  if (CHAVE_PRIMEIRO) {
+    const saiu = await tentarChavesDoDono(texto, alvo, motor);
+    if (saiu) return saiu;
+  }
+
   for (const t of gratuitosDaVez(texto)) {
     try {
       /* Lingva pede o texto na URL; LibreTranslate pede num POST. Um `corpo`
@@ -1075,24 +1119,13 @@ async function traduzir(texto, alvo, motor = MOTOR_AUTO) {
     }
   }
 
-  /* Nenhum gratuito atendeu. Agora sim a reserva paga do dono -- se houver. */
-  for (const reserva of motoresDoDono()) {
-    if (estaDescansando(`dono:${reserva.tipo}`)) continue;
-    try {
-      const saiu = await MOTORES[reserva.tipo].traduzir(texto, alvo, reserva);
-      if (saiu) {
-        anotarUso(motor.servidorId, `dono-${reserva.tipo}`, { caracteres: texto.length, traducoes: 1 });
-        console.log(`tradutor: ${reserva.tipo} do dono salvou uma fala que o gratuito recusou`);
-        return saiu;
-      }
-    } catch (e) {
-      /* Cota do mes estourada demora a voltar; erro de rede, nao. A Azure diz
-         403 quando acaba o mes, e insistir nisso a cada fala nao traz o mes
-         de volta. */
-      const porque = String(e?.message || e);
-      porDeCastigo(`dono:${reserva.tipo}`, /403|quota|limit/i.test(porque) ? 6 * 60 * 60 * 1000 : DESCANSO_APOS_QUEDA);
-      tradutorFalhas.erros++; tradutorFalhas.ultimoErro = `${reserva.tipo} do dono: ${porque.slice(0, 90)}`;
-      console.error(`tradutor: reserva ${reserva.tipo} do dono falhou:`, porque.slice(0, 120));
+  /* Nao foi antes da fila? Entao e' agora, como ultima esperanca antes de a
+     fala chegar sem traducao nenhuma. */
+  if (!CHAVE_PRIMEIRO) {
+    const saiu = await tentarChavesDoDono(texto, alvo, motor);
+    if (saiu) {
+      console.log("tradutor: a chave do dono salvou uma fala que o gratuito recusou");
+      return saiu;
     }
   }
   return null;
@@ -1585,6 +1618,8 @@ async function recarregarAjustes() {
   if (antes !== agora) {
     console.log(`tradutor: reservas do painel agora sao [${agora || "nenhuma"}]`);
   }
+
+  CHAVE_PRIMEIRO = a.chave_primeiro == null ? true : !["0", "nao", "não"].includes(String(a.chave_primeiro).toLowerCase());
 
   const antesDono = reservasDoDono.map((r) => r.tipo).join();
   reservasDoDono = lerReservasDoDono(a);
