@@ -1291,6 +1291,49 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("sem banco, começa do zero em vez de travar", await jaGastouHoje("s4"), 0);
 }
 
+/* ================= onde o grátis acaba e o pago começa =================
+
+   A linha entre os planos deixou de ser uma escada de números e virou uma
+   linha de função: o grátis LÊ na sua língua quando quiser, o pago VIVE em
+   todas as línguas. Estes testes existem porque essa mudança tem um jeito
+   silencioso de dar muito errado -- tirar o espelho de quem já o tem. */
+{
+  const { PLANOS, limitesDo } = carregar(["PLANOS", "venceEm", "planoDe", "limitesDo"]);
+  globalThis.BETA = false;
+  globalThis.BETA_ATE = null;
+
+  ok("o grátis não constrói idioma nenhum", PLANOS.gratis.idiomas, 0);
+  ok("nem aceita canal-fonte", PLANOS.gratis.fontes, 0);
+  ok("o pago constrói", PLANOS.pago.idiomas, 20);
+
+  /* O teto de canais NÃO é zero, e isso não é descuido.
+
+     Com zero, o orçamento de cada passada nasceria vazio e nem a manutenção
+     do que já existe aconteceria -- o servidor grátis que já montou veria
+     suas salas pararem de ser cuidadas. */
+  verdade("o grátis mantém orçamento de canais para cuidar do que já tem",
+    PLANOS.gratis.canais > 0);
+
+  ok("servidor grátis: sem idioma, sem fonte", limitesDo({ plano: "gratis" }),
+    { idiomas: 0, canais: 20, fontes: 0 });
+  ok("servidor pago: o espelho inteiro", limitesDo({ plano: "pago" }),
+    { idiomas: 20, canais: 200, fontes: 10 });
+
+  /* A porta de saída: a coluna de exceção por servidor já existia, e é ela
+     que segura quem montou antes desta regra. Sem isto eu teria inventado uma
+     coluna nova para um problema que já tinha solução. */
+  ok("um servidor pode ser mantido no que tinha, sem virar pago",
+    limitesDo({ plano: "gratis", limite_idiomas: 3 }).idiomas, 3);
+
+  /* Teste de sete dias e liberação na mão continuam valendo como pago -- eles
+     são o caminho pelo qual um cliente EXPERIMENTA o espelho. */
+  const amanha = new Date(Date.now() + 86400000).toISOString();
+  ok("quem está em teste enxerga o espelho", limitesDo({ plano: "gratis", teste_ate: amanha }).idiomas, 20);
+  ok("e quem pagou também", limitesDo({ plano: "gratis", pago_ate: amanha }).idiomas, 20);
+  ok("teste vencido volta ao grátis",
+    limitesDo({ plano: "gratis", teste_ate: "2020-01-01T00:00:00Z" }).idiomas, 0);
+}
+
 /* ================= a tradução por bandeira =================
 
    O recurso é puxado: só custa quando alguém toca. O que pode dar errado é

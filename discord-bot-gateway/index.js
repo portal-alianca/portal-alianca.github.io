@@ -2060,8 +2060,30 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
    de seguranca. Um defeito meu num laco nao pode encher o servidor de alguem
    com trezentos canais -- e ja quase aconteceu duas vezes nesta semana, com a
    posicao e com o nome. */
+/* O que separa os planos.
+
+   Isto era uma escada de NUMEROS -- tres idiomas contra vinte, dois canais
+   contra dez --, e escada de numero nao vende: o gratis fazia tudo o que o
+   pago fazia, um pouco menor, e ninguem paga por "um pouco maior". Pior, o
+   gratis podia colar a propria chave de tradutor e furar a cota diaria, que
+   era justamente a alavanca do pago.
+
+   Agora a linha e' de FUNCAO, e cabe numa frase: no gratis voce LE na sua
+   lingua quando quiser; no pago o servidor inteiro VIVE em todas as linguas.
+
+   Zero idiomas nao quer dizer que o gratis nao traduz -- ele traduz sem
+   limite nenhum pela bandeira e pelo botao, que sao puxados e so custam
+   quando alguem quis ler. Quer dizer que ele nao CONSTROI: sem categoria por
+   idioma, sem replica, sem sala de conversa espelhada.
+
+   Quem ja tem categoria nao perde nada. A regra que monta so' cria idioma
+   novo ate' o teto e nunca tira o que existe, entao servidor gratis que ja
+   montou continua exatamente como esta -- o teto zero vale dali pra frente.
+   O teto de canais fica em 20 e nao em zero por causa disso: com zero, o
+   orcamento da passada nasceria vazio e nem a manutencao do que ja existe
+   aconteceria. */
 const PLANOS = {
-  gratis: { idiomas: 3,  canais: 20,  fontes: 2,  cotaDoDono: 8000 },
+  gratis: { idiomas: 0,  canais: 20,  fontes: 0,  cotaDoDono: 8000 },
   pago:   { idiomas: 20, canais: 200, fontes: 10, cotaDoDono: 40000 },
 };
 
@@ -2247,17 +2269,39 @@ async function avisarDoTeto(guild, servidor, naoCoube, limite) {
     .map(([idioma, quantos]) => `• ${nomeDoIdioma(idioma)} — ${quantos} ${quantos === 1 ? "pessoa" : "pessoas"}`)
     .join("\n");
 
+  /* Teto zero e teto cheio são duas situações diferentes, e o mesmo texto
+     servia mal nas duas.
+
+     Com teto cheio, "não coube" é a verdade: existem salas, e estas pessoas
+     ficaram de fora delas. Com teto zero — o plano grátis — não há sala
+     nenhuma para caber, e dizer "você está usando 0 de 0 idiomas" descreveria
+     um limite estourado onde na verdade há um recurso que o plano não inclui.
+     Quem lesse concluiria que o bot quebrou. */
+    const semEspelho = !(limite.idiomas > 0);
+
   await canal.send({
-    content: [
-      `⚠️ **Alguém escolheu um idioma que não cabe no plano ${planoDe(servidor)}.**`,
-      "",
-      quem,
-      "",
-      `Você está usando **${limite.idiomas} de ${limite.idiomas}** idiomas. Essas pessoas escolheram o idioma delas ` +
-      "e não receberam canal nenhum — para elas parece que o bot não funcionou.",
-      "",
-      "Para resolver: suba de plano, ou peça a elas que escolham um dos idiomas que já existem aqui.",
-    ].join("\n"),
+    content: semEspelho
+      ? [
+        "🌐 **Escolheram o idioma delas aqui.**",
+        "",
+        quem,
+        "",
+        "Elas continuam lendo tudo: a **tradução por bandeira** e o **botão de tradução** " +
+        "funcionam sem limite no plano grátis, e eu falo com cada uma na língua dela.",
+        "",
+        "O que o plano grátis não monta são as **salas por idioma** — aquelas em que a " +
+        "conversa acontece traduzida para todo mundo ao mesmo tempo. Isso é do plano pago.",
+      ].join("\n")
+      : [
+        `⚠️ **Alguém escolheu um idioma que não cabe no plano ${planoDe(servidor)}.**`,
+        "",
+        quem,
+        "",
+        `Você está usando **${limite.idiomas} de ${limite.idiomas}** idiomas. Essas pessoas escolheram o idioma delas ` +
+        "e não receberam canal nenhum — para elas parece que o bot não funcionou.",
+        "",
+        "Para resolver: suba de plano, ou peça a elas que escolham um dos idiomas que já existem aqui.",
+      ].join("\n"),
     allowedMentions: { parse: [] },
   }).catch((e) => console.error("limite: nao consegui avisar:", e?.message || e));
 }
@@ -4151,7 +4195,11 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
       components: [{
         type: 3,
         custom_id: "cyron:fontes",
-        placeholder: `Canais que eu traduzo — até ${limite.fontes} no plano ${planoDe(servidor)}`,
+        /* "até 0 no plano gratis" seria uma frase sem sentido: descreve um
+           teto onde o certo é dizer que o recurso é de outro plano. */
+        placeholder: limite.fontes > 0
+          ? `Canais que eu traduzo — até ${limite.fontes} no plano ${planoDe(servidor)}`
+          : "Canais que eu traduzo — do plano pago",
         min_values: 0,
         /* Nunca acima do numero de opcoes: o Discord recusa a mensagem
            inteira se o maximo for maior que a lista, e o painel some. */
@@ -4334,20 +4382,45 @@ async function montarPainel(guild, servidor) {
   const inalcancaveis = semAlcance.get(servidor.id) || [];
   const cargoRuim = cargoAcimaDeMim.get(servidor.id) || null;
 
+  /* No plano grátis não há teto a mostrar, há um recurso que não está
+     incluído. "0 de 0" com bolinha vermelha diria que algo estourou, e a
+     pessoa iria procurar o defeito. */
+  const espelhoIncluso = limite.idiomas > 0 || idiomas.length > 0;
+
   const campos = [
-    {
-      name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
-      value: vivas.length
-        ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
-        : elegiveis.length
-          ? "_nenhum ainda — escolha no menu aqui embaixo_"
-          : "_nenhum, e não sobrou canal para escolher: todos os canais de texto daqui já são meus. Crie um canal onde vocês escrevem e ele aparece no menu._",
-    },
-    {
-      name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
-      value: idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join("\n") : "_ninguém escolheu ainda_",
-      inline: true,
-    },
+    espelhoIncluso
+      ? {
+        name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
+        value: vivas.length
+          ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
+          : elegiveis.length
+            ? "_nenhum ainda — escolha no menu aqui embaixo_"
+            : "_nenhum, e não sobrou canal para escolher: todos os canais de texto daqui já são meus. Crie um canal onde vocês escrevem e ele aparece no menu._",
+      }
+      : {
+        name: "🔒 Salas por idioma — do plano pago",
+        value: "Aqui a conversa acontece traduzida para todo mundo ao mesmo tempo: cada " +
+          "idioma ganha uma categoria com os seus canais, e quem escreve na sala dele " +
+          "aparece na dos outros já traduzido.\n\n" +
+          "_No plano grátis a tradução é **puxada**: a bandeira e o botão traduzem " +
+          "sem limite, quando alguém pede._",
+      },
+    espelhoIncluso
+      ? {
+        name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
+        value: idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join("\n") : "_ninguém escolheu ainda_",
+        inline: true,
+      }
+      : {
+        /* Continua valendo escolher idioma no plano grátis, e por isso o
+           número continua aqui: o bot fala com cada pessoa na língua dela.
+           O que não existe é a sala. */
+        name: `🌐 Escolheram um idioma — ${idiomas.length}`,
+        value: idiomas.length
+          ? "eu falo com cada uma na língua dela"
+          : "_ninguém escolheu ainda_",
+        inline: true,
+      },
     {
       name: "🌐 Motor de tradução",
       value: motorUsado,
