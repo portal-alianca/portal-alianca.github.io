@@ -382,7 +382,43 @@ function vantajosoTraduzir(texto, teto = 800, minimo = 12) {
      todas neste conjunto de letras. Risada de verdade nao tem duas letras. */
   if (t.length >= 4 && /^[kkhaeirs\s!?.]+$/i.test(t)) return false;
 
+  if (pareceDesenho(t)) return false;
+
   return true;
+}
+
+/* Desenho feito de texto -- mapa de batalha, tabela, formacao.
+
+   Traduzir isto nao melhora nada e destroi duas coisas ao mesmo tempo. As
+   palavras mudam de tamanho, entao as barras deixam de encontrar o que
+   apontavam; e se a lingua de chegada e' escrita da direita pra esquerda, o
+   Discord vira o bloco inteiro, porque quem manda na direcao do paragrafo e' a
+   primeira letra forte dele. O mapa do castelo chegou no canal arabe com as
+   pontas trocadas e as linhas soltas -- ilegivel, e sem nada dizendo por que.
+
+   Sem traduzir, o desenho continua em letra latina, o Discord mantem a
+   direcao, e ele chega igualzinho ao original. Perde-se a traducao de quatro
+   palavras ("north", "castle"), e ganha-se o mapa.
+
+   Tres exigencias juntas, porque cada uma sozinha da falso positivo: varias
+   linhas (uma frase com espaco duplo nao e' desenho), metade delas com
+   alinhamento deliberado, e tracos de desenho.
+
+   Tres tracos, e nao quatro: uma tabela de tres linhas separadas por `|` tem
+   exatamente tres, e tabela quebra ao traduzir pelo mesmo motivo que o mapa
+   -- a coluna deixa de alinhar quando a palavra muda de tamanho. Com as duas
+   primeiras exigencias no caminho, baixar o terceiro numero nao abre porta
+   pra texto normal: prosa nao tem coluna. */
+const RISCO_DE_DESENHO = /[/\\|_^<>+=~-]/g;
+
+function pareceDesenho(texto) {
+  const linhas = String(texto || "").split("\n").filter((l) => l.trim());
+  if (linhas.length < 3) return false;
+
+  const alinhadas = linhas.filter((l) => /\S {2,}\S/.test(l)).length;
+  if (alinhadas * 2 < linhas.length) return false;
+
+  return (String(texto).match(RISCO_DE_DESENHO) || []).length >= 3;
 }
 
 const TEXTO_MAXIMO = 3500;  // teto do que o bot se propoe a traduzir

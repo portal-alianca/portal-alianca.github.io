@@ -1064,6 +1064,51 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   }
 }
 
+/* ========== desenho feito de texto não se traduz ==========
+
+   Um mapa de batalha em ASCII chegou no canal árabe com as pontas trocadas e
+   as linhas soltas. Duas coisas o quebram ao mesmo tempo: as palavras mudam
+   de tamanho, então as barras deixam de encontrar o que apontavam; e numa
+   língua escrita da direita para a esquerda o Discord vira o bloco inteiro,
+   porque quem manda na direção do parágrafo é a primeira letra forte dele.
+
+   Sem traduzir, ele chega igualzinho ao original. */
+{
+  const { pareceDesenho, vantajosoTraduzir } =
+    carregar(["RISCO_DE_DESENHO", "UNIVERSAIS", "pareceDesenho", "vantajosoTraduzir"]);
+
+  const mapa = [
+    "(Message) .",
+    "                north",
+    "        God /       \\  TRG/HGR",
+    "     ASD  /            \\",
+    "   West /    castle     \\ east",
+    "        \\              /",
+    "   Top/Nkr \\        /  War/FZA",
+    "              south",
+  ].join("\n");
+
+  verdade("o mapa do castelo é desenho", pareceDesenho(mapa));
+  verdade("e por isso não é traduzido", !vantajosoTraduzir(mapa, 3500, 2));
+
+  /* Cada exigência sozinha dá falso positivo — é por isso que são três. */
+  for (const [nome, t] of [
+    ["bom dia", "Good morning"],
+    ["frase comprida", "POSITIONS it will be easy to teleport at there designated places"],
+    ["prosa de três linhas", "vamos no urso as 20h\nquem for avisa aqui\nlevem tropa cheia"],
+    ["lista numerada", "1. Champagne fair\n2. Working overtime\n3. Alliance mobilization"],
+    ["lista com traços", "- urso as 20h\n- rally as 21h\n- castelo as 22h"],
+    ["duas linhas alinhadas", "a    b\nc    d"],
+    ["espaço duplo solto", "vou   agora"],
+  ]) {
+    verdade(`${nome} não é desenho`, !pareceDesenho(t));
+  }
+
+  /* Uma tabela de horários também quebra ao traduzir, e cai na mesma regra. */
+  verdade("tabela de espaços conta como desenho",
+    pareceDesenho("urso     20:00  |  norte\nrally    21:00  |  sul\ncastelo  22:00  |  leste"));
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
