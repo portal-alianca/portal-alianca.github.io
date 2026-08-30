@@ -72,6 +72,9 @@ main{padding:44px 0 80px}
 .c-pago{background:rgba(245,166,35,.13); color:var(--ambar); border:1px solid rgba(245,166,35,.3)}
 .c-teste{background:rgba(94,187,131,.14); color:var(--verde); border:1px solid rgba(94,187,131,.3)}
 .c-gratis{background:var(--fundo-3); color:var(--texto-fraco); border:1px solid var(--borda-viva)}
+/* Deliberadamente não é botão: não há para onde ir, e um botão que não leva a
+   lugar nenhum é pior do que texto nenhum. */
+.indisponivel{font-size:13.5px; color:var(--texto-fraco); font-style:italic; padding:9px 0}
 
 .aviso{
   padding:16px 18px; border-radius:var(--raio); background:var(--fundo-2);
@@ -226,9 +229,18 @@ function linha(s) {
     cracha = '<span class="cracha c-gratis">' + pt("grátis", "free") + "</span>";
     detalhe = pt("Tradução por bandeira e por botão, sem limite",
       "Flag and button translation, unlimited");
+    /* Sem link de pagamento configurado, aqui havia um botão "Ver planos" que
+       levava para a tabela de preços — e o botão de lá trazia de volta para
+       cá. Um laço fechado, e nenhuma das duas telas dizia que faltava alguma
+       coisa: quem clicava concluía que o site estava quebrado, e estava certo.
+
+       Agora a ausência aparece como ausência. Não é botão, porque não há para
+       onde ir; é a frase que explica por que não há. */
     acao = s.pagar
       ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Assinar R$ 79/mês", "Subscribe R$ 79/mo") + "</a>"
-      : '<a class="bt bt-2 bt-p" href="./#planos">' + pt("Ver planos", "See pricing") + "</a>";
+      : '<span class="indisponivel">' + pt(
+          "Assinatura ainda não disponível",
+          "Subscription not available yet") + "</span>";
   }
 
   return '<div class="item' + (s.instalado ? "" : " fora") + '">' + icone +

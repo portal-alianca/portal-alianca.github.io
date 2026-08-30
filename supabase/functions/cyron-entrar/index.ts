@@ -64,11 +64,21 @@ function cabecalhos(origem: string | null) {
    conta dona -- é um administrador. Exigir a conta dona faria a área do
    cliente não servir justamente para os servidores que mais interessam. */
 const GERENCIAR_SERVIDOR = 1n << 5n;
+/* Administrator entra explicitamente, e nao por consequencia.
+
+   No Discord, Administrator VALE por todas as permissoes, mas o numero que a
+   API devolve nem sempre traz os outros bits acesos junto. Olhando so o bit de
+   "Gerenciar servidor", um administrador que nao tivesse esse bit marcado a
+   mao ficava de fora -- e some da lista o servidor que ele mais administra,
+   sem erro nenhum aparecer. Foi assim que tres servidores apareceram onde
+   deviam aparecer mais. */
+const ADMINISTRADOR = 1n << 3n;
 
 function podeMandar(g: any): boolean {
   if (g?.owner === true) return true;
   try {
-    return (BigInt(g?.permissions ?? "0") & GERENCIAR_SERVIDOR) !== 0n;
+    const p = BigInt(g?.permissions ?? "0");
+    return (p & GERENCIAR_SERVIDOR) !== 0n || (p & ADMINISTRADOR) !== 0n;
   } catch {
     return false;
   }
