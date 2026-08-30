@@ -693,6 +693,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 {
   const { espelharMensagem, ultimaFalaDaSala } = carregar([
     "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
+    "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -822,6 +823,10 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     verdade("a curta saiu traduzida", /\[traduzido\] agora uma curta/.test(en[1].embed.description));
     verdade("e nenhum cartão tem as duas línguas juntas",
       en.every((m) => !(/x{100}/.test(m.embed.description) && /\[traduzido\]/.test(m.embed.description))));
+
+    /* E o rodapé conta qual é qual, sem depender de o leitor perceber. */
+    verdade("o cartão não traduzido mostra só a origem", /🇧🇷$/.test(en[0].embed.description));
+    verdade("o traduzido mostra a seta", /🇧🇷 → 🇬🇧$/.test(en[1].embed.description));
 
     /* De volta ao normal para os testes seguintes. */
     globalThis.vantajosoTraduzir = () => false;
@@ -1107,6 +1112,34 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   /* Uma tabela de horários também quebra ao traduzir, e cai na mesma regra. */
   verdade("tabela de espaços conta como desenho",
     pareceDesenho("urso     20:00  |  norte\nrally    21:00  |  sul\ncastelo  22:00  |  leste"));
+}
+
+/* ========== de qual idioma a fala veio ==========
+
+   Bandeira e não palavra: o rodapé é a única parte do cartão que o bot
+   escreve. Um "traduzido do inglês" sairia em português na sala árabe, ou
+   custaria uma chamada de tradutor por mensagem só para o rodapé.
+
+   E a SETA é o recado, não a bandeira: ela só aparece quando houve tradução
+   de verdade. Sem seta, o que está ali é o original — que foi exatamente o
+   caso que confundiu todo mundo quando um aviso passou do teto e chegou em
+   inglês na sala árabe com cara de coisa traduzida. */
+{
+  const { seloDeOrigem, bandeiraDoIdioma } =
+    carregar(["LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem"]);
+
+  ok("a bandeira sai do menu de idiomas", bandeiraDoIdioma("en"), "🇬🇧");
+  ok("idioma que eu não conheço não tem bandeira", bandeiraDoIdioma("xx"), "");
+
+  ok("traduzido mostra de onde veio e para onde foi",
+    seloDeOrigem("en", "ar", true), "🇬🇧 → 🇸🇦");
+  ok("não traduzido mostra só a origem — sem seta",
+    seloDeOrigem("en", "ar", false), "🇬🇧");
+
+  /* Bandeira errada é pior que bandeira nenhuma: dizer "veio do inglês" sobre
+     uma fala que veio de outro lugar engana com ar de precisão. */
+  ok("origem desconhecida não ganha selo", seloDeOrigem("xx", "ar", true), "");
+  ok("destino desconhecido mantém a origem", seloDeOrigem("en", "xx", true), "🇬🇧");
 }
 
 /* ---- o resultado ---- */

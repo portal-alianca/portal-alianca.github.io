@@ -411,6 +411,33 @@ function vantajosoTraduzir(texto, teto = 800, minimo = 12) {
    pra texto normal: prosa nao tem coluna. */
 const RISCO_DE_DESENHO = /[/\\|_^<>+=~-]/g;
 
+/* De onde veio esta fala, dito em bandeira.
+
+   Bandeira e nao palavra porque o rodape e' a UNICA parte do cartao que eu
+   escrevo. O resto e' a pessoa falando, e sai traduzido; um "traduzido do
+   ingles" meu sairia em portugues na sala arabe -- ou me custaria uma chamada
+   de tradutor por mensagem so' pra rodape. Bandeira nao precisa de lingua.
+
+   A SETA e' o recado, e nao a bandeira: ela so' aparece quando houve traducao
+   de verdade. Sem seta, o que esta ali e' o original -- que e' exatamente o
+   caso que confundiu todo mundo quando um aviso longo passou do teto e chegou
+   em ingles na sala arabe, com cara de coisa traduzida.
+
+   Idioma que eu nao conheco fica sem selo, em vez de ganhar uma bandeira
+   errada: dizer "veio do ingles" sobre uma fala que veio de outro lugar e'
+   pior do que nao dizer nada. */
+function bandeiraDoIdioma(cod) {
+  return LINGUAS_MENU.find(([c]) => c === cod)?.[2] || "";
+}
+
+function seloDeOrigem(idiomaOrigem, idiomaDestino, traduziu) {
+  const de = bandeiraDoIdioma(idiomaOrigem);
+  if (!de) return "";
+  if (!traduziu) return de;
+  const para = bandeiraDoIdioma(idiomaDestino);
+  return para ? `${de} → ${para}` : de;
+}
+
 function pareceDesenho(texto) {
   const linhas = String(texto || "").split("\n").filter((l) => l.trim());
   if (linhas.length < 3) return false;
@@ -1797,11 +1824,13 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
        o Discord nao desenha link nenhum -- o nome apareceria morto, e a
        assinatura existe justamente pra ser tocada. */
+    const selo = seloDeOrigem(origem.idioma, destino.idioma, traduziuAqui === true);
     const montar = (corpoDoCartao, cabecalhoDoCartao) => ({
       color: cor,
       ...(cabecalhoDoCartao ? { author: cabecalhoDoCartao } : {}),
       description: `${corpoDoCartao.slice(0, LIMITE_DO_CARTAO)}` +
-        `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})`,
+        `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
+        (selo ? ` · ${selo}` : ""),
     });
 
     const webhook = clienteDoWebhook(destino.webhook);
