@@ -20,28 +20,25 @@ const barra = (v, topo, larg = 12) => {
     Math.round(topo > 0 ? (v / topo) * 100 : 0) + "%";
 };
 
-/* Pódio com barra; o resto em linha só: 50 barras seriam parede. */
-const podio = (l, nome, ate) => {
+/* Dez, e só dez, nos dois quadros.
+
+   Antes o 11º ao 50º vinha em lista crua embaixo do pódio, e a mudança de
+   desenho no meio do cartão lia como defeito -- duas coisas diferentes
+   fingindo ser a mesma lista. Quem quer a tabela inteira tem o link no título. */
+const podio = (l, nome, ate = 10) => {
   const topo = Number(l[0]?.score || 0);
   return l.slice(0, ate).map((x, i) =>
     `${i < 3 ? MEDALHA[i] : `\`${String(i + 1).padStart(2)}\``} **${nome(x)}** — ${n(x.score)}\n` +
     barra(Number(x.score), topo)).join("\n");
 };
 
-const fila = (l, de, ate, nome) => l.slice(de, ate)
-  .map((x, i) => `\`${String(de + i + 1).padStart(2)}\` ${nome(x)} — ${n(x.score)}`).join("\n");
-
 const nomeA = (x) => `[${x.abbr}] ${x.name}`;
 const nomeJ = (x) => x.nick_name;
 const quando = Math.floor(d.captured_at || Date.now() / 1000);
 
 const campos = [];
-if (alis.length) campos.push({ name: `🏰 Top ${Math.min(10, alis.length)} alliances`, value: podio(alis, nomeA, 10) });
-if (jogs.length) {
-  campos.push({ name: `⚔️ Top ${Math.min(50, jogs.length)} players`, value: podio(jogs, nomeJ, 10) });
-  if (jogs.length > 10) campos.push({ name: "​", value: fila(jogs, 10, 30, nomeJ) });
-  if (jogs.length > 30) campos.push({ name: "​", value: fila(jogs, 30, 50, nomeJ) });
-}
+if (alis.length) campos.push({ name: `🏰 Top ${Math.min(10, alis.length)} alliances`, value: podio(alis, nomeA) });
+if (jogs.length) campos.push({ name: `⚔️ Top ${Math.min(10, jogs.length)} players`, value: podio(jogs, nomeJ) });
 campos.push({ name: "👑 Leader", value: alis[0] ? nomeA(alis[0]) : "—", inline: true });
 campos.push({ name: "🏰 Top 10 combined", inline: true,
   value: n(alis.slice(0, 10).reduce((a, x) => a + Number(x.score || 0), 0)) });
