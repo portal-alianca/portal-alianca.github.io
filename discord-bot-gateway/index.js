@@ -5575,7 +5575,25 @@ async function cliqueAdmin(inter) {
   }
   if (acao === "comandos" && inter.isButton()) {
     await inter.deferUpdate();
-    return inter.followUp({ flags: 64, embeds: [await embedDosComandos(inter.guildId)] });
+    const { embed, componentes } = await listaDeComandos(inter.guildId);
+    return inter.followUp({ flags: 64, embeds: [embed], components: componentes });
+  }
+  /* Abrir um comando que ja' existe pra editar.
+
+     Isto NAO existia, e a falta era invisivel: a lista mostrava os comandos e
+     nao levava a lugar nenhum, e o unico jeito de editar era clicar em "Novo
+     comando" e digitar o mesmo nome de cabeca. Quem nao sabia disso -- eu
+     inclusive, que mandei o dono "abrir o reino na lista" -- clicava, lia, e
+     saia achando que tinha editado. */
+  if (acao === "abrircomando" && inter.isStringSelectMenu()) {
+    const escolhido = (await comandosDoDono(inter.guildId))
+      .find((c) => c.nome === inter.values?.[0]);
+    if (!escolhido) {
+      return inter.reply({ flags: 64, content: "Esse comando não existe mais aqui." }).catch(() => {});
+    }
+    /* showModal exige interacao ainda nao respondida -- por isso este ramo vem
+       antes do deferUpdate la' embaixo. */
+    return inter.showModal(janelaValida(await janelaDeComando(escolhido)));
   }
   if (acao === "busca" && inter.isButton()) return inter.showModal(janelaValida(janelaDeBusca()));
 
@@ -7762,7 +7780,39 @@ async function embedDosComandos(guildId) {
         c.ultimo_erro ? `❌ \`${String(c.ultimo_erro).split("\n")[0].slice(0, 90)}\`` : "",
       ].filter(Boolean).join("\n"),
     })),
-    footer: { text: "para editar, crie de novo com o mesmo nome" },
+    footer: { text: "escolha um abaixo para editar" },
+  };
+}
+
+/* A lista E o caminho pra mexer nela.
+
+   O menu vem junto do embed de proposito: lista que so' mostra e nao deixa
+   agir ensina que aquele botao nao serve pra nada, e a pessoa para de clicar.
+
+   Vinte e cinco e' o teto do Discord por menu. Passando disso, os de baixo
+   ficam so' no texto -- e o rodape diz isso, em vez de eles sumirem calados. */
+const MAX_NO_MENU = 25;
+
+async function listaDeComandos(guildId) {
+  const embed = await embedDosComandos(guildId);
+  const meus = await comandosDoDono(guildId);
+  if (!meus.length) return { embed, componentes: [] };
+
+  const opcoes = meus.slice(0, MAX_NO_MENU).map((c) => ({
+    label: `/${c.nome}`.slice(0, 100),
+    description: String(c.descricao || "").slice(0, 100) || undefined,
+    value: c.nome,
+  }));
+  if (meus.length > MAX_NO_MENU) {
+    embed.footer = { text: `escolha um abaixo para editar · ${meus.length - MAX_NO_MENU} não cabem no menu` };
+  }
+
+  return {
+    embed,
+    componentes: [{ type: 1, components: [{
+      type: 3, custom_id: "admin:abrircomando",
+      placeholder: "Editar um comando…", options: opcoes,
+    }] }],
   };
 }
 

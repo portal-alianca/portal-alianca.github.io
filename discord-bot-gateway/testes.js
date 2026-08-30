@@ -995,6 +995,47 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("segunda caixa junta com uma quebra só", juntarCodigo("abc", "def"), "abc\ndef");
 }
 
+/* ====== a lista de comandos leva a algum lugar ======
+
+   Ela só mostrava. O único jeito de editar era clicar em "Novo comando" e
+   digitar o mesmo nome de cabeça — e quem não sabia disso clicava na lista,
+   lia, e saía achando que tinha editado. Eu inclusive: mandei o dono "abrir o
+   reino na lista", e a lista não abre nada. */
+{
+  const { listaDeComandos, MAX_NO_MENU } =
+    carregar(["MAX_NO_MENU", "embedDosComandos", "listaDeComandos"]);
+
+  const comLista = async (quantos) => {
+    const meus = Array.from({ length: quantos }, (_, i) => ({
+      nome: `cmd${i}`, descricao: `descrição ${i}`, ativo: true, quem_pode: "dono",
+    }));
+    globalThis.sb = async () => meus;
+    globalThis.comandosDoDono = async () => meus;
+    globalThis.quandoFoi = () => "há pouco";
+    return listaDeComandos("g1");
+  };
+
+  {
+    const { componentes } = await comLista(0);
+    ok("sem comando nenhum, nenhum menu", componentes, []);
+  }
+  {
+    const { componentes } = await comLista(3);
+    const menu = componentes[0].components[0];
+    ok("o menu aponta pro tratador certo", menu.custom_id, "admin:abrircomando");
+    ok("com um item por comando", menu.options.length, 3);
+    ok("e o valor é o nome, que é como o comando é achado", menu.options[0].value, "cmd0");
+    ok("o rótulo mostra a barra", menu.options[0].label, "/cmd0");
+  }
+  /* 25 é o teto do Discord por menu: passar disso faz o Discord recusar o
+     componente inteiro, e a lista voltaria a não levar a lugar nenhum. */
+  {
+    const { embed, componentes } = await comLista(30);
+    ok("o menu para no teto do Discord", componentes[0].components[0].options.length, MAX_NO_MENU);
+    verdade("e o rodapé conta quantos ficaram de fora", /5 não cabem/.test(embed.footer.text));
+  }
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
