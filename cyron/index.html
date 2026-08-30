@@ -84,20 +84,27 @@ section h2{font-size:clamp(26px,3.8vw,38px)}
 .explica{display:grid; gap:34px; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; margin-top:44px}
 @media (max-width:800px){ .explica{grid-template-columns:1fr} }
 
-.lateral{background:#0E1116; border:1px solid var(--borda); border-radius:var(--r); padding:14px 10px; font-size:14px; overflow:hidden}
-.lateral .grupo{
-  font-size:11px; font-weight:750; letter-spacing:.06em; color:var(--fraquinho);
-  padding:14px 8px 6px; text-transform:uppercase;
+/* Foto de verdade, e não um desenho meu.
+
+   Aqui havia uma reprodução da barra lateral feita em CSS. Ela era honesta e
+   ficava bonita, mas um servidor real convence de um jeito que ilustração
+   nenhuma alcança -- e a única pergunta que esta seção precisa responder é
+   "isto existe mesmo?". A moldura arredondada é do próprio print do celular;
+   não tento imitar aparelho nenhum em volta. */
+.foto{margin:0; position:sticky; top:80px}
+.foto img{
+  display:block; width:100%; height:auto; border-radius:var(--r);
+  border:1px solid var(--borda); background:#0E1116;
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.9);
 }
-.lateral .canal{display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:6px; color:var(--fraco); white-space:nowrap; overflow:hidden}
-.lateral .canal .h{color:var(--fraquinho); font-weight:600}
-.lateral .canal.aceso{background:var(--painel-3); color:var(--texto)}
-.lateral .canal.traduz{color:var(--texto)}
-.lateral .canal .marca{margin-left:auto; font-size:10.5px; font-weight:700; letter-spacing:.04em;
-  padding:2px 7px; border-radius:999px; background:rgba(245,166,35,.14); color:var(--ambar); border:1px solid rgba(245,166,35,.28)}
-.lateral .canal .fora{margin-left:auto; font-size:10.5px; color:var(--fraquinho)}
-.duas{display:grid; grid-template-columns:1fr 1fr; gap:10px}
-@media (max-width:520px){ .duas{grid-template-columns:1fr} }
+.foto figcaption{margin-top:13px; font-size:13.5px; color:var(--fraquinho); line-height:1.5}
+/* A legenda dentro de uma regra herdaria o tamanho do texto da regra, porque
+   `.regras span` alcança o span do idioma aqui dentro e vence a herança. */
+.foto figcaption span{color:inherit; font-size:inherit}
+.foto.pequena{position:static; max-width:290px; margin:18px 0 4px}
+.foto.pequena img{border-radius:12px}
+.foto.pequena figcaption{margin-top:10px; font-size:13px}
+@media (max-width:800px){ .foto{position:static; max-width:400px} }
 
 .regras{list-style:none; padding:0; margin:0; counter-reset:r}
 .regras li{position:relative; padding:0 0 26px 46px; counter-increment:r}
@@ -240,26 +247,14 @@ html[lang="en"] [data-en]{display:revert}
     </p>
 
     <div class="explica">
-      <div class="lateral" aria-hidden="true">
-        <div class="duas">
-          <div>
-            <div class="grupo">🇧🇷 Português</div>
-            <div class="canal traduz"><span class="h">#</span> event-guide-pt <span class="marca">PT</span></div>
-            <div class="canal traduz"><span class="h">#</span> alertas-pt <span class="marca">PT</span></div>
-            <div class="canal aceso"><span class="h">#</span> general-chat-pt <span class="marca">PT</span></div>
-          </div>
-          <div>
-            <div class="grupo">🇬🇧 Inglês</div>
-            <div class="canal traduz"><span class="h">#</span> event-guide-en <span class="marca">EN</span></div>
-            <div class="canal traduz"><span class="h">#</span> alertas-en <span class="marca">EN</span></div>
-            <div class="canal traduz"><span class="h">#</span> general-chat-en <span class="marca">EN</span></div>
-          </div>
-        </div>
-        <div class="grupo" data-pt>Canais comuns</div>
-        <div class="grupo" data-en>Shared channels</div>
-        <div class="canal"><span class="h">#</span> photos-art <span class="fora" data-pt>não traduz</span><span class="fora" data-en>not translated</span></div>
-        <div class="canal"><span class="h">🔊</span> General <span class="fora" data-pt>não traduz</span><span class="fora" data-en>not translated</span></div>
-      </div>
+      <figure class="foto">
+        <img src="./img/duas-alas.jpg" width="893" height="1756" loading="lazy" decoding="async"
+          alt="Barra lateral do Discord mostrando a categoria Português e a categoria Inglês, cada uma com os mesmos canais terminados em -pt e -en.">
+        <figcaption>
+          <span data-pt>Um servidor de verdade, rodando agora: os mesmos canais, uma vez em cada língua.</span>
+          <span data-en>A real server, running right now: the same channels, once in each language.</span>
+        </figcaption>
+      </figure>
 
       <ol class="regras">
         <li>
@@ -271,6 +266,14 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Quem entra só vê a ala dele</span><span data-en>New members only see their own wing</span></b>
           <span data-pt>A pessoa escolhe o idioma na entrada e recebe as chaves daquela categoria. Ela não vê sete cópias do servidor: vê um servidor, na língua dela.</span>
           <span data-en>People pick a language at the door and get the keys to that category. They don't see seven copies of the server: they see one server, in their language.</span>
+          <figure class="foto pequena">
+            <img src="./img/membro-en.jpg" width="825" height="1471" loading="lazy" decoding="async"
+              alt="A mesma barra lateral vista por um membro que escolheu inglês: só a categoria Inglês aparece.">
+            <figcaption>
+              <span data-pt>O mesmo servidor, visto por quem escolheu inglês. A ala portuguesa não está escondida — para ele ela não existe.</span>
+              <span data-en>The same server, seen by someone who picked English. The Portuguese wing isn't hidden — for them it doesn't exist.</span>
+            </figcaption>
+          </figure>
         </li>
         <li>
           <b><span data-pt>Sem a marca do idioma, não é traduzido</span><span data-en>No language tag, no translation</span></b>
