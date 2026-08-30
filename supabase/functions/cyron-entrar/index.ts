@@ -18,7 +18,19 @@
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const CLIENT_ID = Deno.env.get("DISCORD_CLIENT_ID") ?? "";
+/* O id do aplicativo e o client_id do OAuth sao o MESMO numero, com dois
+   nomes -- e neste projeto ele ja aparece nos dois: como DISCORD_CLIENT_ID
+   aqui e como DISCORD_APP_ID na funcao de interacoes. Aceitar os dois, e cair
+   no numero escrito, evita a unica pergunta que essa duplicidade poderia
+   gerar: "o que ja esta guardado ali e' do mesmo aplicativo?".
+
+   O numero nao e' segredo: ele viaja em todo convite do bot e ja esta escrito
+   na pagina do site. Segredo e' so' o CLIENT_SECRET, logo abaixo, e esse nao
+   tem valor de reserva nenhum -- sem ele a funcao recusa o login em vez de
+   tentar com um vazio. */
+const CLIENT_ID = Deno.env.get("DISCORD_CLIENT_ID")
+  || Deno.env.get("DISCORD_APP_ID")
+  || "1498142929041096856";
 const CLIENT_SECRET = Deno.env.get("DISCORD_CLIENT_SECRET") ?? "";
 
 /* De onde a página pode chamar.
@@ -123,8 +135,8 @@ Deno.serve(async (req) => {
   if (!cab["Access-Control-Allow-Origin"]) {
     return new Response(JSON.stringify({ erro: "origem não liberada" }), { status: 403, headers: cab });
   }
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    console.error("entrar: falta DISCORD_CLIENT_ID ou DISCORD_CLIENT_SECRET");
+  if (!CLIENT_SECRET) {
+    console.error("entrar: falta DISCORD_CLIENT_SECRET nos segredos da função");
     return new Response(JSON.stringify({ erro: "login ainda não configurado" }), { status: 500, headers: cab });
   }
 
