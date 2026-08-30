@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — meus servidores</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+<style>
+:root{
+  --fundo:#0F1115; --fundo-2:#161A21; --fundo-3:#1D222B;
+  --borda:#272D38; --borda-viva:#3A424F;
+  --texto:#E8EAED; --texto-fraco:#9AA3AF;
+  --ambar:#F5A623; --verde:#5EBB83; --azul:#5865F2; --vermelho:#E06A5A;
+  --raio:14px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:800px; margin:0 auto; padding:0 20px}
+.barra{background:rgba(15,17,21,.86); border-bottom:1px solid var(--borda); position:sticky; top:0; z-index:9}
+.barra .env{display:flex; align-items:center; gap:16px; height:62px}
+.marca{font-weight:700; letter-spacing:.12em; font-size:15px; color:var(--texto)}
+.marca span{color:var(--ambar)}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:12px}
+.barra nav a{color:var(--texto-fraco); font-size:14px}
+
+.eu{display:flex; align-items:center; gap:10px; font-size:14px; color:var(--texto-fraco)}
+.eu img{width:26px; height:26px; border-radius:50%}
+
+h1{font-size:26px; letter-spacing:-.015em; margin:0}
+.sub{color:var(--texto-fraco); margin:10px 0 0; font-size:15px}
+main{padding:44px 0 80px}
+
+.bt{
+  display:inline-flex; align-items:center; justify-content:center; gap:9px;
+  padding:13px 22px; border-radius:11px; font-weight:650; font-size:15px;
+  border:1px solid transparent; cursor:pointer; font-family:inherit;
+}
+.bt:hover{text-decoration:none; filter:brightness(1.07)}
+.bt-1{background:var(--azul); color:#fff}
+.bt-2{background:var(--fundo-3); color:var(--texto); border-color:var(--borda-viva)}
+.bt-3{background:var(--ambar); color:#241a05}
+.bt-p{padding:9px 15px; font-size:14px; border-radius:9px}
+
+.centro{text-align:center; padding:70px 0}
+.centro p{color:var(--texto-fraco); max-width:460px; margin:14px auto 28px}
+
+.lista{display:flex; flex-direction:column; gap:12px; margin-top:30px}
+.item{
+  background:var(--fundo-2); border:1px solid var(--borda); border-radius:var(--raio);
+  padding:18px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+}
+.item.fora{opacity:.72}
+.icone{
+  width:44px; height:44px; border-radius:12px; flex:0 0 44px; object-fit:cover;
+  background:var(--fundo-3); display:flex; align-items:center; justify-content:center;
+  font-weight:700; color:var(--texto-fraco); font-size:16px;
+}
+.dados{min-width:0; flex:1 1 190px}
+.dados b{display:block; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.dados small{color:var(--texto-fraco); font-size:13px}
+.cracha{
+  font-size:11px; font-weight:750; letter-spacing:.06em; text-transform:uppercase;
+  padding:4px 10px; border-radius:999px; white-space:nowrap;
+}
+.c-pago{background:rgba(245,166,35,.13); color:var(--ambar); border:1px solid rgba(245,166,35,.3)}
+.c-teste{background:rgba(94,187,131,.14); color:var(--verde); border:1px solid rgba(94,187,131,.3)}
+.c-gratis{background:var(--fundo-3); color:var(--texto-fraco); border:1px solid var(--borda-viva)}
+
+.aviso{
+  padding:16px 18px; border-radius:var(--raio); background:var(--fundo-2);
+  border-left:3px solid var(--vermelho); color:var(--texto-fraco); font-size:15px; margin-top:24px;
+}
+.aviso.calmo{border-left-color:var(--borda-viva)}
+.carregando{color:var(--texto-fraco); text-align:center; padding:60px 0}
+
+footer{border-top:1px solid var(--borda); padding:26px 0; color:var(--texto-fraco); font-size:14px}
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<span>RON</span></a>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <div class="eu" id="eu" hidden></div>
+    </nav>
+  </div>
+</header>
+
+<main class="env">
+  <div id="tela"><div class="carregando"><span data-pt>Um instante…</span><span data-en>One moment…</span></div></div>
+</main>
+
+<footer><div class="env">CYRON</div></footer>
+
+<script>
+var CLIENT_ID = "1498142929041096856";
+var PERMISSOES = "327223209040";
+var FUNCAO = "https://mslzcjqkfeivuavfxwli.supabase.co/functions/v1/cyron-entrar";
+var CONVITE = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
+  "&permissions=" + PERMISSOES + "&scope=bot%20applications.commands";
+
+/* O endereço de volta não pode carregar a query, senão o `code` de um login
+   anterior entraria no `redirect_uri` do próximo e o Discord recusaria. */
+var VOLTA = location.origin + location.pathname;
+
+var tela = document.getElementById("tela");
+
+if ((navigator.language || "pt").toLowerCase().indexOf("pt") !== 0) {
+  document.documentElement.lang = "en";
+}
+
+function pt(a, b) { return document.documentElement.lang === "en" ? b : a; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+/* ---------------- entrar ----------------
+
+   O `state` existe contra CSRF: sem ele, alguém poderia induzir a vítima a
+   abrir esta página com um `code` da CONTA DO ATACANTE, e a vítima acabaria
+   olhando (e pagando por) servidores que não são dela. O valor é sorteado
+   aqui, guardado na aba, e conferido na volta. */
+function sortear() {
+  var b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.prototype.map.call(b, function (n) { return n.toString(16).padStart(2, "0"); }).join("");
+}
+
+function entrar() {
+  var estado = sortear();
+  try { sessionStorage.setItem("cyron-estado", estado); }
+  catch (e) {
+    return mostrarErro(pt(
+      "Seu navegador está bloqueando o armazenamento da aba, e sem ele eu não consigo fazer o login com segurança. Saia do modo privado ou libere os dados deste site.",
+      "Your browser is blocking session storage, and without it I can't log you in safely. Leave private mode or allow site data."));
+  }
+  location.href = "https://discord.com/oauth2/authorize" +
+    "?client_id=" + CLIENT_ID +
+    "&response_type=code" +
+    "&scope=" + encodeURIComponent("identify guilds") +
+    "&state=" + estado +
+    /* Sem `prompt=none`: ele pula a tela de autorização para quem já
+       autorizou, mas devolve erro para quem NUNCA autorizou -- e como o erro
+       cai de volta na tela de entrada, o primeiro login de cada pessoa
+       entraria num laço de clicar e voltar. Rápido para quem já é cliente,
+       impossível para quem está chegando. */
+    "&redirect_uri=" + encodeURIComponent(VOLTA);
+}
+
+function telaDeEntrada() {
+  tela.innerHTML =
+    '<div class="centro">' +
+      '<h1>' + pt("Seus servidores", "Your servers") + '</h1>' +
+      '<p>' + pt(
+        "Entre com o Discord para ver os servidores que você administra, o plano de cada um e assinar.",
+        "Sign in with Discord to see the servers you manage, each one's plan, and to subscribe.") + '</p>' +
+      '<button class="bt bt-1" id="entrar">' + pt("Entrar com Discord", "Sign in with Discord") + '</button>' +
+      '<div class="aviso calmo" style="margin-top:34px;text-align:left">' + pt(
+        "Eu peço só duas coisas ao Discord: quem é você e a lista dos seus servidores. Não peço acesso a mensagem nenhuma, e devolvo a autorização assim que termino de montar esta tela.",
+        "I ask Discord for two things only: who you are and the list of your servers. I don't ask for access to any message, and I hand the authorization back as soon as this screen is built.") +
+      '</div>' +
+    '</div>';
+  document.getElementById("entrar").addEventListener("click", entrar);
+}
+
+function mostrarErro(texto, comBotao) {
+  tela.innerHTML =
+    '<div class="centro">' +
+      '<h1>' + pt("Não deu certo", "That didn't work") + '</h1>' +
+      '<div class="aviso" style="text-align:left">' + esc(texto) + '</div>' +
+      (comBotao === false ? "" :
+        '<button class="bt bt-2" id="devolta" style="margin-top:26px">' +
+          pt("Tentar de novo", "Try again") + '</button>') +
+    '</div>';
+  var b = document.getElementById("devolta");
+  if (b) b.addEventListener("click", function () { location.href = VOLTA; });
+}
+
+/* ---------------- a lista ---------------- */
+
+function quando(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleDateString(pt("pt-BR", "en-US")); }
+  catch (e) { return ""; }
+}
+
+function linha(s) {
+  var inicial = esc((s.nome || "?").trim().charAt(0).toUpperCase());
+  var icone = s.icone
+    ? '<img class="icone" src="' + esc(s.icone) + '" alt="">'
+    : '<div class="icone">' + inicial + "</div>";
+
+  var cracha, detalhe, acao;
+
+  if (!s.instalado) {
+    cracha = '<span class="cracha c-gratis">' + pt("sem o bot", "not installed") + "</span>";
+    detalhe = pt("O CYRON ainda não está neste servidor", "CYRON isn't in this server yet");
+    acao = '<a class="bt bt-2 bt-p" href="' + CONVITE + '">' + pt("Adicionar", "Add") + "</a>";
+  } else if (s.plano === "pago") {
+    var ate = quando(s.ate);
+    cracha = s.motivo === "teste"
+      ? '<span class="cracha c-teste">' + pt("teste", "trial") + "</span>"
+      : '<span class="cracha c-pago">' + pt("pago", "paid") + "</span>";
+    detalhe = s.motivo === "teste"
+      ? pt("Teste até " + ate, "Trial until " + ate)
+      : (ate ? pt("Pago até " + ate, "Paid through " + ate)
+             : pt("Liberado sem prazo", "Enabled with no end date"));
+    acao = s.pagar
+      ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Assinar", "Subscribe") + "</a>"
+      : "";
+  } else {
+    cracha = '<span class="cracha c-gratis">' + pt("grátis", "free") + "</span>";
+    detalhe = pt("3 idiomas · 8 mil caracteres/dia", "3 languages · 8k characters/day");
+    acao = s.pagar
+      ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Assinar R$ 79/mês", "Subscribe R$ 79/mo") + "</a>"
+      : '<a class="bt bt-2 bt-p" href="./#planos">' + pt("Ver planos", "See pricing") + "</a>";
+  }
+
+  return '<div class="item' + (s.instalado ? "" : " fora") + '">' + icone +
+    '<div class="dados"><b>' + esc(s.nome) + "</b><small>" + detalhe + "</small></div>" +
+    cracha + acao + "</div>";
+}
+
+function mostrar(dados) {
+  var u = dados.usuario || {};
+  var eu = document.getElementById("eu");
+  eu.hidden = false;
+  eu.innerHTML = (u.avatar ? '<img src="' + esc(u.avatar) + '" alt="">' : "") + esc(u.nome);
+
+  var lista = dados.servidores || [];
+  if (!lista.length) {
+    tela.innerHTML =
+      '<h1>' + pt("Seus servidores", "Your servers") + "</h1>" +
+      '<p class="sub">' + pt(
+        "Não encontrei nenhum servidor em que você tenha permissão de gerenciar.",
+        "I found no server where you have Manage Server permission.") + "</p>" +
+      '<div class="centro"><a class="bt bt-1" href="' + CONVITE + '">' +
+        pt("Adicionar o CYRON a um servidor", "Add CYRON to a server") + "</a></div>";
+    return;
+  }
+
+  var comBot = lista.filter(function (s) { return s.instalado; }).length;
+  tela.innerHTML =
+    '<h1>' + pt("Seus servidores", "Your servers") + "</h1>" +
+    '<p class="sub">' + (comBot
+      ? pt("O CYRON está em " + comBot + " deles.", "CYRON is in " + comBot + " of them.")
+      : pt("O CYRON ainda não está em nenhum deles.", "CYRON isn't in any of them yet.")) + "</p>" +
+    '<div class="lista">' + lista.map(linha).join("") + "</div>" +
+    '<div class="aviso calmo">' + pt(
+      "Para cancelar ou trocar o cartão, use o recibo que o Stripe mandou por e-mail — o link de gerenciar assinatura está lá.",
+      "To cancel or change your card, use the receipt Stripe emailed you — the manage-subscription link is in it.") +
+    "</div>";
+}
+
+/* ---------------- a volta do Discord ---------------- */
+
+function trocar(code) {
+  fetch(FUNCAO, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: code, redirect_uri: VOLTA }),
+  })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.erro || pt("erro " + r.status, "error " + r.status));
+        return j;
+      });
+    })
+    .then(mostrar)
+    .catch(function (e) { mostrarErro(e.message || pt("Falhei ao falar com o servidor.", "Failed to reach the server.")); });
+}
+
+(function () {
+  var q = new URLSearchParams(location.search);
+  var code = q.get("code");
+  var estado = q.get("state");
+
+  if (q.get("error")) {
+    /* A pessoa clicou em "cancelar" na tela do Discord. Não é falha: é uma
+       resposta, e tratar como erro vermelho assustaria à toa. */
+    history.replaceState(null, "", VOLTA);
+    return telaDeEntrada();
+  }
+  if (!code) return telaDeEntrada();
+
+  var guardado = null;
+  try { guardado = sessionStorage.getItem("cyron-estado"); } catch (e) { /* modo privado */ }
+  try { sessionStorage.removeItem("cyron-estado"); } catch (e) { /* idem */ }
+
+  /* Estado que não bate: ou a aba é outra, ou não fui eu que comecei este
+     login. Nos dois casos o certo é recomeçar, nunca seguir. */
+  if (!estado || !guardado || estado !== guardado) {
+    history.replaceState(null, "", VOLTA);
+    return telaDeEntrada();
+  }
+
+  /* Tira o code da barra de endereço antes de qualquer outra coisa: ele é de
+     uso único, e uma pessoa que copia a URL para pedir ajuda estaria colando
+     um pedaço do próprio login num chat. */
+  history.replaceState(null, "", VOLTA);
+  trocar(code);
+})();
+</script>
+
+</body>
+</html>

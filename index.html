@@ -3664,7 +3664,24 @@
      banco resolve a URL lá dentro; é isso que impede um visitante qualquer de
      descobrir o endereço e postar no Discord da aliança. */
 
-  var BOT = { canais: [], carregado: {} };
+  var BOT = { canais: [], herois: [], carregado: {} };
+
+  /* A lista de heróis é pública (arte e nome saem do jogo), então vem direto
+     do banco em vez de passar por RPC de oficial. */
+  function botCarregaHerois(){
+    if(BOT.herois.length) return Promise.resolve();
+    return sbGet("discord_heroi?select=nome,papel&order=nome")
+      .then(function(r){ BOT.herois = (r && r.length) ? r : []; })
+      .catch(function(){});
+  }
+  /* Opções de "quem assina", com o papel do herói ao lado pra escolher pela
+     característica e não pelo nome decorado. */
+  function opcoesHeroi(atual){
+    var opts = [["","A cara do próprio canal"]];
+    BOT.herois.forEach(function(h){ opts.push([h.nome, h.nome + (h.papel ? " — " + h.papel : "")]); });
+    if(atual && !opts.some(function(o){ return o[0] === atual; })) opts.push([atual, atual + " (não encontrado)"]);
+    return opts;
+  }
 
   function botAuth(extra){
     var b = { p_membro: ME && ME.id, p_senha: null, p_device: deviceId() };
@@ -3779,6 +3796,9 @@
     arena_titulo:     ["⚔️ Lembrete da Arena — título", ""],
     arena_texto:      ["⚔️ Lembrete da Arena — texto", "{quando} vira a hora no fuso de cada um"],
     arena_ligada:     ["⚔️ Lembrete da Arena — mandar?", "", "simnao"],
+    arena_heroi:      ["⚔️ Lembrete da Arena — quem assina", "", "heroi"],
+    bv_heroi:         ["🎉 Boas-vindas — quem assina", "", "heroi"],
+    dica_heroi:       ["💡 Dica do dia — quem assina", "", "heroi"],
     arena_canal:      ["⚔️ Lembrete da Arena — canal", "Deixe no canal de avisos ou escolha um só pra Arena", "canal"],
     trad_grande:      ["🌐 Tradutor — texto grande", "Daqui pra cima o bot mostra o seletor em vez de traduzir no canal (50 a 2000)"],
     trad_max_idiomas: ["🌐 Tradutor — idiomas por mensagem", "Quantos idiomas extras além de português e inglês (0 a 10)"]
@@ -3786,7 +3806,10 @@
   function botCarregaTextos(){
     /* O seletor de canal da Arena e' desenhado a partir de BOT.canais. Se a
        pessoa abriu direto em Textos, essa lista ainda esta vazia. */
-    var pronto = (BOT.canais && BOT.canais.length) ? Promise.resolve() : botCarregaCanais();
+    var pronto = Promise.all([
+      (BOT.canais && BOT.canais.length) ? Promise.resolve() : botCarregaCanais(),
+      botCarregaHerois(),
+    ]);
     return pronto.then(function(){
     return sbRpc("discord_textos_ver", botAuth()).then(function(r){
       if(!r || r.erro) return;
@@ -3799,6 +3822,9 @@
         var campo;
         if(rot[2] === "simnao"){
           campo = campoSelect(k, (d.valor === "0" ? "0" : "1"), [["1","Sim, mandar todo dia"],["0","Não mandar"]])
+                    .replace('data-k="'+k+'"', 'data-bottxt="'+k+'"');
+        } else if(rot[2] === "heroi"){
+          campo = campoSelect(k, d.valor || "", opcoesHeroi(d.valor))
                     .replace('data-k="'+k+'"', 'data-bottxt="'+k+'"');
         } else if(rot[2] === "canal"){
           var opts = [["avisos","Canal padrão de avisos"]];
@@ -5318,6 +5344,7 @@
         /* Antes todo aviso caía no mesmo canal, e a agenda da semana disputava
            espaço com o Urso e a Arena. Quem só queria o Urso filtrava tudo. */
         {k:"canal",l:"📢 Em que canal do Discord o aviso cai",t:"canal"},
+        {k:"heroi",l:"🦸 Qual herói assina o aviso",t:"heroi"},
 
         {sec:"🪙 Moedas do evento"},
         {k:"premio_1",l:"🥇 Prêmio 1º lugar (moedas)",t:"number"},
@@ -5360,6 +5387,10 @@
          gravado sumiu de lá, ele continua aparecendo marcado — trocar o
          destino do aviso sem o oficial perceber seria pior que mostrar o
          problema. */
+      if(c.t==="heroi"){
+        return lbl + campoSelect(c.k, v||"", opcoesHeroi(v))
+             + '<span class="bcpad">O Discord deixa trocar nome e foto por mensagem, então o mesmo canal pode ter heróis diferentes.</span>';
+      }
       if(c.t==="canal"){
         var opts = [["","Canal padrão de avisos"]];
         (BOT.canais||[]).forEach(function(x){ if(x.ligado) opts.push([x.nome, "#"+x.nome]); });
@@ -5394,7 +5425,7 @@
       /* O "Z" é o que faz o valor digitado valer como UTC. Sem ele o navegador
          mandaria o horário como se fosse do fuso local. */
       else if(c.t==="datahora") body[c.k] = (String(v).trim()==="" ? null : v + ":00Z");
-      else if(c.t==="hora" || c.t==="canal") body[c.k] = (String(v).trim()==="" ? null : v);
+      else if(c.t==="hora" || c.t==="canal" || c.t==="heroi") body[c.k] = (String(v).trim()==="" ? null : v);
       else if(c.t==="dsem") body[c.k] = (String(v).trim()==="" ? null : parseInt(v,10));
       else body[c.k] = v;
     });
@@ -6233,7 +6264,7 @@
     /* botCarregaCanais aqui porque o editor de evento tem um seletor de canal
        do Discord, e ele e' aberto da Gestao -- sem isso o seletor abriria so
        com "canal padrao" ate alguem visitar a aba Bot. */
-    if(name === 'admin'){ paintR0(); paintResgates(); paintAdminGestao(); carregaEventosSemData(); botCarregaCanais(); }
+    if(name === 'admin'){ paintR0(); paintResgates(); paintAdminGestao(); carregaEventosSemData(); botCarregaCanais(); botCarregaHerois(); }
     if(name === 'chat'){ chatCarregar(); chatUnread = 0; badgeChat(); requestAnimationFrame(posicionarChat); scrollChatBottom(); setTimeout(function(){ posicionarChat(); scrollChatBottom(); }, 120); setTimeout(scrollChatBottom, 400); }
     if(name === 'membros') paintMembros();
     if(name === 'ranking') paintRanking();
