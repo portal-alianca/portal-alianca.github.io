@@ -1291,6 +1291,78 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("sem banco, começa do zero em vez de travar", await jaGastouHoje("s4"), 0);
 }
 
+/* ================= a tradução por bandeira =================
+
+   O recurso é puxado: só custa quando alguém toca. O que pode dar errado é
+   ele NÃO reconhecer a bandeira que a pessoa usou -- e aí, do lado de fora, o
+   bot simplesmente não responde. Silêncio é o pior defeito possível num botão,
+   porque não deixa rastro nem no log nem na cara de quem clicou. */
+{
+  const { paisDaBandeira, idiomaDaBandeira, IDIOMA_DO_PAIS, LINGUAS_MENU } =
+    carregar(["LINGUAS_MENU", "paisDaBandeira", "IDIOMA_DO_PAIS", "idiomaDaBandeira"]);
+
+  ok("bandeira do Brasil é BR", paisDaBandeira("🇧🇷"), "BR");
+  ok("bandeira do Japão é JP", paisDaBandeira("🇯🇵"), "JP");
+
+  /* A esmagadora maioria das reações de um servidor cai aqui, e tem que sair
+     barato e sem erro. */
+  ok("joinha não é bandeira", paisDaBandeira("👍"), "");
+  ok("letra solta não é bandeira", paisDaBandeira("🇧"), "");
+  ok("vazio não é bandeira", paisDaBandeira(""), "");
+  ok("nada não é bandeira", paisDaBandeira(undefined), "");
+  /* Dois pontos de código, e nenhum deles é indicador regional: é exatamente
+     a forma que a checagem de tamanho sozinha deixaria passar. */
+  ok("bandeira branca não é país", paisDaBandeira("🏳️"), "");
+  ok("emoji composto não é país", paisDaBandeira("👍🏽"), "");
+
+  /* O ponto do recurso: a bandeira que a PESSOA tem, não a que o menu mostra. */
+  ok("Estados Unidos lê em inglês", idiomaDaBandeira("🇺🇸"), "en");
+  ok("México lê em espanhol", idiomaDaBandeira("🇲🇽"), "es");
+  ok("Portugal lê em português", idiomaDaBandeira("🇵🇹"), "pt");
+  ok("Emirados lê em árabe", idiomaDaBandeira("🇦🇪"), "ar");
+  ok("Áustria lê em alemão", idiomaDaBandeira("🇦🇹"), "de");
+  ok("Taiwan lê em chinês", idiomaDaBandeira("🇹🇼"), "zh-CN");
+
+  /* País cujo idioma eu não atendo devolve vazio, e o evento morre ali sem
+     custar tradução nenhuma. */
+  ok("país sem idioma meu não vira nada", idiomaDaBandeira("🇰🇪"), "");
+  ok("joinha não vira idioma", idiomaDaBandeira("👍"), "");
+
+  /* Regressão que importa: se alguém trocar a bandeira de uma linha do menu,
+     reagir com a bandeira que o próprio bot mostra pararia de funcionar. */
+  for (const [cod, nome, bandeira] of LINGUAS_MENU) {
+    ok(`a bandeira que o menu mostra para ${nome} volta como ${cod}`,
+      idiomaDaBandeira(bandeira), cod);
+  }
+
+  /* E o contrário: um erro de digitação no mapa ("zh-cn", "pr") mandaria um
+     código que o tradutor não conhece, e a pessoa receberia texto em branco. */
+  const conhecidos = new Set(LINGUAS_MENU.map(([c]) => c));
+  const forasteiros = [...new Set(Object.values(IDIOMA_DO_PAIS))].filter((c) => !conhecidos.has(c));
+  ok("todo idioma do mapa de países existe no menu", forasteiros, []);
+}
+
+/* ================= de onde sai o texto de uma mensagem ================= */
+{
+  const { textoDaMensagem } = carregar(["textoDaMensagem"]);
+
+  ok("mensagem comum usa o corpo", textoDaMensagem({ content: "  oi  " }), "oi");
+
+  /* Aviso automático chega com "@everyone" no corpo e a mensagem inteira no
+     embed. Traduzir o corpo aqui seria traduzir "@everyone". */
+  ok("aviso automático usa o embed",
+    textoDaMensagem({ content: "@everyone", embeds: [{ title: "Urso", description: "às 20h" }] }),
+    "Urso\nàs 20h");
+
+  /* Embed que só carrega imagem não tem texto nenhum -- e antes disto virar
+     função, esse caso devolvia "" e engolia o corpo que existia. */
+  ok("embed sem texto cai no corpo",
+    textoDaMensagem({ content: "olha isto", embeds: [{ image: { url: "x" } }] }), "olha isto");
+
+  ok("mensagem vazia não tem texto", textoDaMensagem({ content: "   " }), "");
+  ok("mensagem nenhuma não quebra", textoDaMensagem(null), "");
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);

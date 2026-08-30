@@ -31,8 +31,18 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    /* Reacao e' o gesto mais barato que existe no Discord: um toque, sem sair
+       da conversa, sem abrir menu. E' por ele que passa a traducao PUXADA --
+       a pessoa poe a bandeira dela numa fala e recebe aquela fala na lingua
+       dela, no privado. Nao e' intent privilegiada, entao nao depende de
+       aprovacao de ninguem. */
+    GatewayIntentBits.GuildMessageReactions,
   ],
-  partials: [Partials.Message, Partials.Channel],
+  /* Reaction e User entram junto com a intent: sem eles, reagir a uma mensagem
+     ANTERIOR ao ultimo religamento do bot chega como objeto pela metade e o
+     evento e' descartado em silencio -- que e', justamente, a conversa velha
+     que alguem quer entender. */
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
 });
 
 /* ---------------- Supabase (mesmo padrao do top-discord) ---------------- */
@@ -458,6 +468,56 @@ const RISCO_DE_DESENHO = /[/\\|_^<>+=~-]/g;
    pior do que nao dizer nada. */
 function bandeiraDoIdioma(cod) {
   return LINGUAS_MENU.find(([c]) => c === cod)?.[2] || "";
+}
+
+/* ---------------- o caminho de volta: bandeira -> idioma ----------------
+
+   Uma bandeira do Discord nao e' um caractere: sao DOIS, o par de
+   "indicadores regionais" que o teclado desenha junto. 🇧🇷 e' o B regional
+   seguido do R regional. Entao ler a bandeira e' aritmetica simples -- tira o
+   deslocamento e sobra "BR" --, e nao uma tabela de emoji escrita a mao.
+
+   Isso importa porque a tabela a mao envelheceria: cada pais novo que alguem
+   usasse teria que ser acrescentado. Assim, qualquer bandeira do mundo chega
+   aqui como sigla de pais, e o que decido e' so' se aquele pais tem idioma
+   que eu atendo. */
+function paisDaBandeira(emoji) {
+  const pontos = [...String(emoji || "")];
+  if (pontos.length !== 2) return "";
+  const letras = pontos.map((c) => c.codePointAt(0) - 0x1f1e6);
+  if (letras.some((n) => n < 0 || n > 25)) return "";
+  return letras.map((n) => String.fromCharCode(65 + n)).join("");
+}
+
+/* Pais -> idioma. Um idioma tem muitos paises, e o menu so' mostra um deles:
+   quem e' do Mexico poe 🇲🇽, nao 🇪🇸, e quem e' dos Estados Unidos poe 🇺🇸,
+   nao 🇬🇧. Aceitar so' a bandeira do menu seria dizer "sua bandeira nao
+   serve" pra maior parte do mundo que fala aquela lingua.
+
+   Onde o pais fala mais de uma lingua, vale a maioria: 🇨🇭 vira alemao, 🇧🇪
+   vira holandes, 🇨🇦 vira ingles. Nao e' um juizo sobre o pais -- e' um chute
+   sobre em que lingua a pessoa quer LER, e errar aqui custa um clique.
+
+   🇹🇼 e 🇭🇰 caem em chines porque o que o menu tem e' chines; mandar a pessoa
+   embora sem traducao seria pior do que entregar na variante que existe. */
+const IDIOMA_DO_PAIS = {
+  ...Object.fromEntries(
+    LINGUAS_MENU.map(([cod, , bandeira]) => [paisDaBandeira(bandeira), cod]).filter(([p]) => p),
+  ),
+  US: "en", AU: "en", CA: "en", NZ: "en", IE: "en",
+  PT: "pt", AO: "pt", MZ: "pt",
+  MX: "es", AR: "es", CO: "es", CL: "es", PE: "es", VE: "es", UY: "es",
+  BO: "es", EC: "es", GT: "es", CR: "es", DO: "es", PY: "es", PA: "es",
+  AT: "de", CH: "de", LI: "de",
+  BE: "nl",
+  TW: "zh-CN", HK: "zh-CN", SG: "zh-CN", MO: "zh-CN",
+  AE: "ar", EG: "ar", MA: "ar", DZ: "ar", IQ: "ar", KW: "ar", QA: "ar",
+  BH: "ar", OM: "ar", JO: "ar", LB: "ar", LY: "ar", TN: "ar", YE: "ar",
+};
+
+function idiomaDaBandeira(emoji) {
+  const pais = paisDaBandeira(emoji);
+  return pais ? IDIOMA_DO_PAIS[pais] || "" : "";
 }
 
 function seloDeOrigem(idiomaOrigem, idiomaDestino, traduziu) {
@@ -4325,6 +4385,17 @@ async function montarPainel(guild, servidor) {
         : "⚪ **desligado**\nligue no botão abaixo",
       inline: true,
     },
+    /* Sem botao, e de proposito: nao ha o que desligar que valha um botao. A
+       bandeira nao constroi nada, nao aparece em canal nenhum e so' custa
+       quando alguem toca. O que falta ao dono nao e' controle -- e' SABER que
+       existe, porque um recurso que ninguem conhece nao e' usado por
+       ninguem. */
+    {
+      name: "🏳️ Tradução por bandeira",
+      value: "🟢 **sempre ligada**\nquem reage com a bandeira do país dele " +
+        "recebe aquela mensagem traduzida, no privado",
+      inline: true,
+    },
   ];
 
   if (fila.length) {
@@ -7240,8 +7311,7 @@ client.on("messageCreate", async (msg) => {
          tradução pendurado. */
       if (!servidor.tradutor_topico) return;
 
-      const emb = msg.embeds?.[0];
-      const texto = String(emb ? [emb.title, emb.description].filter(Boolean).join("\n") : (msg.content || "")).trim();
+      const texto = textoDaMensagem(msg);
       if (podeTraduzirAgora(msg.webhookId)) await traduzirEResponder(msg, texto);
       return;
     }
@@ -7392,6 +7462,145 @@ client.on("messageCreate", async (msg) => {
     }
   } catch (e) {
     console.error("erro ao processar mensagem:", e?.message || e);
+  }
+});
+
+/* ---------------- traducao por bandeira ----------------
+
+   O recurso mais barato do bot, e o unico que escala sem doer.
+
+   O espelho traduz TODA fala pra TODO idioma que existe no servidor: uma
+   mensagem de 45 caracteres num servidor de oito linguas custa 363
+   caracteres de tradutor, tenha leitor ou nao. A bandeira custa 45, uma vez,
+   e so' quando alguem de fato quis ler. Medindo o mesmo servidor, isso e' da
+   ordem de cem vezes menos -- e' o que torna um plano gratis possivel sem
+   que ele coma a cota de quem paga.
+
+   Por isso ela nao pede plano nem constroi nada: sem canal, sem cargo, sem
+   categoria, sem topico pendurado. So' existe quando alguem toca. */
+
+/* O texto que interessa numa mensagem pode estar no corpo ou no embed --
+   aviso automatico costuma vir so' com "@everyone" no corpo e a mensagem
+   inteira dentro do embed. Isto ja era feito na mao no messageCreate; agora
+   ha' dois lugares precisando do mesmo, entao vira funcao. */
+function textoDaMensagem(msg) {
+  const emb = msg?.embeds?.[0];
+  const doEmbed = emb ? [emb.title, emb.description].filter(Boolean).join("\n") : "";
+  return String(doEmbed || msg?.content || "").trim();
+}
+
+/* A entrega e' no PRIVADO, e essa escolha e' o recurso inteiro.
+
+   Traducao publica encheria a sala: um servidor com oito linguas viraria oito
+   respostas embaixo de cada fala, e a conversa -- que e' o produto -- sumiria
+   embaixo do bot. No privado, so' quem pediu ve.
+
+   Mas muita gente fecha a caixa de privado, e num servidor de jogo isso e'
+   quase regra. Sem plano B, pra essas pessoas o botao simplesmente nao
+   funciona, sem dizer por que. Entao ha' plano B: uma mensagem na propria
+   sala, marcando so' quem pediu, que se apaga sozinha. Um minuto e meio e'
+   tempo de ler e nao e' tempo de virar bagunca. */
+const APAGAR_DEPOIS = 90 * 1000;
+
+async function entregarNoPrivado(quem, canal, carga) {
+  const foi = await quem.send(carga).then(() => true).catch(() => false);
+  if (foi) return "privado";
+  if (typeof canal?.send !== "function") return "";
+
+  const solta = await canal.send({
+    ...carga,
+    content: `<@${quem.id}>`,
+    allowedMentions: { users: [quem.id] },
+  }).catch(() => null);
+  if (!solta) return "";
+
+  setTimeout(() => solta.delete().catch(() => {}), APAGAR_DEPOIS);
+  return "canal";
+}
+
+/* Quem passou do limite recebe UM aviso por minuto, nao um por clique.
+
+   Silencio seria pior: a pessoa clica, nao acontece nada, e a conclusao dela
+   e' que o bot esta quebrado. Um aviso por clique seria o proprio flood que o
+   limite existe pra evitar. */
+const avisoDeLimite = new Map(); // userId -> quando
+function podeAvisarDoLimite(userId) {
+  const antes = avisoDeLimite.get(userId) || 0;
+  if (Date.now() - antes < 60_000) return false;
+  avisoDeLimite.set(userId, Date.now());
+  return true;
+}
+
+client.on("messageReactionAdd", async (reacao, quem) => {
+  try {
+    if (!quem || quem.bot) return;
+
+    /* A bandeira decide ANTES de qualquer ida ao banco ou ao Discord: a
+       esmagadora maioria das reacoes de um servidor e' 👍 e 😂, e nenhuma
+       delas deve custar uma consulta. */
+    const idioma = idiomaDaBandeira(reacao.emoji?.name);
+    if (!idioma) return;
+
+    if (reacao.partial) {
+      const cheia = await reacao.fetch().catch(() => null);
+      if (!cheia) return;
+      reacao = cheia;
+    }
+    const msg = reacao.message?.partial
+      ? await reacao.message.fetch().catch(() => null)
+      : reacao.message;
+    if (!msg?.guild) return;
+
+    const servidor = await servidorDoGuild(msg.guild.id);
+    if (!servidor) return; // servidor sem /instalar
+    /* `!== false` e nao `=== true`: enquanto a coluna nao existir, a leitura
+       devolve undefined e o recurso fica ligado. No dia em que ela existir, o
+       dono desliga sem que uma linha daqui mude. */
+    if (servidor.tradutor_bandeira === false) return;
+
+    const texto = textoDaMensagem(msg);
+    if (!texto) return;
+
+    if (!podeTraduzirAgora(quem.id)) {
+      if (podeAvisarDoLimite(quem.id)) {
+        await quem.send({ embeds: [{ color: COR, title: "⏳ Calma aí / Slow down",
+          description: "Você pediu muitas traduções seguidas. Tente de novo em um minuto.\n\n" +
+            "_You asked for too many translations at once. Try again in a minute._" }] }).catch(() => {});
+      }
+      return;
+    }
+
+    const traduzido = await traduzirLongo(texto, idioma, motorDe(servidor));
+    if (!traduzido) {
+      await quem.send({ embeds: [{ color: COR, title: "❌ Não deu / Failed",
+        description: "Não consegui traduzir agora. Tente de novo em instantes.\n\n" +
+          "_Could not translate right now. Try again shortly._" }] }).catch(() => {});
+      return;
+    }
+
+    /* Quem falou vem no cabecalho porque, no privado, a fala chega fora da
+       sala: sem o nome e sem o link de volta, e' um texto solto que a pessoa
+       nao consegue situar nem responder. */
+    const autor = msg.member?.displayName || msg.author?.username || "";
+    const onde = await entregarNoPrivado(quem, msg.channel, {
+      embeds: [{
+        color: COR,
+        author: autor ? { name: autor, icon_url: msg.author?.displayAvatarURL?.() } : undefined,
+        title: nomeDoIdioma(idioma),
+        description: traduzido.slice(0, 3800) + (msg.url ? `\n\n[⤴ Voltar / Back](${msg.url})` : ""),
+        footer: { text: `#${msg.channel?.name || ""} · ${msg.guild.name}` },
+      }],
+    });
+    if (!onde) return; // nem privado nem sala: nao ha o que limpar
+
+    /* Tirar a bandeira devolve a mensagem limpa e deixa a pessoa pedir de
+       novo. So' depois de entregar: reacao que sumiu sem resposta seria a
+       unica pista de que houve tentativa. Precisa de "Gerenciar mensagens",
+       entao e' na tentativa -- onde nao ha, a bandeira fica, e funciona
+       igual. */
+    await reacao.users.remove(quem.id).catch(() => {});
+  } catch (e) {
+    console.error("bandeira: nao consegui traduzir:", e?.message || e);
   }
 });
 
