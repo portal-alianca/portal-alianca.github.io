@@ -508,8 +508,9 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    Ele não tinha teste nenhum, e é a função que mais mudou no conserto acima.
    Aqui o formulário é preenchido de mentira e se confere o que ele gravou. */
 {
-  const { salvarComando, lerQuemPode } =
-    carregar(["NOMES_MEUS", "MINIMO_DO_RITMO", "lerQuemPode", "salvarComando"]);
+  const { salvarComando, lerQuemPode } = carregar([
+    "NOMES_MEUS", "MINIMO_DO_RITMO", "CAIXA_DE_CODIGO",
+    "pedacosDoCodigo", "juntarCodigo", "lerQuemPode", "salvarComando"]);
 
   const preencher = async (campos, { noDiscord = [], linhaExistente = null } = {}) => {
     const feito = { post: [], patch: [], del: [], publicou: 0, resposta: "" };
@@ -585,6 +586,37 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     ok("apagar não deleta a linha", r.del, []);
     ok("apagar desliga a linha", r.patch.map((p) => p.corpo.ativo), [false]);
     ok("apagar manda republicar (é quem tira do Discord)", r.publicou, 1);
+  }
+
+  /* Nome e descrição dividem uma linha; foi o que liberou a quinta pro código. */
+  {
+    const r = await preencher({ nome: "reino | ranking do reino 2311", codigo: "return 1;" });
+    ok("o nome vem antes da barra", r.post[0]?.corpo?.nome, "reino");
+    ok("e a descrição depois", r.post[0]?.corpo?.descricao, "ranking do reino 2311");
+  }
+  {
+    const r = await preencher({ nome: "reino", codigo: "return 1;" });
+    ok("sem barra, a descrição é gerada", r.post[0]?.corpo?.descricao, "comando reino");
+  }
+
+  /* As duas caixas de código viram uma coisa só, com a segunda em linha nova. */
+  {
+    const r = await preencher({ nome: "reino", codigo: "const a = 1;", codigo2: "return a;" });
+    ok("as duas caixas se juntam com uma quebra", r.post[0]?.corpo?.codigo, "const a = 1;\nreturn a;");
+  }
+
+  /* Caixa vazia num comando que já existe MANTÉM o código. É o caso do comando
+     grande demais (o formulário abre sem código de propósito) e o do dedo que
+     limpou a caixa sem querer — nos dois, gravar vazio destruiria o trabalho. */
+  {
+    const r = await preencher(
+      { nome: "reino", codigo: "" },
+      { linhaExistente: { id: "linha1", discord_id: "meu-id", codigo: "return 'antigo';" } });
+    ok("código vazio não apaga o que já existia", r.patch[0]?.corpo?.codigo, "return 'antigo';");
+  }
+  {
+    const r = await preencher({ nome: "novato", codigo: "" });
+    ok("mas comando novo sem código não é gravado", r.post.concat(r.patch), []);
   }
 
   /* Nome que já existe no banco edita aquele, em vez de criar um segundo. */
@@ -905,6 +937,62 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     estaNaHora({ cada_minutos: 60, canal_id: "c", ultima_vez: "ontem de tarde" }, agora));
   verdade("ritmo em texto não conta como ritmo",
     !estaNaHora({ cada_minutos: "sempre", canal_id: "c" }, agora));
+}
+
+/* ====== o código dividido em duas caixas do formulário ======
+
+   O Discord dá cinco linhas por formulário e 4000 caracteres por caixa, e o
+   primeiro comando com botão deu 4866. Estourar aqui é o pior jeito de
+   recusar: a caixa não avisa, ela só para de aceitar letra, e a pessoa salva
+   o código cortado no meio sem perceber.
+
+   A ida e volta tem que devolver o original EXATO — é código, e um `\n` a
+   mais é uma linha em branco hoje e uma template string quebrada amanhã. */
+{
+  const { pedacosDoCodigo, juntarCodigo, CAIXA_DE_CODIGO } =
+    carregar(["CAIXA_DE_CODIGO", "pedacosDoCodigo", "juntarCodigo"]);
+
+  const voltaIgual = (t) => {
+    const p = pedacosDoCodigo(t);
+    return p.coube && juntarCodigo(p.um, p.dois) === t;
+  };
+
+  ok("código pequeno cabe todo na primeira caixa",
+    pedacosDoCodigo("const a = 1;"), { um: "const a = 1;", dois: "", coube: true });
+  verdade("e a volta é idêntica", voltaIgual("const a = 1;"));
+  ok("vazio não inventa nada", pedacosDoCodigo(""), { um: "", dois: "", coube: true });
+
+  /* Um arquivo de verdade, com linhas de tamanhos variados. */
+  const grande = Array.from({ length: 150 },
+    (_, i) => `const linha${i} = ${JSON.stringify("x".repeat(i % 30))};`).join("\n");
+  verdade("o exemplo passa de uma caixa e cabe em duas",
+    grande.length > CAIXA_DE_CODIGO && grande.length <= 2 * CAIXA_DE_CODIGO);
+  const p = pedacosDoCodigo(grande);
+  verdade("a primeira caixa cabe no limite do Discord", p.um.length <= CAIXA_DE_CODIGO);
+  verdade("a segunda também", p.dois.length <= CAIXA_DE_CODIGO);
+  verdade("ida e volta devolve o original exato", voltaIgual(grande));
+  /* Cortar por contagem crua partiria uma linha ao meio, e o `\n` que a junção
+     repõe cairia dentro dela — linha em branco num texto, string literal
+     partida ao meio em código. */
+  verdade("o corte cai em fim de linha, não no meio de uma",
+    !p.um.endsWith("\n") && p.um.split("\n").pop().endsWith(";"));
+  verdade("a continuação começa em linha inteira", p.dois.startsWith("const linha"));
+
+  /* Código minificado: uma linha só, maior que a caixa. Não dá para cortar sem
+     mentir, então ele DIZ que não coube em vez de devolver dois pedaços que
+     não remontam. Quem chama decide; o formulário abre vazio e preserva. */
+  const minificado = "a".repeat(CAIXA_DE_CODIGO + 500);
+  ok("linha única gigante não é cortada às escondidas",
+    pedacosDoCodigo(minificado), { um: "", dois: "", coube: false });
+  /* E o que nem em duas caixas cabe também é recusado. */
+  ok("maior que as duas caixas juntas também não coube",
+    pedacosDoCodigo(("linha\n").repeat(2000)).coube, false);
+
+  /* Linhas em branco de propósito no fim de um trecho não podem sumir. */
+  const comBranco = "linha1\n\n\nlinha2";
+  verdade("linhas em branco sobrevivem", voltaIgual(comBranco));
+  ok("segunda caixa vazia não acrescenta quebra", juntarCodigo("abc", ""), "abc");
+  ok("segunda caixa junta com uma quebra só", juntarCodigo("abc", "def"), "abc\ndef");
 }
 
 /* ---- o resultado ---- */

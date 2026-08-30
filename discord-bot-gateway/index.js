@@ -6848,6 +6848,20 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("cli:")) {
       return await cliqueDaFicha(inter);
     }
+    /* Botao e formulario de um comando que o dono escreveu.
+
+       Ate' aqui, um botao num cartao desses NASCIA MORTO: o codigo do dono
+       montava o componente, o Discord desenhava, e o clique nao chegava em
+       lugar nenhum -- ninguem estava escutando por ele. Quem clicasse via
+       "Esta interação falhou", e nao havia como o dono descobrir por que.
+
+       A convencao e' `dono:<nome>:<oquefor>`. O que vem depois do nome e' do
+       codigo dele, e chega inteiro em `inter.customId`: e' assim que um mesmo
+       comando atende o /nome, o botao e o formulario sem eu inventar tres
+       registros diferentes. */
+    if ((inter.isMessageComponent() || inter.isModalSubmit()) && inter.customId.startsWith("dono:")) {
+      return await cliqueDeComandoDoDono(inter);
+    }
     /* O botao da porta de entrada abre a mesma explicacao do /help, efemera e
        ja traduzida -- e' o unico jeito de essa mensagem publica falar a lingua
        de cada um que passa por ela. */
@@ -7371,42 +7385,89 @@ async function rodarComandosAgendados() {
   }
 }
 
+/* De qual comando é este clique. Pura porque um customId torto tem que virar
+   "não sei quem atende isso" e não uma exceção no meio do despacho. */
+function comandoDoCustomId(customId) {
+  const p = String(customId || "").split(":");
+  return p[0] === "dono" && p[1] ? p[1] : null;
+}
+
+async function cliqueDeComandoDoDono(inter) {
+  const nome = comandoDoCustomId(inter.customId);
+  if (!nome || !inter.guildId) return;
+  const comando = (await comandosDoDono(inter.guildId)).find((c) => c.nome === nome);
+  if (!comando) {
+    /* O comando sumiu, mas o cartao dele continua no canal com o botao. Dizer
+       isso e' melhor do que o silencio que o Discord traduz como "falhou". */
+    return inter.reply({ flags: 64, content: "Este botão é de um comando que não existe mais." })
+      .catch(() => {});
+  }
+  return rodarComandoDoDono(inter, comando);
+}
+
 async function rodarComandoDoDono(inter, comando) {
   const liberado = podeChamar(inter, comando);
   if (liberado === false || (liberado === null && !await ehDono(inter.user.id))) {
     return inter.reply({ flags: 64, content: "Este comando não é para você." });
   }
 
-  /* Efemero: resposta de comando escrito as pressas nao devia aparecer pro
-     canal inteiro sem alguem ter decidido isso. */
-  await inter.deferReply({ flags: 64 });
+  /* Comando por barra eu adio; clique eu NAO.
+
+     Adiar responde a interacao, e depois de respondida o Discord recusa
+     `showModal`. Como o caminho natural de um botao e' justamente abrir um
+     formulario, adiar aqui deixaria o unico gesto util impossivel -- e o erro
+     apareceria como "esta interação falhou", longe da causa.
+
+     O preco e' que o codigo do dono tem tres segundos pra dar sinal de vida
+     num clique. Quem precisar de mais adia sozinho, com `inter.deferReply`. */
+  const porBarra = typeof inter.isChatInputCommand === "function" && inter.isChatInputCommand();
+  if (porBarra) {
+    /* Efemero: resposta de comando escrito as pressas nao devia aparecer pro
+       canal inteiro sem alguem ter decidido isso. */
+    await inter.deferReply({ flags: 64 });
+  }
 
   /* Registro ANTES de rodar. Se o trecho travar o processo, o que ficou no
      log e' a unica pista do que aconteceu. */
-  console.log(`comando do dono: /${comando.nome} chamado por ${inter.user.tag || inter.user.id}`);
+  console.log(`comando do dono: /${comando.nome} ${porBarra ? "chamado" : `(${inter.customId})`}` +
+    ` por ${inter.user.tag || inter.user.id}`);
 
   const { saiu, erro, levou } = await executarCodigo(comando, {
     guild: inter.guild, canal: inter.channel, inter,
-    /* O canal fica gravado porque o comando agendado nao tem de onde tirar um:
-       ele roda sem ninguem ter clicado em lugar nenhum. O ultimo lugar onde
-       alguem chamou e' o melhor palpite -- e e' o palpite que a pessoa pode
-       corrigir sozinha, chamando o comando onde ela quer que ele fique. */
-    canalId: inter.channelId,
+    /* So' o comando por barra escolhe onde o cartao mora. Um clique acontece
+       ONDE O CARTAO JA ESTA, e gravar o canal daqui daria no mesmo -- ate' o
+       dia em que alguem clicasse num cartao encaminhado pra outro canal e o
+       agendado mudasse de lugar sozinho. */
+    canalId: porBarra ? inter.channelId : null,
   });
+
+  /* Quem ja respondeu, respondeu. O codigo pode ter aberto um formulario ou
+     mandado a propria resposta; falar de novo por cima seria a segunda
+     mensagem que ninguem pediu -- ou um erro de "interação já respondida". */
+  const responder = async (corpo) => {
+    if (inter.replied || inter.deferred) return inter.editReply(corpo).catch(() => {});
+    return inter.reply({ ...(typeof corpo === "string" ? { content: corpo } : corpo), flags: 64 })
+      .catch(() => {});
+  };
 
   if (erro) {
     console.error(`comando do dono: /${comando.nome} falhou:`, erro.slice(0, 200));
-    return inter.editReply(`❌ **/${comando.nome}** falhou em ${levou}ms\n\`\`\`js\n${erro.slice(0, 1700)}\n\`\`\``);
+    return responder(`❌ **/${comando.nome}** falhou em ${levou}ms\n\`\`\`js\n${erro.slice(0, 1700)}\n\`\`\``);
   }
+
+  /* Codigo que respondeu sozinho e nao devolveu nada ja' terminou. Sem esta
+     linha, um botao que so' abre formulario ganharia um "rodou em 40ms" de
+     brinde por cima. */
+  if (saiu === undefined && (inter.replied || inter.deferred) && !porBarra) return;
 
   /* O que voltou vira resposta. Texto sai como texto; objeto sai formatado;
      e o que ja' e' uma mensagem pronta (embed, componentes) sai como veio --
      e' o que deixa dar' pra montar cartao de verdade. */
   if (saiu && typeof saiu === "object" && (saiu.embeds || saiu.content || saiu.files)) {
-    return inter.editReply(saiu);
+    return responder(saiu);
   }
-  if (typeof saiu === "string") return inter.editReply(saiu.slice(0, 1900) || "_(vazio)_");
-  if (saiu === undefined) return inter.editReply(`✅ rodou em ${levou}ms, sem nada pra mostrar.`);
+  if (typeof saiu === "string") return responder(saiu.slice(0, 1900) || "_(vazio)_");
+  if (saiu === undefined) return responder(`✅ rodou em ${levou}ms, sem nada pra mostrar.`);
 
   let texto;
   try {
@@ -7414,7 +7475,7 @@ async function rodarComandoDoDono(inter, comando) {
   } catch {
     texto = String(saiu); // objeto que se referencia, funcao, o que for
   }
-  return inter.editReply(`\`${levou}ms\`\n\`\`\`json\n${String(texto).slice(0, 1800)}\n\`\`\``);
+  return responder(`\`${levou}ms\`\n\`\`\`json\n${String(texto).slice(0, 1800)}\n\`\`\``);
 }
 
 /* A janela de criar e editar comando.
@@ -7424,33 +7485,53 @@ async function rodarComandoDoDono(inter, comando) {
    servidor edita aquele, nome novo cria um. Uma regra, sem botao de modo. */
 async function janelaDeComando(existente) {
   const c = existente || {};
+  /* Codigo que nao se divide em duas caixas abre o formulario VAZIO, com o
+     aviso no rotulo -- e salvar com as caixas vazias mantem o codigo que ja'
+     esta la'. Assim o dono ainda muda nome, quem pode e ritmo de um comando
+     grande demais, em vez de ficar trancado do lado de fora. */
+  const partes = pedacosDoCodigo(c.codigo || "");
   return {
     custom_id: "admin:novocomando",
     title: c.nome ? `Comando /${c.nome}`.slice(0, 45) : "Novo comando",
     components: [
+      /* Nome e descricao dividem a linha, separados por barra vertical.
+
+         Espremer aqui foi o que liberou a QUINTA linha pro codigo. O Discord
+         da' cinco linhas por formulario e nao negocia; o codigo e' a unica
+         coisa aqui que nao tem tamanho previsivel, entao e' ele que ganha o
+         espaco que sobra. */
       { type: 1, components: [{
-        type: 4, custom_id: "nome", style: 1, required: true, max_length: 32,
-        label: "Nome (vira /nome)", placeholder: "ranking",
-        ...(c.nome ? { value: c.nome } : {}) }] },
-      { type: 1, components: [{
-        type: 4, custom_id: "descricao", style: 1, required: false, max_length: 100,
-        label: "Descrição (aparece na lista do Discord)",
-        placeholder: "mostra o ranking do reino",
-        ...(c.descricao ? { value: c.descricao } : {}) }] },
-      /* Duas coisas numa linha so' porque o Discord da' CINCO linhas por
-         formulario, e as outras quatro sao todas obrigatorias pro comando
-         existir. Antes de espremer eu tentei tirar o "apagar" daqui; sem ele
-         nao sobra nenhum caminho pra apagar um comando. */
+        type: 4, custom_id: "nome", style: 1, required: true, max_length: 133,
+        label: "Nome | descrição", placeholder: "reino | ranking do reino 2311",
+        ...(c.nome ? { value: `${c.nome}${c.descricao ? ` | ${c.descricao}` : ""}` } : {}) }] },
+      /* Idem: quem pode e de quanto em quanto tempo repetir. */
       { type: 1, components: [{
         type: 4, custom_id: "quem_pode", style: 1, required: false, max_length: 20,
         label: "Quem pode, e repetir a cada N minutos",
         placeholder: "todos 60  →  todos usam, e roda sozinho de hora em hora",
         ...(c.quem_pode ? { value: `${c.quem_pode}${c.cada_minutos ? ` ${c.cada_minutos}` : ""}` } : {}) }] },
+      /* Duas caixas pro codigo, emendadas na hora de gravar.
+
+         4000 e' o teto do Discord por caixa, e eu tinha posto 3500 -- numero
+         meu, sem razao. Mas nem 4000 basta: o primeiro comando com botao deu
+         4866 caracteres, e comando vindo de um assistente costuma ser maior
+         ainda. Estourar aqui e' o pior jeito de recusar, porque o formulario
+         nao avisa: ele so' para de aceitar letra, e a pessoa salva o codigo
+         cortado no meio sem perceber. */
       { type: 1, components: [{
-        type: 4, custom_id: "codigo", style: 2, required: true, max_length: 3500,
-        label: "Código — o que der return vira a resposta",
-        placeholder: "const r = await fetch(\"https://exemplo.com/api\");\nconst j = await r.json();\nreturn `Poder total: ${j.power}`;",
-        ...(c.codigo ? { value: String(c.codigo).slice(0, 3500) } : {}) }] },
+        type: 4, custom_id: "codigo", style: 2, required: false, max_length: CAIXA_DE_CODIGO,
+        label: partes.coube
+          ? "Código — o que der return vira a resposta"
+          : "Código: grande demais pra caber aqui (vazio = mantém)",
+        placeholder: partes.coube
+          ? "const r = await fetch(\"https://exemplo.com/api\");\nconst j = await r.json();\nreturn `Poder total: ${j.power}`;"
+          : "deixe vazio pra manter o código atual e mudar só o resto",
+        ...(partes.um ? { value: partes.um } : {}) }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "codigo2", style: 2, required: false, max_length: CAIXA_DE_CODIGO,
+        label: "Código (continuação — começa em linha nova)",
+        placeholder: "deixe vazio se o código todo coube na caixa de cima",
+        ...(partes.dois ? { value: partes.dois } : {}) }] },
       { type: 1, components: [{
         type: 4, custom_id: "apagar", style: 1, required: false, max_length: 10,
         label: "Apagar este comando? escreva SIM",
@@ -7483,6 +7564,44 @@ const NOMES_MEUS = new Set([
    dedo trocado pra 60, e ligar "nunca repete" nesse caso seria eu escolhendo
    por ela. */
 const MINIMO_DO_RITMO = 10;
+
+/* Corta o codigo nas duas caixas do formulario, e junta de volta.
+
+   O contrato e' um so', e por isso ele fecha: **a segunda caixa comeca numa
+   linha nova**. Juntar e' sempre `um + "\n" + dois`, entao cortar tem que ser
+   sempre EM cima de uma quebra de linha -- nunca no meio de uma.
+
+   Cortar na contagem crua parecia inofensivo e nao e': o `\n` que a juncao
+   poe de volta apareceria no meio de uma linha que nao tinha nenhum. Num
+   texto isso e' uma linha em branco; em codigo e' uma string literal partida
+   ao meio. Um teste pegou isto antes de subir.
+
+   Quando nao da' pra cortar em quebra -- codigo minificado, uma linha unica
+   maior que a caixa --, eu digo que NAO COUBE em vez de cortar mesmo assim.
+   Quem chama decide o que fazer com isso; o que nao pode e' devolver dois
+   pedacos que nao remontam. */
+const CAIXA_DE_CODIGO = 4000;
+
+function pedacosDoCodigo(codigo) {
+  const inteiro = String(codigo || "");
+  if (inteiro.length <= CAIXA_DE_CODIGO) return { um: inteiro, dois: "", coube: true };
+
+  const corte = inteiro.lastIndexOf("\n", CAIXA_DE_CODIGO);
+  if (corte <= 0) return { um: "", dois: "", coube: false };
+
+  const dois = inteiro.slice(corte + 1);
+  /* Nem em duas caixas cabe: aqui tambem e' melhor dizer que nao coube. */
+  if (dois.length > CAIXA_DE_CODIGO) return { um: "", dois: "", coube: false };
+
+  return { um: inteiro.slice(0, corte), dois, coube: true };
+}
+
+function juntarCodigo(a, b) {
+  const um = String(a || "");
+  const dois = String(b || "");
+  if (!dois) return um;
+  return `${um}\n${dois}`;
+}
 
 function lerQuemPode(cru) {
   const partes = String(cru || "").trim().split(/\s+/).filter(Boolean);
@@ -7527,10 +7646,14 @@ async function salvarComando(inter) {
   await inter.deferReply({ flags: 64 });
   const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
 
+  /* "reino | ranking do reino" -- nome antes da barra, descricao depois. */
+  const [nomeCru, ...restoDoNome] = campo("nome").split("|");
+  const descricaoNaLinha = restoDoNome.join("|").trim();
+
   /* O Discord so' aceita minusculas, numeros, hifen e sublinhado, de 1 a 32.
      Recusar aqui com o motivo escrito e' melhor do que deixar a API recusar
      com um erro em ingles que ninguem le. */
-  const nome = campo("nome").toLowerCase().replace(/\s+/g, "-");
+  const nome = nomeCru.trim().toLowerCase().replace(/\s+/g, "-");
   if (!/^[a-z0-9_-]{1,32}$/.test(nome)) {
     return inter.editReply("O nome só aceita letras minúsculas, números, `-` e `_`, até 32. **Não gravei nada.**");
   }
@@ -7540,7 +7663,7 @@ async function salvarComando(inter) {
 
   const jaExiste = (await sb(
     `cyron_comando?guild_id=eq.${encodeURIComponent(inter.guildId)}&nome=eq.${encodeURIComponent(nome)}` +
-    "&select=id,discord_id"))?.[0];
+    "&select=id,discord_id,codigo"))?.[0];
 
   if (campo("apagar").toLowerCase() === "sim") {
     if (!jaExiste) return inter.editReply(`Não tenho nenhum \`/${nome}\` aqui para apagar.`);
@@ -7574,10 +7697,20 @@ async function salvarComando(inter) {
   const { quem, cada, erroDoRitmo } = lerQuemPode(campo("quem_pode"));
   if (erroDoRitmo) return inter.editReply(`${erroDoRitmo} **Não gravei nada.**`);
 
+  /* Caixa vazia num comando que ja' existe MANTEM o codigo, nao apaga.
+
+     Vale pros dois casos em que ela vem vazia: o comando grande demais, que o
+     formulario abre sem codigo de proposito, e o dedo que limpou a caixa sem
+     querer. Nos dois, guardar vazio seria destruir o trabalho da pessoa por
+     causa de um campo em branco. */
+  const digitado = juntarCodigo(campo("codigo"), campo("codigo2"));
+  const codigo = digitado || (jaExiste?.codigo || "");
+  if (!codigo) return inter.editReply("O código está vazio. **Não gravei nada.**");
+
   const linha = {
     nome,
-    descricao: campo("descricao") || `comando ${nome}`,
-    codigo: campo("codigo"),
+    descricao: descricaoNaLinha.slice(0, 100) || `comando ${nome}`,
+    codigo,
     quem_pode: quem,
     cada_minutos: cada,
     guild_id: inter.guildId,
