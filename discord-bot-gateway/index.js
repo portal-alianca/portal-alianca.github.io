@@ -1028,6 +1028,114 @@ function gratuitosDaVez(texto) {
   return livres.length ? livres : servem;
 }
 
+/* ---------------- quanto ainda sobra da cota ----------------
+
+   A cota mensal e' o unico limite deste produto que acaba SEM avisar. Chave
+   errada da erro na hora; tradutor fora do ar aparece no canal de erros; cota
+   estourada devolve 403, a cascata cai no gratuito, o gratuito devolve 429 --
+   e o que a pessoa ve e' "o bot parou de traduzir", tres camadas longe da
+   causa.
+
+   O numero existe: a DeepL publica quanto ja' foi gasto. So' que ninguem
+   olhava, e olhar depois que acabou nao serve pra nada. Entao ele passa a ser
+   lido de hora em hora, e a falar antes.
+
+   Uma vez por hora, e nao a cada mensagem: e' um numero de mes, e uma chamada
+   por fala seria gastar rede pra saber que quase nada mudou. */
+const COTA_DE = {
+  async deepl(cfg) {
+    const base = cfg.chave.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+    const r = await fetch(`${base}/v2/usage`, {
+      headers: { Authorization: `DeepL-Auth-Key ${cfg.chave}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error(`deepl usage ${r.status}`);
+    const j = await r.json();
+    const teto = Number(j?.character_limit || 0);
+    if (!teto) return null;
+    return { usado: Number(j?.character_count || 0), teto };
+  },
+  /* A Azure nao tem endereco de consumo no F0 -- o numero so' existe no portal
+     dela. Fica sem: melhor nao ter a linha do que inventar uma. */
+};
+
+const AVISOS_DE_COTA = [95, 85, 70];
+const cotaDoDono = new Map();  // tipo -> { usado, teto, pct, quando, faixa }
+
+function comoEstaACota() { return [...cotaDoDono.entries()].map(([tipo, v]) => ({ tipo, ...v })); }
+
+/* Em que faixa este consumo esta, e se ela merece aviso.
+
+   O aviso e' por faixa e so' pra CIMA. Sem isso, "passou de 70%" seria
+   verdade em toda leitura dali pra frente -- um aviso por hora, o mes inteiro,
+   sobre algo que nao mudou. Aviso repetido nao alerta ninguem; ele ensina a
+   ignorar o canal.
+
+   E a faixa guardada acompanha o consumo pra BAIXO tambem. A primeira versao
+   disto guardava `Math.max(faixa, faixaAnterior)`, que parecia prudente e
+   quebrava exatamente onde importa: virado o mes, o gasto zera, mas a faixa
+   guardada continuaria em 95 -- e o proximo 70%, o 85% e o 95% do mes seguinte
+   passariam calados. Um alarme que dispara uma vez na vida. */
+function faixaDaCota(pct) {
+  return AVISOS_DE_COTA.find((f) => pct >= f) || 0;
+}
+
+function precisaAvisar(pct, faixaAnterior = 0) {
+  const faixa = faixaDaCota(pct);
+  return faixa > faixaAnterior ? faixa : 0;
+}
+
+async function olharAsCotas() {
+  for (const reserva of motoresDoDono()) {
+    const ler = COTA_DE[reserva.tipo];
+    if (!ler) continue;
+    let leitura = null;
+    try {
+      leitura = await ler(reserva);
+    } catch (e) {
+      /* Nao saber quanto sobrou nao pode virar erro no canal: a traducao
+         continua funcionando, e a proxima hora tenta de novo. */
+      console.error(`cota: nao consegui ler a da ${reserva.tipo}:`, String(e?.message || e).slice(0, 120));
+      continue;
+    }
+    if (!leitura) continue;
+
+    const antes = cotaDoDono.get(reserva.tipo) || { faixa: 0 };
+    const pct = Math.round((leitura.usado / leitura.teto) * 100);
+    const avisar = precisaAvisar(pct, antes.faixa);
+
+    cotaDoDono.set(reserva.tipo, { ...leitura, pct, quando: Date.now(), faixa: faixaDaCota(pct) });
+    if (!avisar) continue;
+
+    const nome = MOTORES[reserva.tipo]?.nome || reserva.tipo;
+    const sobra = leitura.teto - leitura.usado;
+    await avisarNoPainel(CANAL_ERROS, {
+      embeds: [{
+        color: pct >= 95 ? 0xB3261E : pct >= 85 ? 0xE0A63A : 0x4A6FA5,
+        title: `${pct >= 95 ? "🔴" : pct >= 85 ? "🟠" : "🟡"} A cota da ${nome} está em ${pct}%`,
+        description:
+          `Já foram **${leitura.usado.toLocaleString("pt-BR")}** de ` +
+          `**${leitura.teto.toLocaleString("pt-BR")}** caracteres deste mês. ` +
+          `Sobram **${sobra.toLocaleString("pt-BR")}**.\n\n` +
+          (pct >= 95
+            ? "**Quando acabar, ela devolve 403 e eu caio no tradutor gratuito** — que a este " +
+              "volume responde 429. O sintoma para quem usa é a mensagem chegar sem tradução, " +
+              "sem nada explicando por quê."
+            : "Quando acabar, eu caio no tradutor gratuito, que a volumes altos recusa. " +
+              "Dá tempo de cadastrar outra chave antes disso."),
+        fields: [{
+          name: "O que fazer",
+          value: "Cadastre uma segunda chave em `/admin` → 🔑 **Chaves de tradução**. " +
+            "A Azure Translator no plano F0 dá 2 milhões de caracteres por mês, " +
+            "tem teto rígido e nunca cobra — ela entra na cascata e assume quando esta acabar.",
+        }],
+        timestamp: new Date().toISOString(),
+      }],
+    });
+    console.log(`cota: ${reserva.tipo} em ${pct}% (${leitura.usado}/${leitura.teto})`);
+  }
+}
+
 /* As chaves do dono, na ordem em que ele cadastrou. */
 async function tentarChavesDoDono(texto, alvo, motor) {
   for (const reserva of motoresDoDono()) {
@@ -5793,45 +5901,39 @@ let ultimaPassada = 0;
 let duracaoPassada = 0;
 const tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
 
-/* Os campos de cota, um por chave sua que souber responder. */
+/* Os campos de cota, um por chave sua que souber responder.
+
+   Ao vivo, e nao pela leitura guardada da hora em hora: quem abre esta tela
+   quer o numero de AGORA, e costuma abrir justamente depois de receber o
+   aviso. Quem le e' o mesmo COTA_DE que a vigia usa -- havia duas funcoes
+   perguntando a mesma coisa ao DeepL, e duas envelhecem em direcoes
+   diferentes. */
 async function camposDeCota() {
   const campos = [];
   for (const reserva of motoresDoDono()) {
-    if (reserva.tipo !== "deepl") {
-      campos.push({ name: "Cota da Azure", value: "_ela não informa por aqui — veja no portal.azure.com_" });
+    const nome = MOTORES[reserva.tipo]?.nome || reserva.tipo;
+    if (!COTA_DE[reserva.tipo]) {
+      campos.push({ name: `Cota da ${nome}`, value: "_ela não informa por aqui — veja no portal.azure.com_" });
       continue;
     }
     try {
-      campos.push({ name: "Cota do DeepL neste mês", value: await cotaDoDeepL(reserva) });
+      const c = await COTA_DE[reserva.tipo](reserva);
+      campos.push({ name: `Cota da ${nome} neste mês`, value: c ? barraDeCota(c) : "sem teto informado" });
     } catch (e) {
-      campos.push({ name: "Cota do DeepL neste mês", value: `_não consegui perguntar: ${String(e.message || e).slice(0, 60)}_` });
+      campos.push({ name: `Cota da ${nome} neste mês`,
+        value: `_não consegui perguntar: ${String(e.message || e).slice(0, 60)}_` });
     }
   }
   return campos;
 }
 
-/* Quanto da cota do mes ja foi.
-
-   O DeepL responde isso; a Azure nao tem endereco equivalente e so' mostra no
-   portal dela. Vale a pena ler ao vivo em vez de eu contar por aqui: quem
-   conta e' quem cobra, e a minha contagem erraria nas falas que outro caminho
-   traduziu, nas repetidas que sairam do cache, e em qualquer teste feito fora
-   do bot -- como os quatro que eu mesmo fiz pra conferir a chave. */
-async function cotaDoDeepL(reserva) {
-  const base = reserva.chave.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
-  const r = await fetch(`${base}/v2/usage`, {
-    headers: { Authorization: `DeepL-Auth-Key ${reserva.chave}` },
-    signal: AbortSignal.timeout(6000),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const j = await r.json();
-  const usado = Number(j.character_count || 0);
-  const teto = Number(j.character_limit || 0);
-  if (!teto) return "sem teto informado";
+function barraDeCota({ usado, teto }) {
   const pct = Math.round((usado / teto) * 100);
-  const barra = "█".repeat(Math.round(pct / 10)) + "░".repeat(10 - Math.round(pct / 10));
-  const alerta = pct >= 90 ? " 🔴" : pct >= 70 ? " ⚠️" : "";
-  return `\`${barra}\` **${pct}%**${alerta}\n${usado.toLocaleString("pt-BR")} de ${teto.toLocaleString("pt-BR")} caracteres`;
+  const cheios = Math.min(10, Math.round(pct / 10));
+  const barra = "█".repeat(cheios) + "░".repeat(10 - cheios);
+  const alerta = pct >= 95 ? " 🔴" : pct >= 85 ? " 🟠" : pct >= 70 ? " 🟡" : "";
+  return `\`${barra}\` **${pct}%**${alerta}\n` +
+    `${usado.toLocaleString("pt-BR")} de ${teto.toLocaleString("pt-BR")} caracteres`;
 }
 
 async function embedDeSaude() {
@@ -7438,8 +7540,22 @@ async function umaPassada() {
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
+  await deHoraEmHora().catch((e) => console.error("hora: passada falhou:", e?.message || e));
   ultimaPassada = Date.now();
   duracaoPassada = ultimaPassada - comecou;
+}
+
+/* O que nao precisa de dez em dez minutos.
+
+   A cota e' numero de MES: ler a cada varredura seria vinte e quatro vezes
+   mais chamada pra saber a mesma coisa. Peguei carona na varredura em vez de
+   abrir outro relogio -- relogio proprio segue disparando quando a varredura
+   trava, e aviso que chega enquanto o resto esta parado engana. */
+let ultimaHora = 0;
+async function deHoraEmHora() {
+  if (Date.now() - ultimaHora < 60 * 60 * 1000) return;
+  ultimaHora = Date.now();
+  await olharAsCotas().catch((e) => console.error("cota: passada falhou:", e?.message || e));
 }
 
 client.once("clientReady", () => {

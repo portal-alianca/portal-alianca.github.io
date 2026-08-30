@@ -70,8 +70,19 @@ function fimDoBloco(j) {
     if (c === "/" && d === "/") { dentro = "//"; k++; continue; }
     if (c === "/" && d === "*") { dentro = "/*"; k++; continue; }
     if (c === "/") {
-      const antes = fonte.slice(0, k).replace(/\s+$/, "").slice(-1);
-      if (antes === "" || "(,=:[!&|?{};+return".includes(antes)) { dentro = "re"; continue; }
+      /* A palavra-chave é conferida como PALAVRA, não como letras soltas.
+
+         Antes a lista era a string "(,=:[!&|?{};+return" e o teste era
+         `includes` de um caractere só -- o que fazia r, e, t, u e n contarem
+         como sinal de expressão regular. Aí `Math.round(pct / 10)` tinha um
+         `t` antes da barra, virava início de regra, e a extração engolia 79
+         mil caracteres até achar a próxima barra. Só não tinha aparecido
+         porque nenhuma função testada dividia por algo terminado nessas
+         letras. */
+      const antes = fonte.slice(0, k).replace(/\s+$/, "");
+      const pontuacao = "(,=:[!&|?{};+".includes(antes.slice(-1));
+      const palavra = /(?<![\p{L}\p{N}_$])(return|typeof|case|in|of|do|else|yield|await|new)$/u.test(antes);
+      if (!antes || pontuacao || palavra) { dentro = "re"; continue; }
     }
     if (c === '"' || c === "'" || c === "`") { dentro = c; continue; }
     /* Parênteses contam junto: `new Set([...])` fecha o colchete ANTES do
@@ -765,6 +776,47 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     await falar(mundo, "segunda");
     ok("emenda que falha vira envio novo, a fala não some", mundo.quantas(), 2);
   }
+}
+
+/* ============ o aviso de cota, que só pode falar na hora certa ============
+
+   A cota mensal é o único limite deste produto que acaba sem avisar: ela
+   devolve 403, a cascata cai no gratuito, o gratuito devolve 429, e o que se
+   vê é "o bot parou de traduzir" — três camadas longe da causa.
+
+   Um alarme desses erra de dois jeitos, e os dois são silenciosos: falar
+   demais (e ensinar a ignorar o canal) ou falar de menos. */
+{
+  const { faixaDaCota, precisaAvisar, barraDeCota } =
+    carregar(["AVISOS_DE_COTA", "faixaDaCota", "precisaAvisar", "barraDeCota"]);
+
+  ok("abaixo de 70% não tem faixa", faixaDaCota(69), 0);
+  ok("70% cai na faixa de 70", faixaDaCota(70), 70);
+  ok("84% ainda é a faixa de 70", faixaDaCota(84), 70);
+  ok("85% sobe para a faixa de 85", faixaDaCota(85), 85);
+  ok("100% é a faixa de 95", faixaDaCota(100), 95);
+
+  ok("primeiro cruzamento avisa", precisaAvisar(72, 0), 70);
+  ok("a mesma faixa não avisa de novo", precisaAvisar(78, 70), 0);
+  ok("subir de faixa avisa", precisaAvisar(86, 70), 85);
+  ok("subir direto para a última avisa uma vez", precisaAvisar(96, 0), 95);
+  ok("depois de avisar 95 nada mais avisa", precisaAvisar(99, 95), 0);
+
+  /* A virada do mês. A primeira versão guardava Math.max(faixa, anterior) --
+     parecia prudente e quebrava aqui: zerado o gasto, a faixa guardada
+     continuaria em 95, e o 70%, o 85% e o 95% do mês seguinte passariam
+     calados. Um alarme que dispara uma vez na vida. */
+  ok("virado o mês, a faixa cai junto com o gasto", faixaDaCota(3), 0);
+  ok("e o próximo 70% volta a avisar", precisaAvisar(71, faixaDaCota(3)), 70);
+
+  /* A barra não pode estourar nem ficar torta: são 10 blocos, sempre. */
+  for (const [usado, teto] of [[0, 100], [50, 100], [100, 100], [1200, 1000]]) {
+    const linha = barraDeCota({ usado, teto }).split("\n")[0];
+    const blocos = (linha.match(/[█░]/g) || []).length;
+    ok(`barra de ${usado}/${teto} tem 10 blocos`, blocos, 10);
+  }
+  verdade("cota estourada não vira barra maior que o trilho",
+    !/█{11}/.test(barraDeCota({ usado: 5000, teto: 1000 })));
 }
 
 /* ---- o resultado ---- */
