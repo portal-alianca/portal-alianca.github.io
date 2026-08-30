@@ -7197,8 +7197,12 @@ async function comandosDoDono(guildId) {
   if (achado && Date.now() - achado.t < 30 * 1000) return achado.v;
   let v = [];
   try {
-    v = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}&ativo=is.true` +
-      "&select=id,nome,descricao,codigo,quem_pode,discord_id") || [];
+    /* `select=*` de proposito. Nomear as colunas parecia mais caprichado ate'
+       eu quase publicar isto: se o banco ainda nao tiver a coluna nova, o
+       PostgREST recusa a consulta INTEIRA com 400, o catch aqui embaixo devolve
+       lista vazia -- e todo comando do dono desaparece do servidor sem uma
+       linha de erro. A linha e' pequena; o risco de nomear nao vale. */
+    v = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}&ativo=is.true&select=*`) || [];
   } catch { /* tenta de novo na proxima */ }
   cacheComandos.set(guildId, { v, t: Date.now() });
   return v;
@@ -7283,6 +7287,90 @@ function podeChamar(inter, comando) {
 
 const PRAZO_DO_COMANDO = 60 * 1000;
 
+/* Rodar o codigo, anotar como foi, e nada mais.
+
+   Separado porque agora existem DOIS jeitos de um comando rodar -- alguem
+   digitando, e o relogio -- e eles so' se parecem aqui no meio. Fora daqui um
+   tem interacao pra responder e prazo do Discord; o outro nao tem nem quem
+   avisar. Deixar a execucao em dois lugares seria garantir que uma correcao
+   entrasse so' num deles. */
+async function executarCodigo(comando, { guild, canal, inter = null, canalId = null }) {
+  const comeco = Date.now();
+  let saiu, erro = null;
+  try {
+    /* AsyncFunction, e nao eval: assim `await` funciona sem a pessoa ter que
+       embrulhar tudo. O que o codigo devolver com `return` e' o que aparece. */
+    const Assincrona = Object.getPrototypeOf(async function () {}).constructor;
+    const f = new Assincrona("client", "guild", "inter", "canal", "sb", "sbPost", "sbPatch", "sbDel", comando.codigo);
+    saiu = await Promise.race([
+      f(client, guild, inter, canal, sb, sbPost, sbPatch, sbDel),
+      new Promise((_, x) => setTimeout(
+        () => x(new Error(`passou de ${PRAZO_DO_COMANDO / 1000}s e eu parei de esperar`)), PRAZO_DO_COMANDO)),
+    ]);
+  } catch (e) {
+    erro = String(e?.stack || e?.message || e);
+  }
+  const levou = Date.now() - comeco;
+
+  /* Guarda o resultado da ultima vez. Comando que quebra em silencio faz quem
+     chamou ver "falhou" sem saber por que, e o dono nao ficar sabendo. */
+  sbPatch(`cyron_comando?id=eq.${encodeURIComponent(comando.id)}`, {
+    ultima_vez: new Date().toISOString(),
+    ultimo_erro: erro ? erro.slice(0, 500) : null,
+    ...(canalId ? { canal_id: canalId } : {}),
+  }).catch(() => { /* anotar e' bonus; a resposta ja' vai sair */ });
+
+  return { saiu, erro, levou };
+}
+
+/* Chegou a hora deste comando rodar sozinho?
+
+   Pura porque a conta erra calada dos dois lados: apertada demais faz o cartao
+   envelhecer sem ninguem notar, larga demais faz o mesmo comando bater na API
+   de terceiro a cada volta do relogio. */
+function estaNaHora(comando, agora = Date.now()) {
+  const cada = Number(comando?.cada_minutos || 0);
+  if (!(cada > 0) || !comando?.canal_id) return false;
+  if (!comando.ultima_vez) return true;
+  const quando = Date.parse(comando.ultima_vez);
+  if (Number.isNaN(quando)) return true;
+  return agora - quando >= cada * 60 * 1000;
+}
+
+/* Os comandos que se atualizam sozinhos.
+
+   O canal e' o ultimo em que alguem chamou o comando na mao. Sem isso eu teria
+   que inventar um, e um cartao aparecendo num canal que ninguem escolheu e'
+   pior do que cartao nenhum. */
+async function rodarComandosAgendados() {
+  for (const [, guild] of client.guilds.cache) {
+    let lista = [];
+    try {
+      lista = await comandosDoDono(guild.id);
+    } catch { continue; }
+
+    for (const comando of lista) {
+      if (!estaNaHora(comando)) continue;
+      const canal = guild.channels.cache.get(String(comando.canal_id));
+      if (!canal) continue;
+
+      const { saiu, erro, levou } = await executarCodigo(comando, { guild, canal });
+      if (erro) {
+        console.error(`comando agendado: /${comando.nome} falhou:`, erro.slice(0, 200));
+        continue;
+      }
+      /* O que voltou pronto pra ser mensagem sai no canal; o resto fica no log.
+         O /reino, por exemplo, ja' edita o proprio cartao fixado e devolve so'
+         uma confirmacao -- publicar isso seria empilhar recado a cada hora. */
+      if (saiu && typeof saiu === "object" && (saiu.embeds || saiu.content || saiu.files)) {
+        await canal.send({ ...saiu, allowedMentions: { parse: [] } })
+          .catch((e) => console.error(`comando agendado: nao consegui publicar /${comando.nome}:`, e?.message || e));
+      }
+      console.log(`comando agendado: /${comando.nome} rodou em ${levou}ms (#${canal.name})`);
+    }
+  }
+}
+
 async function rodarComandoDoDono(inter, comando) {
   const liberado = podeChamar(inter, comando);
   if (liberado === false || (liberado === null && !await ehDono(inter.user.id))) {
@@ -7297,28 +7385,14 @@ async function rodarComandoDoDono(inter, comando) {
      log e' a unica pista do que aconteceu. */
   console.log(`comando do dono: /${comando.nome} chamado por ${inter.user.tag || inter.user.id}`);
 
-  const comeco = Date.now();
-  let saiu, erro = null;
-  try {
-    /* AsyncFunction, e nao eval: assim `await` funciona sem a pessoa ter que
-       embrulhar tudo. O que o codigo devolver com `return` e' o que aparece. */
-    const Assincrona = Object.getPrototypeOf(async function () {}).constructor;
-    const f = new Assincrona("client", "guild", "inter", "canal", "sb", "sbPost", "sbPatch", "sbDel", comando.codigo);
-    saiu = await Promise.race([
-      f(client, inter.guild, inter, inter.channel, sb, sbPost, sbPatch, sbDel),
-      new Promise((_, x) => setTimeout(
-        () => x(new Error(`passou de ${PRAZO_DO_COMANDO / 1000}s e eu parei de esperar`)), PRAZO_DO_COMANDO)),
-    ]);
-  } catch (e) {
-    erro = String(e?.stack || e?.message || e);
-  }
-  const levou = Date.now() - comeco;
-
-  /* Guarda o resultado da ultima vez. Comando que quebra em silencio faz quem
-     chamou ver "falhou" sem saber por que, e o dono nao ficar sabendo. */
-  sbPatch(`cyron_comando?id=eq.${encodeURIComponent(comando.id)}`,
-    { ultima_vez: new Date().toISOString(), ultimo_erro: erro ? erro.slice(0, 500) : null })
-    .catch(() => { /* anotar e' bonus; a resposta ja' vai sair */ });
+  const { saiu, erro, levou } = await executarCodigo(comando, {
+    guild: inter.guild, canal: inter.channel, inter,
+    /* O canal fica gravado porque o comando agendado nao tem de onde tirar um:
+       ele roda sem ninguem ter clicado em lugar nenhum. O ultimo lugar onde
+       alguem chamou e' o melhor palpite -- e e' o palpite que a pessoa pode
+       corrigir sozinha, chamando o comando onde ela quer que ele fique. */
+    canalId: inter.channelId,
+  });
 
   if (erro) {
     console.error(`comando do dono: /${comando.nome} falhou:`, erro.slice(0, 200));
@@ -7363,10 +7437,15 @@ async function janelaDeComando(existente) {
         label: "Descrição (aparece na lista do Discord)",
         placeholder: "mostra o ranking do reino",
         ...(c.descricao ? { value: c.descricao } : {}) }] },
+      /* Duas coisas numa linha so' porque o Discord da' CINCO linhas por
+         formulario, e as outras quatro sao todas obrigatorias pro comando
+         existir. Antes de espremer eu tentei tirar o "apagar" daqui; sem ele
+         nao sobra nenhum caminho pra apagar um comando. */
       { type: 1, components: [{
-        type: 4, custom_id: "quem_pode", style: 1, required: false, max_length: 10,
-        label: "Quem pode: dono, admin ou todos",
-        placeholder: "dono", ...(c.quem_pode ? { value: c.quem_pode } : {}) }] },
+        type: 4, custom_id: "quem_pode", style: 1, required: false, max_length: 20,
+        label: "Quem pode, e repetir a cada N minutos",
+        placeholder: "todos 60  →  todos usam, e roda sozinho de hora em hora",
+        ...(c.quem_pode ? { value: `${c.quem_pode}${c.cada_minutos ? ` ${c.cada_minutos}` : ""}` } : {}) }] },
       { type: 1, components: [{
         type: 4, custom_id: "codigo", style: 2, required: true, max_length: 3500,
         label: "Código — o que der return vira a resposta",
@@ -7391,6 +7470,55 @@ async function janelaDeComando(existente) {
 const NOMES_MEUS = new Set([
   "cyron", "help", "admin", "mylanguage", "settings", "portal", "player", "events", "ranking",
 ]);
+
+/* Uma linha do formulario que carrega duas respostas: "todos 60".
+
+   Separada e pura porque e' onde um dedo errado vira dano invisivel. Escrever
+   `todos 5` num comando que fala com um site de terceiro sao 288 chamadas por
+   dia, e ninguem descobre pelo Discord -- descobre quando o site bloqueia. O
+   piso de 10 minutos existe por isso, e recusar em voz alta e' melhor do que
+   arredondar calado: arredondar faria a pessoa achar que pediu 5 e recebeu 5.
+
+   Numero sem sentido tambem recusa em vez de virar zero. "todos 0" pode ser
+   dedo trocado pra 60, e ligar "nunca repete" nesse caso seria eu escolhendo
+   por ela. */
+const MINIMO_DO_RITMO = 10;
+
+function lerQuemPode(cru) {
+  const partes = String(cru || "").trim().split(/\s+/).filter(Boolean);
+  const PAPEIS = ["dono", "admin", "todos"];
+
+  /* Quem escreve so' o numero quis o ritmo, nao um papel: "60" e' "de hora em
+     hora", com quem pode ficando no padrao. Sem esta linha o 60 caía como
+     papel desconhecido e o ritmo sumia calado -- o pior dos dois desfechos. */
+  if (partes.length === 1 && /^\d+$/.test(partes[0])) return lerQuemPode(`dono ${partes[0]}`);
+
+  /* Papel que eu nao conheco cai em "dono" -- o mais fechado -- e o resto da
+     linha e' ignorado junto. Tentar ler minutos aqui fazia "qualquer um"
+     responder "não entendi `um` como minutos", culpando a metade errada da
+     frase e mandando a pessoa consertar o que nao estava quebrado. */
+  if (!PAPEIS.includes(partes[0])) return { quem: "dono", cada: null, erroDoRitmo: null };
+
+  const quem = partes[0];
+  const resto = partes.slice(1).join(" ");
+  if (!resto) return { quem, cada: null, erroDoRitmo: null };
+
+  if (!/^\d+$/.test(resto)) {
+    return { quem, cada: null,
+      erroDoRitmo: `Não entendi \`${resto}\` como minutos — escreva só o número, por exemplo \`${quem} 60\`.` };
+  }
+  const cada = Number(resto);
+  if (cada === 0) {
+    return { quem, cada: null,
+      erroDoRitmo: "Para não repetir, deixe só quem pode (`" + quem + "`) e apague o número." };
+  }
+  if (cada < MINIMO_DO_RITMO) {
+    return { quem, cada: null,
+      erroDoRitmo: `A cada ${cada} min é rápido demais — o mínimo é ${MINIMO_DO_RITMO}. ` +
+        "Comando que fala com site de terceiro acaba bloqueado, e você descobriria pelo site, não por aqui." };
+  }
+  return { quem, cada, erroDoRitmo: null };
+}
 
 async function salvarComando(inter) {
   if (!await ehDono(inter.user.id)) {
@@ -7443,12 +7571,15 @@ async function salvarComando(inter) {
     } catch { /* se o Discord nao respondeu, sigo: o publicador recusa de novo */ }
   }
 
-  const quem = ["dono", "admin", "todos"].includes(campo("quem_pode")) ? campo("quem_pode") : "dono";
+  const { quem, cada, erroDoRitmo } = lerQuemPode(campo("quem_pode"));
+  if (erroDoRitmo) return inter.editReply(`${erroDoRitmo} **Não gravei nada.**`);
+
   const linha = {
     nome,
     descricao: campo("descricao") || `comando ${nome}`,
     codigo: campo("codigo"),
     quem_pode: quem,
+    cada_minutos: cada,
     guild_id: inter.guildId,
     ativo: true,
     ultimo_erro: null,
@@ -7470,7 +7601,7 @@ async function salvarComando(inter) {
 /* A lista, pra saber o que existe e o que quebrou na ultima vez. */
 async function embedDosComandos(guildId) {
   const meus = await sb(`cyron_comando?guild_id=eq.${encodeURIComponent(guildId)}` +
-    "&select=nome,descricao,quem_pode,ativo,ultima_vez,ultimo_erro&order=nome.asc") || [];
+    "&select=*&order=nome.asc") || [];
   if (!meus.length) {
     return {
       color: 0x9aa0a6,
@@ -7486,6 +7617,14 @@ async function embedDosComandos(guildId) {
       value: [
         c.descricao || "_sem descrição_",
         `quem pode: **${c.quem_pode}**`,
+        /* Um comando marcado pra repetir e SEM canal nunca vai rodar sozinho:
+           ele não tem onde publicar, e fica esperando calado. Dizer isso aqui
+           é o que evita a pessoa achar que ligou e não ligou. */
+        c.cada_minutos
+          ? (c.canal_id
+            ? `🔁 sozinho a cada **${c.cada_minutos} min** em <#${c.canal_id}>`
+            : `🔁 a cada **${c.cada_minutos} min** — ⚠️ chame ele uma vez no canal onde deve ficar`)
+          : "",
         c.ultima_vez ? `última vez: ${quandoFoi(Date.parse(c.ultima_vez), "R")}` : "_nunca foi chamado_",
         c.ultimo_erro ? `❌ \`${String(c.ultimo_erro).split("\n")[0].slice(0, 90)}\`` : "",
       ].filter(Boolean).join("\n"),
@@ -7653,6 +7792,7 @@ async function umaPassada() {
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
+  await rodarComandosAgendados().catch((e) => console.error("agendado: passada falhou:", e?.message || e));
   await deHoraEmHora().catch((e) => console.error("hora: passada falhou:", e?.message || e));
   ultimaPassada = Date.now();
   duracaoPassada = ultimaPassada - comecou;

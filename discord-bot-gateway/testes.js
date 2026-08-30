@@ -508,7 +508,8 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    Ele não tinha teste nenhum, e é a função que mais mudou no conserto acima.
    Aqui o formulário é preenchido de mentira e se confere o que ele gravou. */
 {
-  const { salvarComando } = carregar(["NOMES_MEUS", "salvarComando"]);
+  const { salvarComando, lerQuemPode } =
+    carregar(["NOMES_MEUS", "MINIMO_DO_RITMO", "lerQuemPode", "salvarComando"]);
 
   const preencher = async (campos, { noDiscord = [], linhaExistente = null } = {}) => {
     const feito = { post: [], patch: [], del: [], publicou: 0, resposta: "" };
@@ -847,6 +848,63 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      comparar com o de ontem. */
   verdade("ontem tem forma de data", /^\d{4}-\d{2}-\d{2}$/.test(ontemISO()));
   verdade("e é mesmo antes de hoje", ontemISO() < new Date().toISOString().slice(0, 10));
+}
+
+/* ========= o comando que roda sozinho: o ritmo e a hora de rodar =========
+
+   Duas contas que erram caladas. `todos 5` num comando que fala com site de
+   terceiro são 288 chamadas por dia, e ninguém descobre pelo Discord —
+   descobre quando o site bloqueia. E do outro lado, um cartão fixado que
+   deixou de se atualizar não avisa; ele só fica velho parecendo atual. */
+{
+  const { lerQuemPode, estaNaHora } =
+    carregar(["MINIMO_DO_RITMO", "lerQuemPode", "estaNaHora"]);
+
+  ok("só quem pode, sem repetir", lerQuemPode("todos"), { quem: "todos", cada: null, erroDoRitmo: null });
+  ok("vazio cai em dono", lerQuemPode(""), { quem: "dono", cada: null, erroDoRitmo: null });
+  /* Papel desconhecido cai no mais fechado, e o resto da linha vai junto.
+     Antes isto respondia "não entendi `um` como minutos" — culpando a metade
+     errada da frase e mandando consertar o que não estava quebrado. */
+  ok("palavra desconhecida cai em dono, não libera geral",
+    lerQuemPode("qualquer um"), { quem: "dono", cada: null, erroDoRitmo: null });
+  /* E quem escreve só o número quis o ritmo, não um papel. */
+  ok("só o número vira ritmo", lerQuemPode("60"), { quem: "dono", cada: 60, erroDoRitmo: null });
+  verdade("só um número rápido demais ainda é recusado", !!lerQuemPode("5").erroDoRitmo);
+  ok("quem pode mais ritmo", lerQuemPode("todos 60"), { quem: "todos", cada: 60, erroDoRitmo: null });
+  ok("espaço sobrando não atrapalha", lerQuemPode("  admin   30 "), { quem: "admin", cada: 30, erroDoRitmo: null });
+  ok("o mínimo passa", lerQuemPode("todos 10").cada, 10);
+
+  /* Recusar em voz alta, não arredondar: arredondar faria a pessoa achar que
+     pediu 5 e recebeu 5. */
+  ok("rápido demais não vira ritmo", lerQuemPode("todos 5").cada, null);
+  verdade("e diz por quê", /mínimo é 10/.test(lerQuemPode("todos 5").erroDoRitmo));
+  verdade("zero é recusado, não vira 'nunca'", !!lerQuemPode("todos 0").erroDoRitmo);
+  verdade("texto no lugar do número é recusado", !!lerQuemPode("todos sempre").erroDoRitmo);
+  /* Mesmo recusando o ritmo, quem pode continua lido — a mensagem de erro
+     precisa sugerir o nome certo. */
+  ok("o quem pode sobrevive ao erro do ritmo", lerQuemPode("admin 2").quem, "admin");
+
+  /* E a hora de rodar. */
+  const agora = 1_700_000_000_000;
+  const min = (n) => new Date(agora - n * 60 * 1000).toISOString();
+
+  verdade("sem ritmo nunca roda sozinho",
+    !estaNaHora({ canal_id: "c", ultima_vez: min(999) }, agora));
+  verdade("com ritmo mas sem canal não roda — não invento onde publicar",
+    !estaNaHora({ cada_minutos: 60, ultima_vez: min(999) }, agora));
+  verdade("nunca rodou: roda agora",
+    estaNaHora({ cada_minutos: 60, canal_id: "c" }, agora));
+  verdade("passou o tempo: roda",
+    estaNaHora({ cada_minutos: 60, canal_id: "c", ultima_vez: min(61) }, agora));
+  verdade("ainda não deu a hora: espera",
+    !estaNaHora({ cada_minutos: 60, canal_id: "c", ultima_vez: min(59) }, agora));
+  verdade("no minuto exato já vale",
+    estaNaHora({ cada_minutos: 60, canal_id: "c", ultima_vez: min(60) }, agora));
+  /* Data podre no banco não pode travar o comando para sempre. */
+  verdade("data que não dá para ler: roda em vez de congelar",
+    estaNaHora({ cada_minutos: 60, canal_id: "c", ultima_vez: "ontem de tarde" }, agora));
+  verdade("ritmo em texto não conta como ritmo",
+    !estaNaHora({ cada_minutos: "sempre", canal_id: "c" }, agora));
 }
 
 /* ---- o resultado ---- */
