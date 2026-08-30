@@ -1483,9 +1483,17 @@ function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados
     && !arquivos.length;
 }
 
-/* E, por sala: as sete andam em ritmos diferentes. */
-function emendaNestaSala(velho, ultimoDaSala, juntas) {
-  return !!velho && !!velho.id && ultimoDaSala === velho.id && juntas.length <= LIMITE_DO_CARTAO;
+/* E, por sala: as sete andam em ritmos diferentes.
+
+   `mesmaLingua` guarda contra o cartao bilingue. Uma fala longa demais pra
+   traduzir sai no original; a seguinte, curta, sai traduzida. Emendar as duas
+   dava um cartao com metade em ingles e metade em arabe, sem nada dizendo o
+   que aconteceu -- foi assim que o defeito do teto apareceu. Trecho que ficou
+   no original comeca cartao proprio. */
+function emendaNestaSala(velho, ultimoDaSala, juntas, traduzidoAgora = null) {
+  if (!velho || !velho.id) return false;
+  if (traduzidoAgora !== null && velho.traduzido !== traduzidoAgora) return false;
+  return ultimoDaSala === velho.id && juntas.length <= LIMITE_DO_CARTAO;
 }
 
 /* Onde a fala respondida mora, quando a memoria ja' esqueceu.
@@ -1629,7 +1637,19 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      O vantajosoTraduzir e' economia, nao filtro: "ok", "kkkk", um link solto e
      um emoji atravessam iguais em qualquer lingua, e traduzir isso seria
      gastar sete chamadas pra devolver a mesma palavra. */
-  const vale = texto && vantajosoTraduzir(texto, 1200, 2);
+  /* O teto era 1200, e era baixo demais pra este canal.
+
+     Aviso de alianca nao e' conversa: e' o texto longo do jogo, a lista de
+     eventos do dia, a estrategia da batalha. Passando de 1200 caracteres a
+     fala saia INTEIRA na lingua de origem, sem nada dizendo por que -- e
+     quem le arabe recebia um aviso em ingles achando que o bot tinha
+     desistido dele. 3500 e' o mesmo teto que o caminho das replicas ja' usa;
+     ter dois numeros pra mesma pergunta era o defeito por tras do defeito.
+
+     E passa a usar traduzirLongo, que corta em pedacos de 1500 nas quebras de
+     linha: acima de 1500 uma chamada so' e' recusa na certa em qualquer
+     tradutor. */
+  const vale = texto && vantajosoTraduzir(texto, TEXTO_MAXIMO, 2);
   const idiomas = vale
     ? [...new Set(lista
       .filter((d) => d.canal_id !== origem.canal_id && d.idioma !== origem.idioma)
@@ -1637,11 +1657,16 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     : [];
   const { marcado, pecas } = vale ? protegerDoTradutor(texto, termos) : { marcado: "", pecas: [] };
   const traduzido = new Map();
+  /* Quais idiomas receberam traducao DE VERDADE. Sem isto o cartao nao tem
+     como saber que aquele trecho ficou no original, e uma fala traduzida
+     emendaria embaixo de uma que nao foi -- meio cartao em cada lingua. */
+  const traduzidoMesmo = new Set();
 
   const traduzirUm = async (idioma) => {
     /* Tradutor fora do ar nao pode calar a conversa: manda o original e deixa
        a pessoa se virar, que e' melhor do que a mensagem sumir. */
-    const saiu = await traduzirComCache(marcado, idioma, motor);
+    const saiu = await traduzirLongo(marcado, idioma, motor);
+    if (saiu) traduzidoMesmo.add(idioma);
     traduzido.set(idioma, saiu ? devolverPecas(saiu, pecas) : texto);
   };
 
@@ -1710,7 +1735,10 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     const salaDestino = msg.guild.channels.cache.get(destino.canal_id);
     const linhas = velho ? [...velho.linhas, linhaNova] : [linhaNova];
     const juntas = linhas.join("\n");
-    const emendavel = emendaNestaSala(velho, salaDestino?.lastMessageId, juntas);
+    /* Se esta sala nao pediu traducao (mesmo idioma da origem), o estado e' o
+       da fala anterior -- senao toda fala na propria lingua abriria cartao. */
+    const traduziuAqui = idiomas.includes(destino.idioma) ? traduzidoMesmo.has(destino.idioma) : null;
+    const emendavel = emendaNestaSala(velho, salaDestino?.lastMessageId, juntas, traduziuAqui);
 
     /* A assinatura fica no PE do card, miuda.
 
@@ -1750,7 +1778,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
       try {
         const cabecalhoQueFica = cabecalho || velho.cabecalho;
         await webhook.editMessage(velho.id, { embeds: [montar(juntas, cabecalhoQueFica)] });
-        cartoes.set(destino.canal_id, { id: velho.id, linhas, cabecalho: cabecalhoQueFica });
+        cartoes.set(destino.canal_id, { id: velho.id, linhas, cabecalho: cabecalhoQueFica, traduzido: velho.traduzido });
         /* A fala nova passa a morar no cartao de cima: quem responder a ela
            tem que cair onde o texto dela esta', que agora e' ali.
 
@@ -1777,7 +1805,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         allowedMentions: { parse: [], users: marcados },
       });
       if (posta?.id) {
-        cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], cabecalho });
+        cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], cabecalho, traduzido: traduziuAqui });
         lembrarFala(familia, destino.canal_id, posta.id, familiaId, servidorId);
       }
     } catch (e) {

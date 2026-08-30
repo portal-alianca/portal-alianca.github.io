@@ -692,8 +692,8 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    se confere o que apareceu na sala do outro idioma. */
 {
   const { espelharMensagem, ultimaFalaDaSala } = carregar([
-    "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "ultimaFalaDaSala",
-    "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
+    "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
+    "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
      webhooks que guardam o que mandaram, e edição que troca o embed no lugar. */
@@ -730,6 +730,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   globalThis.protegerDoTradutor = (t) => ({ marcado: t, pecas: [] });
   globalThis.devolverPecas = (t) => t;
   globalThis.traduzirComCache = async (t) => t;
+  globalThis.traduzirLongo = async (t) => t;
   globalThis.MOTOR_AUTO = { tipo: "auto", chave: null };
   globalThis.motoresDoDono = () => [];
 
@@ -798,6 +799,33 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     const es = [...mundo.mensagens.values()].filter((m) => m.canal === "es");
     ok("a sala parada continua com um cartão só", es.length, 1);
     verdade("e ele tem as duas falas", /primeira\nsegunda/.test(es[0].embed.description));
+  }
+
+  /* O cartão bilíngue, que apareceu num aviso de aliança de verdade.
+
+     Uma fala longa demais para traduzir sai no original; a seguinte, curta,
+     sai traduzida. Emendadas, davam um cartão com metade em inglês e metade
+     em árabe — e nada dizendo o que tinha acontecido. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    /* Só esta fala não traduz: passa do teto. */
+    globalThis.vantajosoTraduzir = (t) => t.length <= TEXTO_MAXIMO;
+    globalThis.traduzirLongo = async (t) => `[traduzido] ${t}`;
+
+    await falar(mundo, "x".repeat(TEXTO_MAXIMO + 1));
+    await falar(mundo, "agora uma curta");
+
+    ok("a longa e a curta não dividem cartão", mundo.quantas(), 4);
+    const en = [...mundo.mensagens.values()].filter((m) => m.canal === "en");
+    verdade("a longa saiu no original", /^x{100}/.test(en[0].embed.description));
+    verdade("a curta saiu traduzida", /\[traduzido\] agora uma curta/.test(en[1].embed.description));
+    verdade("e nenhum cartão tem as duas línguas juntas",
+      en.every((m) => !(/x{100}/.test(m.embed.description) && /\[traduzido\]/.test(m.embed.description))));
+
+    /* De volta ao normal para os testes seguintes. */
+    globalThis.vantajosoTraduzir = () => false;
+    globalThis.traduzirLongo = async (t) => t;
   }
 
   /* Cartão apagado no meio do caminho não pode levar a fala junto. */
