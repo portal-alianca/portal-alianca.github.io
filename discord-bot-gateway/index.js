@@ -5118,6 +5118,7 @@ const CANAL_NOVOS = "📥-novos";
 const CANAL_PAGAMENTOS = "💳-pagamentos";
 const CANAL_ERROS = "🐛-erros";
 const CANAL_CLIENTES = "📋-clientes";
+const CANAL_DIARIO = "📊-diário";
 
 /* Quem pode abrir o painel do dono.
 
@@ -5385,7 +5386,7 @@ async function montarPainelDoDonoAgora() {
   const guild = client.guilds.cache.get(gid);
   if (!guild) return;
 
-  for (const nome of [CANAL_NOVOS, CANAL_PAGAMENTOS, CANAL_ERROS]) {
+  for (const nome of [CANAL_NOVOS, CANAL_PAGAMENTOS, CANAL_ERROS, CANAL_DIARIO]) {
     await canalDoPainel(guild, nome, null);
   }
   const sala = await canalDoPainel(guild, CANAL_CLIENTES, null);
@@ -5925,6 +5926,118 @@ async function camposDeCota() {
     }
   }
   return campos;
+}
+
+/* ---------------- como foi o dia ----------------
+
+   O canal de erros conta o que quebrou. Nada contava o que FUNCIONOU -- e a
+   diferenca entre "o bot esta otimo" e "o bot esta mudo ha seis horas" era
+   alguem abrir o Discord e reparar.
+
+   E' empurrado, nao consultado. Tela que so' aparece quando se pergunta so'
+   informa quem ja' desconfiava; o que falta e' a linha que chega sozinha no
+   dia em que o numero cai pela metade.
+
+   O dia que ele resume e' o que ACABOU, nao o de hoje: um resumo do dia
+   corrente muda toda hora e nao serve pra comparar com o de ontem. */
+function ontemISO() {
+  const d = new Date(Date.now() - 24 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+function somaDoDia(linhas) {
+  return (linhas || []).reduce((a, l) => ({
+    c: a.c + Number(l.caracteres || 0),
+    t: a.t + Number(l.traducoes || 0),
+    k: a.k + Number(l.do_cache || 0),
+  }), { c: 0, t: 0, k: 0 });
+}
+
+/* Quanto variou de um dia pro outro, em texto.
+
+   Sem a comparacao o cartao e' so um numero, e numero sozinho nao diz se esta
+   bom: "1.430 traducoes" nao alarma ninguem, "1.430, sete vezes ontem" sim. */
+function variacao(hoje, ontem) {
+  if (!ontem) return hoje ? " _(primeiro dia com dado)_" : "";
+  const pct = Math.round(((hoje - ontem) / ontem) * 100);
+  if (Math.abs(pct) < 5) return " _(estável)_";
+  return ` ${pct > 0 ? "▲" : "▼"} **${Math.abs(pct)}%** vs. o dia anterior`;
+}
+
+async function cartaoDoDia() {
+  const dia = ontemISO();
+  const anterior = new Date(Date.parse(dia) - 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+  const [linhasDoDia, linhasDeAntes, falas, servidores] = await Promise.all([
+    sb(`cyron_uso_diario?dia=eq.${dia}&select=caracteres,traducoes,do_cache,motor`),
+    sb(`cyron_uso_diario?dia=eq.${anterior}&select=caracteres,traducoes,do_cache`),
+    sb(`discord_fala_espelhada?criado_em=gte.${dia}T00:00:00Z&criado_em=lt.${dia}T23:59:59Z&select=msg_id`),
+    sb("cyron_servidor?saiu_em=is.null&select=id"),
+  ].map((p) => p.catch(() => null)));
+
+  const hoje = somaDoDia(linhasDoDia);
+  const ontem = somaDoDia(linhasDeAntes);
+
+  /* Qual motor carregou o dia. Importa porque "tudo no gratuito" e "tudo na
+     sua chave" custam coisas diferentes e quebram de jeitos diferentes. */
+  const porMotor = new Map();
+  for (const l of linhasDoDia || []) {
+    porMotor.set(l.motor, (porMotor.get(l.motor) || 0) + Number(l.traducoes || 0));
+  }
+  const motores = [...porMotor.entries()].sort((a, b) => b[1] - a[1])
+    .map(([m, t]) => `\`${m}\` ${t}`).join(" · ") || "_ninguém traduziu_";
+
+  const cota = comoEstaACota().map((c) => `**${MOTORES[c.tipo]?.nome || c.tipo}** ${c.pct}%`).join(" · ");
+  const parado = !hoje.t && !(falas || []).length;
+
+  return {
+    color: parado ? 0xB4534A : 0x2E8B7A,
+    title: `📊 ${dia} — como foi o dia`,
+    description: parado
+      ? "**Nenhuma tradução e nenhuma mensagem espelhada neste dia.** Se o dia não foi " +
+        "feriado no seu servidor, vale conferir se eu estive de pé."
+      : undefined,
+    fields: [
+      { name: "Mensagens espelhadas", inline: true,
+        value: `**${(falas || []).length}** cópias entregues` },
+      { name: "Traduções", inline: true,
+        value: `**${hoje.t}**${variacao(hoje.t, ontem.t)}\n${hoje.k} vieram do cache` },
+      { name: "Caracteres", inline: true,
+        value: `**${(hoje.c / 1000).toFixed(1)}k**${variacao(hoje.c, ontem.c)}` },
+      { name: "Quem traduziu", value: motores },
+      ...(cota ? [{ name: "Cota do mês", value: cota }] : []),
+      { name: "Servidores ativos", inline: true, value: String((servidores || []).length) },
+      { name: "De pé desde", inline: true, value: quandoFoi(Date.now() - process.uptime() * 1000, "R") },
+    ],
+    footer: { text: "um por dia, sobre o dia que terminou" },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/* Publica o cartao uma vez por dia.
+
+   Quem lembra que ja' publicou e' o CANAL, nao a memoria: o bot reinicia toda
+   vez que eu publico, e uma variavel guardando "ja' mandei hoje" voltaria zerada
+   -- o canal ganharia um cartao por deploy. Entao antes de mandar eu olho as
+   ultimas mensagens de la' e procuro o cartao com o titulo daquele dia. */
+async function talvezOCartaoDoDia() {
+  const gid = await guildDoPainel();
+  if (!gid) return;
+  const guild = client.guilds.cache.get(gid);
+  if (!guild) return;
+  const canal = guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildText && c.name === CANAL_DIARIO);
+  if (!canal) return;
+
+  const dia = ontemISO();
+  const ultimas = await canal.messages.fetch({ limit: 15 }).catch(() => null);
+  if (!ultimas) return;
+  const jaTem = [...ultimas.values()].some((m) => m.author.id === client.user.id
+    && (m.embeds?.[0]?.title || "").includes(dia));
+  if (jaTem) return;
+
+  await canal.send({ embeds: [await cartaoDoDia()], allowedMentions: { parse: [] } });
+  console.log(`diário: cartão de ${dia} publicado`);
 }
 
 function barraDeCota({ usado, teto }) {
@@ -7556,6 +7669,7 @@ async function deHoraEmHora() {
   if (Date.now() - ultimaHora < 60 * 60 * 1000) return;
   ultimaHora = Date.now();
   await olharAsCotas().catch((e) => console.error("cota: passada falhou:", e?.message || e));
+  await talvezOCartaoDoDia().catch((e) => console.error("diário: cartão falhou:", e?.message || e));
 }
 
 client.once("clientReady", () => {

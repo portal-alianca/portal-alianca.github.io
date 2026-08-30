@@ -819,6 +819,36 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     !/█{11}/.test(barraDeCota({ usado: 5000, teto: 1000 })));
 }
 
+/* ============== o cartão diário: as contas, sem o Discord ============== */
+{
+  const { somaDoDia, variacao, ontemISO } = carregar(["somaDoDia", "variacao", "ontemISO"]);
+
+  ok("dia sem linha nenhuma soma zero", somaDoDia([]), { c: 0, t: 0, k: 0 });
+  ok("linhas de motores diferentes somam juntas",
+    somaDoDia([{ caracteres: 100, traducoes: 5, do_cache: 1 },
+      { caracteres: 50, traducoes: 3, do_cache: 2 }]), { c: 150, t: 8, k: 3 });
+  /* O banco devolve número em texto às vezes; somar texto daria "10050". */
+  ok("número em texto ainda soma como número",
+    somaDoDia([{ caracteres: "100", traducoes: "5" }, { caracteres: "50", traducoes: "3" }]),
+    { c: 150, t: 8, k: 0 });
+  ok("coluna faltando conta como zero", somaDoDia([{ caracteres: 10 }]), { c: 10, t: 0, k: 0 });
+
+  /* Número sozinho não diz se está bom: "1.430 traduções" não alarma
+     ninguém, "1.430, sete vezes ontem" sim. */
+  verdade("dobrou: aponta para cima", /▲ \*\*100%\*\*/.test(variacao(200, 100)));
+  verdade("caiu pela metade: aponta para baixo", /▼ \*\*50%\*\*/.test(variacao(50, 100)));
+  ok("variação pequena não vira alarme", variacao(103, 100), " _(estável)_");
+  /* Dividir por zero daria Infinity% no cartão. */
+  ok("sem dia anterior não inventa porcentagem", variacao(500, 0), " _(primeiro dia com dado)_");
+  ok("zero e zero não diz nada", variacao(0, 0), "");
+  verdade("dia que zerou é queda de 100%", /▼ \*\*100%\*\*/.test(variacao(0, 900)));
+
+  /* O cartão resume o dia que ACABOU: o de hoje muda toda hora e não dá para
+     comparar com o de ontem. */
+  verdade("ontem tem forma de data", /^\d{4}-\d{2}-\d{2}$/.test(ontemISO()));
+  verdade("e é mesmo antes de hoje", ontemISO() < new Date().toISOString().slice(0, 10));
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
