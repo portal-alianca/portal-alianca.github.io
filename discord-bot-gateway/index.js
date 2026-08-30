@@ -829,11 +829,14 @@ function motorDe(servidor) {
   /* Ate' o gratuito carrega o id do servidor. Antes so' o motor com chave
      carregava, porque so' ele precisava -- e a contagem de uso, que veio
      depois, teria nascido cega justamente pra maioria dos servidores. */
-  let motor = { tipo: "auto", servidorId: servidor.id };
+  /* A cota viaja junto com o motor porque quem decide usar a chave do dono e'
+     `traduzir`, la' embaixo, e ela so' recebe o motor. */
+  let motor = { tipo: "auto", servidorId: servidor.id, cotaDoDono: cotaDoDonoNoDia(servidor) };
   if (servidor.tradutor_motor && servidor.tradutor_motor !== "auto" && servidor.tradutor_chave) {
     const chave = decifrar(servidor.tradutor_chave);
     if (chave) {
-      motor = { tipo: servidor.tradutor_motor, chave, regiao: servidor.tradutor_regiao || null, servidorId: servidor.id };
+      motor = { tipo: servidor.tradutor_motor, chave, regiao: servidor.tradutor_regiao || null,
+        servidorId: servidor.id, cotaDoDono: cotaDoDonoNoDia(servidor) };
     } else {
       /* Nao decifrou -- segredo trocado, ou linha mexida. Sem isto aqui o
          painel dizia "🟢 Azure, chave deste servidor" (ele so' olha se a
@@ -1230,13 +1233,53 @@ async function olharAsCotas() {
 }
 
 /* As chaves do dono, na ordem em que ele cadastrou. */
+/* Quanto cada servidor ja' gastou das minhas chaves hoje.
+
+   Em memoria, e nao no banco, porque isto e' consultado a cada fala: uma ida
+   ao Postgres por mensagem seria pior que o problema que resolve.
+
+   Ao subir, o numero de cada servidor comeca do que ja' esta gravado no dia --
+   senao um reinicio no meio da tarde zeraria o teto e o servidor grande teria
+   duas cotas no mesmo dia. Uma leitura por servidor por dia, e ela fica. */
+const gastoDoDia = new Map(); // `${servidorId}|${dia}` -> caracteres
+
+async function jaGastouHoje(servidorId) {
+  const chave = `${servidorId}|${hojeISO()}`;
+  if (gastoDoDia.has(chave)) return gastoDoDia.get(chave);
+  let inicial = 0;
+  try {
+    const linhas = await sb(`cyron_uso_diario?servidor_id=eq.${servidorId}&dia=eq.${hojeISO()}` +
+      "&select=caracteres,motor") || [];
+    inicial = linhas
+      .filter((l) => String(l.motor || "").startsWith("dono-"))
+      .reduce((a, l) => a + Number(l.caracteres || 0), 0);
+  } catch { /* sem o passado, comeco do zero: teto frouxo e' melhor que bot mudo */ }
+  gastoDoDia.set(chave, inicial);
+  /* Um dia de chaves velhas nao precisa ficar na memoria pra sempre. */
+  for (const k of gastoDoDia.keys()) if (!k.endsWith(hojeISO())) gastoDoDia.delete(k);
+  return inicial;
+}
+
+function somarGasto(servidorId, quantos) {
+  const chave = `${servidorId}|${hojeISO()}`;
+  gastoDoDia.set(chave, (gastoDoDia.get(chave) || 0) + quantos);
+}
+
+/* Passou do teto: a chave do dono sai da fila SO' pra este servidor. */
+async function estourouACota(servidorId, teto) {
+  if (!servidorId || !(teto > 0)) return false;
+  return (await jaGastouHoje(servidorId)) >= teto;
+}
+
 async function tentarChavesDoDono(texto, alvo, motor) {
+  if (await estourouACota(motor.servidorId, motor.cotaDoDono)) return null;
   for (const reserva of motoresDoDono()) {
     if (estaDescansando(`dono:${reserva.tipo}`)) continue;
     try {
       const saiu = await MOTORES[reserva.tipo].traduzir(texto, alvo, reserva);
       if (saiu) {
         anotarUso(motor.servidorId, `dono-${reserva.tipo}`, { caracteres: texto.length, traducoes: 1 });
+        somarGasto(motor.servidorId, texto.length);
         return saiu;
       }
     } catch (e) {
@@ -1958,9 +2001,31 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
    com trezentos canais -- e ja quase aconteceu duas vezes nesta semana, com a
    posicao e com o nome. */
 const PLANOS = {
-  gratis: { idiomas: 3,  canais: 20,  fontes: 2 },
-  pago:   { idiomas: 20, canais: 200, fontes: 10 },
+  gratis: { idiomas: 3,  canais: 20,  fontes: 2,  cotaDoDono: 8000 },
+  pago:   { idiomas: 20, canais: 200, fontes: 10, cotaDoDono: 40000 },
 };
+
+/* Quanto das MINHAS chaves cada servidor pode gastar por dia.
+
+   Este era o buraco de verdade, e ele nao derruba o bot -- derruba os
+   vizinhos. As chaves do dono sao uma so' bolsa para todos os inquilinos: 3
+   milhoes de caracteres por mes, uns 100 mil por dia. O servidor mais
+   movimentado que eu tenho gastou 92 mil num unico dia. Sem teto, ele sozinho
+   esvazia a bolsa antes do almoco e TODOS os outros passam o resto do mes no
+   endereco gratuito do Google, que a esse volume devolve 429. Um cliente
+   estraga o produto dos outros sem nunca saber.
+
+   Estourar o teto nao corta a tradução: corta o acesso a MINHA chave. O
+   servidor cai pra chave dele, se tiver, e depois pros gratuitos -- e o
+   caminho de sair do teto e' o mesmo que o produto ja vende, que e' o cliente
+   por a propria chave.
+
+   Os numeros: 40 mil/dia no pago sao 1,2 milhao no mes, e cabem dois clientes
+   grandes na bolsa. 8 mil no gratis e' o bastante pra um servidor pequeno
+   conversar o dia inteiro, e pouco pra alguem morar de graca na minha conta. */
+function cotaDoDonoNoDia(servidor) {
+  return PLANOS[planoDe(servidor)]?.cotaDoDono ?? PLANOS.gratis.cotaDoDono;
+}
 
 /* O plano que VALE agora, que nem sempre e' o que esta gravado.
 
@@ -4200,6 +4265,8 @@ async function montarPainel(guild, servidor) {
   const elegiveis = await canaisElegiveis(guild, servidor, vivas);
   const motorUsado = comoEstaOMotor(servidor);
   const uso = await usoDeHoje(servidor.id);
+  const cotaHoje = cotaDoDonoNoDia(servidor);
+  const gastoHoje = await jaGastouHoje(servidor.id);
 
   /* Um sinal antes do numero, pra dar pra ler sem contar. */
   const marca = (usado, teto) => (usado >= teto ? "🔴" : usado >= teto - 1 ? "🟡" : "🟢");
@@ -4235,6 +4302,22 @@ async function montarPainel(guild, servidor) {
         : "_nada ainda hoje_",
       inline: true,
     },
+    /* O teto do dia, dito ANTES de bater nele.
+
+       Sem esta linha, estourar a cota seria degradação calada -- a tradução
+       piora, ninguém sabe por quê, e o caminho de sair disso (pôr a própria
+       chave) fica invisível. Foi esse o defeito de ontem, e não vou repetir
+       ele num lugar novo. */
+    ...(servidor.tradutor_chave ? [] : [{
+      name: `${marca(gastoHoje, cotaHoje)} Cota do tradutor da casa — hoje`,
+      value: `${(gastoHoje / 1000).toFixed(1)}k de ${(cotaHoje / 1000).toFixed(0)}k caracteres` +
+        (gastoHoje >= cotaHoje
+          ? "\n\n🔴 **Bateu no teto de hoje.** Até amanhã eu traduzo por um caminho " +
+            "gratuito, que é mais lento e às vezes recusa. Para não depender dele, " +
+            "ponha uma chave própria em **🔑 Tradutor** — aí não há teto."
+          : "\n_Este é o limite do tradutor que vem comigo. Com chave própria, não há teto._"),
+      inline: true,
+    }]),
     {
       name: "💬 Tradutor por mensagem",
       value: servidor.tradutor_topico

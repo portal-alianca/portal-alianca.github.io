@@ -1237,6 +1237,60 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     somaDoDia(linhas), { c: 1000, t: 20, k: 2 });
 }
 
+/* ====== um servidor não pode esvaziar a chave dos outros ======
+
+   Este é o buraco que não derruba o bot: derruba os vizinhos. As chaves do
+   dono são UMA bolsa para todos os inquilinos — 3 milhões por mês, uns 100 mil
+   por dia. O servidor mais movimentado gastou 92 mil num único dia. Sem teto,
+   ele sozinho esvazia a bolsa antes do almoço e todos os outros passam o resto
+   do mês no Google gratuito, que a esse volume devolve 429.
+
+   Estourar o teto não corta a tradução: corta o acesso à chave do dono. */
+{
+  const { cotaDoDonoNoDia, jaGastouHoje, somarGasto, estourouACota, gastoDoDia } =
+    carregar(["PLANOS", "gastoDoDia", "cotaDoDonoNoDia", "jaGastouHoje", "somarGasto", "estourouACota"]);
+
+  globalThis.planoDe = (s) => s.plano;
+  globalThis.hojeISO = () => "2026-08-30";
+
+  ok("servidor pago tem a cota maior", cotaDoDonoNoDia({ plano: "pago" }), 40000);
+  ok("servidor grátis tem a menor", cotaDoDonoNoDia({ plano: "gratis" }), 8000);
+  /* Plano desconhecido cai no menor, não no maior: errar para o lado que
+     protege a bolsa. */
+  ok("plano estranho cai no mais apertado", cotaDoDonoNoDia({ plano: "sei lá" }), 8000);
+
+  /* Sem servidor identificado não há teto: é o caminho do tradutor por tópico
+     e dos testes, e travar ali seria travar o que não gasta a bolsa. */
+  globalThis.sb = async () => [];
+  verdade("sem servidor não há teto", !(await estourouACota(null, 40000)));
+  verdade("sem cota configurada não há teto", !(await estourouACota("s1", 0)));
+
+  gastoDoDia.clear();
+  verdade("servidor novo começa livre", !(await estourouACota("s1", 40000)));
+  somarGasto("s1", 39999);
+  verdade("um caractere antes do teto ainda passa", !(await estourouACota("s1", 40000)));
+  somarGasto("s1", 1);
+  verdade("no teto, para", await estourouACota("s1", 40000));
+  /* O vizinho não é afetado. É o ponto inteiro do recurso. */
+  verdade("e o servidor do lado continua livre", !(await estourouACota("s2", 40000)));
+
+  /* Reiniciar no meio da tarde não pode dar uma segunda cota ao mesmo
+     servidor: o gasto do dia é lido do banco na primeira vez. */
+  gastoDoDia.clear();
+  globalThis.sb = async () => [
+    { motor: "dono-azure", caracteres: 30000 },
+    { motor: "dono-deepl", caracteres: 5000 },
+    { motor: "auto", caracteres: 90000 },
+  ];
+  ok("ao subir, conta só o que saiu das minhas chaves", await jaGastouHoje("s3"), 35000);
+  verdade("e o teto continua valendo depois do reinício", await estourouACota("s3", 35000));
+
+  /* Banco fora do ar não pode calar o bot: teto frouxo é melhor que bot mudo. */
+  gastoDoDia.clear();
+  globalThis.sb = async () => { throw new Error("banco fora"); };
+  ok("sem banco, começa do zero em vez de travar", await jaGastouHoje("s4"), 0);
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
