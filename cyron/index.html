@@ -355,8 +355,19 @@ html[lang="en"] [data-en]{display:revert}
         <tbody>
           <tr class="preco-linha">
             <th scope="row"></th>
-            <td><span class="preco">R$ 0</span></td>
-            <td class="col-pago"><span class="preco">R$ 79</span><small> <span data-pt>/mês</span><span data-en>/mo</span></small></td>
+            <!-- O preço troca de moeda junto com a língua, e não só de
+                 palavra. O CYRON existe para servidor internacional: um dono
+                 de servidor americano lendo "R$ 79" não sabe se é caro ou
+                 barato, e ir procurar a cotação é onde ele desiste. -->
+            <td>
+              <span class="preco" data-pt>R$ 0</span>
+              <span class="preco" data-en>$0</span>
+            </td>
+            <td class="col-pago">
+              <span class="preco" data-pt>R$ 79</span>
+              <span class="preco" data-en>$15</span>
+              <small> <span data-pt>/mês</span><span data-en>/mo</span></small>
+            </td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Tradução por bandeira</span><span data-en>Flag translation</span></th>
