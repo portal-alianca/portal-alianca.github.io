@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — seu servidor do Discord em todas as línguas</title>
+<meta name="description" content="O CYRON traduz o seu servidor do Discord sozinho. Cada pessoa lê e escreve na língua dela, na mesma conversa.">
+<meta property="og:title" content="CYRON — seu servidor do Discord em todas as línguas">
+<meta property="og:description" content="Cada pessoa lê e escreve na língua dela, na mesma conversa.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+<style>
+/* A identidade é o âmbar dos próprios cartões do bot (0xF5A623). Quem vê o
+   CYRON trabalhar no Discord e depois chega aqui reconhece o mesmo produto --
+   e um tema de jogo faria a ferramenta parecer serviço de um jogo só. */
+:root{
+  --fundo:#0F1115; --fundo-2:#161A21; --fundo-3:#1D222B;
+  --borda:#272D38; --borda-viva:#3A424F;
+  --texto:#E8EAED; --texto-fraco:#9AA3AF;
+  --ambar:#F5A623; --ambar-fraco:#F8C46A;
+  --verde:#5EBB83; --azul:#5865F2;
+  --raio:14px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:1080px; margin:0 auto; padding:0 20px}
+h1,h2,h3{line-height:1.2; margin:0}
+
+/* ---- barra ---- */
+.barra{
+  position:sticky; top:0; z-index:20; background:rgba(15,17,21,.86);
+  backdrop-filter:blur(10px); border-bottom:1px solid var(--borda);
+}
+.barra .env{display:flex; align-items:center; gap:16px; height:62px}
+.marca{font-weight:700; letter-spacing:.12em; font-size:15px; color:var(--texto)}
+.marca span{color:var(--ambar)}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.barra nav a{color:var(--texto-fraco); font-size:14px; padding:8px 10px; border-radius:8px}
+.barra nav a:hover{color:var(--texto); background:var(--fundo-3); text-decoration:none}
+
+.idioma{
+  display:flex; border:1px solid var(--borda-viva); border-radius:8px; overflow:hidden;
+}
+.idioma button{
+  background:none; border:0; color:var(--texto-fraco); font:600 12px/1 inherit;
+  padding:8px 10px; cursor:pointer;
+}
+.idioma button[aria-pressed="true"]{background:var(--ambar); color:#241a05}
+
+/* ---- botões ---- */
+.bt{
+  display:inline-flex; align-items:center; gap:9px; padding:13px 22px; border-radius:11px;
+  font-weight:650; font-size:15px; border:1px solid transparent; cursor:pointer;
+  transition:transform .12s ease, filter .12s ease;
+}
+.bt:hover{text-decoration:none; transform:translateY(-1px); filter:brightness(1.07)}
+.bt-1{background:var(--azul); color:#fff}
+.bt-2{background:var(--fundo-3); color:var(--texto); border-color:var(--borda-viva)}
+.bt-3{background:var(--ambar); color:#241a05}
+
+/* ---- topo ---- */
+.topo{padding:88px 0 72px; text-align:center; position:relative; overflow:hidden}
+.topo::before{
+  content:""; position:absolute; inset:-40% 20% auto; height:460px;
+  background:radial-gradient(closest-side, rgba(245,166,35,.16), transparent 70%);
+  pointer-events:none;
+}
+.topo h1{font-size:clamp(30px,5.4vw,52px); font-weight:750; letter-spacing:-.02em; position:relative}
+.topo h1 em{font-style:normal; color:var(--ambar)}
+.linha-fina{
+  margin:20px auto 0; max-width:640px; color:var(--texto-fraco);
+  font-size:clamp(16px,2.2vw,19px); position:relative;
+}
+.acoes{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:34px; position:relative}
+.sob-botao{margin-top:16px; font-size:13px; color:var(--texto-fraco); position:relative}
+
+/* ---- prova: a mesma frase em várias salas ---- */
+.prova{
+  display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(232px,1fr));
+  margin:60px 0 0; position:relative; text-align:left;
+}
+.sala{background:var(--fundo-2); border:1px solid var(--borda); border-radius:var(--raio); padding:14px 16px}
+.sala .nome{font-size:12px; color:var(--texto-fraco); font-weight:600; margin-bottom:10px}
+.fala{display:flex; gap:10px; align-items:flex-start}
+.bola{width:30px; height:30px; border-radius:50%; flex:0 0 30px; background:linear-gradient(135deg,#7c5cff,#f5a623)}
+.fala b{display:block; font-size:13px; color:var(--ambar-fraco); font-weight:650}
+.fala p{margin:2px 0 0; font-size:14px}
+.selo{font-size:11px; color:var(--texto-fraco); margin-top:6px}
+
+/* ---- seções ---- */
+section{padding:74px 0; border-top:1px solid var(--borda)}
+.rotulo{
+  font-size:12px; font-weight:700; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--ambar); margin-bottom:12px;
+}
+section h2{font-size:clamp(24px,3.4vw,34px); letter-spacing:-.015em}
+section > .env > p.intro{color:var(--texto-fraco); max-width:660px; margin:16px 0 0; font-size:17px}
+
+.grade{display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(266px,1fr)); margin-top:38px}
+.cartao{
+  background:var(--fundo-2); border:1px solid var(--borda); border-radius:var(--raio);
+  padding:22px; display:flex; flex-direction:column; gap:9px;
+}
+.cartao .ico{font-size:24px}
+.cartao h3{font-size:17px}
+.cartao p{margin:0; color:var(--texto-fraco); font-size:15px}
+.etiqueta{
+  align-self:flex-start; margin-top:4px; font-size:11px; font-weight:700; letter-spacing:.06em;
+  text-transform:uppercase; padding:4px 9px; border-radius:999px;
+}
+.et-gratis{background:rgba(94,187,131,.14); color:var(--verde); border:1px solid rgba(94,187,131,.3)}
+.et-pago{background:rgba(245,166,35,.13); color:var(--ambar); border:1px solid rgba(245,166,35,.3)}
+
+/* ---- números ---- */
+.numeros{display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); margin-top:38px}
+.numero{background:var(--fundo-2); border:1px solid var(--borda); border-radius:var(--raio); padding:22px}
+.numero b{display:block; font-size:32px; font-weight:750; color:var(--ambar); letter-spacing:-.02em}
+.numero span{color:var(--texto-fraco); font-size:14px}
+
+/* ---- planos ---- */
+.planos{display:grid; gap:18px; grid-template-columns:repeat(auto-fit,minmax(276px,1fr)); margin-top:38px; align-items:start}
+.plano{
+  background:var(--fundo-2); border:1px solid var(--borda); border-radius:var(--raio);
+  padding:26px; display:flex; flex-direction:column; height:100%;
+}
+.plano.destaque{border-color:var(--ambar); background:var(--fundo-3); position:relative}
+.plano.destaque::after{
+  content:attr(data-fita); position:absolute; top:-11px; left:26px; background:var(--ambar);
+  color:#241a05; font-size:11px; font-weight:750; letter-spacing:.08em; text-transform:uppercase;
+  padding:4px 10px; border-radius:999px;
+}
+.plano h3{font-size:19px}
+.preco{margin:14px 0 4px; font-size:34px; font-weight:750; letter-spacing:-.02em}
+.preco small{font-size:14px; font-weight:500; color:var(--texto-fraco)}
+.plano ul{list-style:none; padding:0; margin:20px 0 24px; display:flex; flex-direction:column; gap:11px}
+.plano li{font-size:15px; padding-left:24px; position:relative; color:var(--texto)}
+.plano li::before{content:"✓"; position:absolute; left:0; color:var(--verde); font-weight:700}
+.plano li.nao{color:var(--texto-fraco)}
+.plano li.nao::before{content:"—"; color:var(--borda-viva)}
+.plano .bt{margin-top:auto; justify-content:center}
+.plano .breve{
+  margin-top:auto; text-align:center; padding:13px; border-radius:11px; font-size:14px;
+  color:var(--texto-fraco); border:1px dashed var(--borda-viva);
+}
+
+/* ---- aviso honesto ---- */
+.nota{
+  margin-top:26px; padding:16px 18px; border-left:3px solid var(--borda-viva);
+  background:var(--fundo-2); border-radius:0 var(--raio) var(--raio) 0;
+  color:var(--texto-fraco); font-size:14px;
+}
+
+/* ---- perguntas ---- */
+details{border-bottom:1px solid var(--borda); padding:18px 0}
+details summary{cursor:pointer; font-weight:650; font-size:16px; list-style:none; display:flex; gap:12px}
+details summary::-webkit-details-marker{display:none}
+details summary::before{content:"+"; color:var(--ambar); font-weight:700}
+details[open] summary::before{content:"–"}
+details p{color:var(--texto-fraco); margin:12px 0 0 24px; font-size:15px}
+
+/* ---- fim ---- */
+.fecho{text-align:center; padding:84px 0}
+.fecho h2{font-size:clamp(24px,3.6vw,36px)}
+.fecho p{color:var(--texto-fraco); margin:16px auto 30px; max-width:520px}
+footer{border-top:1px solid var(--borda); padding:30px 0; color:var(--texto-fraco); font-size:14px}
+footer .env{display:flex; gap:16px; flex-wrap:wrap; align-items:center}
+footer nav{margin-left:auto; display:flex; gap:16px}
+
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<span>RON</span></a>
+    <nav>
+      <a href="#como"><span data-pt>Como funciona</span><span data-en>How it works</span></a>
+      <a href="#planos"><span data-pt>Planos</span><span data-en>Pricing</span></a>
+      <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
+      <div class="idioma" role="group" aria-label="Idioma / Language">
+        <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+        <button type="button" data-troca="en" aria-pressed="false">EN</button>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<div class="topo">
+  <div class="env">
+    <h1>
+      <span data-pt>Seu servidor fala <em>vinte línguas</em>.<br>Ninguém precisa perceber.</span>
+      <span data-en>Your server speaks <em>twenty languages</em>.<br>Nobody has to notice.</span>
+    </h1>
+    <p class="linha-fina">
+      <span data-pt>O CYRON traduz a conversa enquanto ela acontece. Cada pessoa escreve na língua dela e lê todo mundo na língua dela — na mesma conversa, sem comando nenhum.</span>
+      <span data-en>CYRON translates the conversation as it happens. Everyone writes in their own language and reads everyone else in theirs — same conversation, no commands.</span>
+    </p>
+    <div class="acoes">
+      <a class="bt bt-1" id="convite" href="#">
+        <span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span>
+      </a>
+      <a class="bt bt-2" href="#planos"><span data-pt>Ver planos</span><span data-en>See pricing</span></a>
+    </div>
+    <p class="sob-botao">
+      <span data-pt>Grátis para começar · sem cartão · pronto em menos de um minuto</span>
+      <span data-en>Free to start · no card · ready in under a minute</span>
+    </p>
+
+    <div class="prova">
+      <div class="sala">
+        <div class="nome">#chat-pt</div>
+        <div class="fala">
+          <div class="bola"></div>
+          <div><b>Tiago</b><p data-pt>Alguém entra no urso às 20h?</p><p data-en>Alguém entra no urso às 20h?</p></div>
+        </div>
+      </div>
+      <div class="sala">
+        <div class="nome">#chat-en</div>
+        <div class="fala">
+          <div class="bola"></div>
+          <div><b>Tiago</b><p>Anyone joining the bear at 8pm?</p><div class="selo">🇧🇷 → 🇬🇧</div></div>
+        </div>
+      </div>
+      <div class="sala">
+        <div class="nome">#chat-ar</div>
+        <div class="fala">
+          <div class="bola"></div>
+          <div><b>Tiago</b><p dir="rtl">هل سينضم أحد إلى الدب الساعة 8 مساءً؟</p><div class="selo">🇧🇷 → 🇸🇦</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="como">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Como funciona</span><span data-en>How it works</span></div>
+    <h2>
+      <span data-pt>Quatro jeitos de atravessar a barreira</span>
+      <span data-en>Four ways through the language barrier</span>
+    </h2>
+    <p class="intro">
+      <span data-pt>Servidor internacional se divide sozinho: os brasileiros num canto, os árabes em outro, e o aviso importante em inglês que metade não lê. O CYRON resolve isso por quatro caminhos — dois de graça.</span>
+      <span data-en>International servers split on their own: one crowd here, another there, and the important announcement in English that half of them can't read. CYRON fixes that four ways — two of them free.</span>
+    </p>
+
+    <div class="grade">
+      <div class="cartao">
+        <div class="ico">🏳️</div>
+        <h3><span data-pt>Reagiu com a bandeira, leu na sua língua</span><span data-en>React with your flag, read it in your language</span></h3>
+        <p>
+          <span data-pt>A pessoa põe a bandeira do país dela em qualquer mensagem e recebe aquela mensagem traduzida, no privado. Sem comando, sem menu, sem encher o canal. Vale a bandeira que ela tem: 🇲🇽 funciona, não só 🇪🇸.</span>
+          <span data-en>Anyone reacts with their country's flag on any message and gets it translated, in their DMs. No command, no menu, no channel clutter. Their own flag works: 🇲🇽 counts, not just 🇪🇸.</span>
+        </p>
+        <span class="etiqueta et-gratis"><span data-pt>No plano grátis</span><span data-en>Free plan</span></span>
+      </div>
+
+      <div class="cartao">
+        <div class="ico">💬</div>
+        <h3><span data-pt>Um botão de tradução em cada aviso</span><span data-en>A translate button under every notice</span></h3>
+        <p>
+          <span data-pt>Avisos e anúncios ganham um seletor de idiomas embaixo. Quem clica lê na língua dele, e só ele vê — o canal continua limpo para todo mundo.</span>
+          <span data-en>Announcements get a language picker underneath. Whoever clicks reads it in their language, and only they see it — the channel stays clean for everyone.</span>
+        </p>
+        <span class="etiqueta et-gratis"><span data-pt>No plano grátis</span><span data-en>Free plan</span></span>
+      </div>
+
+      <div class="cartao">
+        <div class="ico">🔁</div>
+        <h3><span data-pt>A mesma conversa, uma sala por língua</span><span data-en>One conversation, one room per language</span></h3>
+        <p>
+          <span data-pt>Quem escreve em #chat-pt aparece em #chat-en já em inglês, com o nome e a foto de quem falou. Não é um canal de robô: parece que a pessoa escreveu ali.</span>
+          <span data-en>Write in #chat-pt and it shows up in #chat-en already in English, with the speaker's name and avatar. It doesn't read like a bot channel — it reads like they wrote it there.</span>
+        </p>
+        <span class="etiqueta et-pago"><span data-pt>Grátis até 3 línguas</span><span data-en>Free up to 3 languages</span></span>
+      </div>
+
+      <div class="cartao">
+        <div class="ico">📁</div>
+        <h3><span data-pt>O servidor inteiro na língua de cada um</span><span data-en>The whole server, in each person's language</span></h3>
+        <p>
+          <span data-pt>A pessoa escolhe o idioma e ganha uma categoria só dela: evento, regras, anúncios e chat, tudo traduzido. Você publica uma vez no canal de sempre; o resto o CYRON leva.</span>
+          <span data-en>They pick a language and get a category of their own: events, rules, announcements and chat, all translated. You post once in the usual channel; CYRON carries the rest.</span>
+        </p>
+        <span class="etiqueta et-pago"><span data-pt>Grátis até 3 línguas</span><span data-en>Free up to 3 languages</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="env">
+    <div class="rotulo"><span data-pt>Em produção</span><span data-en>In production</span></div>
+    <h2><span data-pt>Não é protótipo</span><span data-en>Not a prototype</span></h2>
+    <p class="intro">
+      <span data-pt>O CYRON nasceu para uma aliança de Kingshot com gente de oito línguas na mesma sala, e roda lá todo dia. Os números abaixo são medidos, não estimados.</span>
+      <span data-en>CYRON was built for a Kingshot alliance with eight languages in one room, and it runs there every day. The numbers below are measured, not estimated.</span>
+    </p>
+    <div class="numeros">
+      <div class="numero">
+        <b>1.777</b>
+        <span data-pt>traduções entregues em 24 horas, num servidor só</span>
+        <span data-en>translations delivered in 24 hours, in a single server</span>
+      </div>
+      <div class="numero">
+        <b>8</b>
+        <span data-pt>línguas convivendo na mesma conversa</span>
+        <span data-en>languages living in the same conversation</span>
+      </div>
+      <div class="numero">
+        <b>20</b>
+        <span data-pt>idiomas disponíveis, do árabe ao filipino</span>
+        <span data-en>languages available, from Arabic to Filipino</span>
+      </div>
+    </div>
+    <div class="nota">
+      <span data-pt><strong>Um detalhe que ninguém conta:</strong> quando um tradutor cai ou recusa, o CYRON tenta o próximo — são vários, em fila. Uma mensagem sem tradução ainda chega; uma mensagem que não chega some da conversa.</span>
+      <span data-en><strong>A detail nobody mentions:</strong> when a translator fails or refuses, CYRON tries the next one — there are several, in a queue. An untranslated message still arrives; a message that never arrives is gone from the conversation.</span>
+    </div>
+  </div>
+</section>
+
+<section id="planos">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Planos</span><span data-en>Pricing</span></div>
+    <h2><span data-pt>Comece de graça. Pague quando crescer.</span><span data-en>Start free. Pay when you grow.</span></h2>
+    <p class="intro">
+      <span data-pt>O plano grátis não é uma demonstração de dez minutos: ele traduz de verdade, todo dia, para sempre.</span>
+      <span data-en>The free plan isn't a ten-minute demo: it really translates, every day, forever.</span>
+    </p>
+
+    <div class="planos">
+      <div class="plano">
+        <h3><span data-pt>Grátis</span><span data-en>Free</span></h3>
+        <div class="preco">R$ 0<small> <span data-pt>/mês</span><span data-en>/mo</span></small></div>
+        <ul>
+          <li><span data-pt><strong>3 idiomas</strong> no servidor</span><span data-en><strong>3 languages</strong> per server</span></li>
+          <li><span data-pt>Tradução por bandeira, ilimitada</span><span data-en>Flag translation, unlimited</span></li>
+          <li><span data-pt>Botão de tradução nos avisos</span><span data-en>Translate button on notices</span></li>
+          <li><span data-pt>Salas espelhadas e categorias por idioma</span><span data-en>Mirrored rooms and per-language categories</span></li>
+          <li><span data-pt>Até 20 canais · 2 canais-fonte</span><span data-en>Up to 20 channels · 2 source channels</span></li>
+          <li><span data-pt>8 mil caracteres/dia no tradutor da casa</span><span data-en>8k characters/day on the house translator</span></li>
+        </ul>
+        <a class="bt bt-2 convite" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
+      </div>
+
+      <div class="plano destaque" data-fita="Popular">
+        <h3><span data-pt>Pago</span><span data-en>Paid</span></h3>
+        <div class="preco">R$ 79<small> <span data-pt>/mês</span><span data-en>/mo</span></small></div>
+        <ul>
+          <li><span data-pt><strong>20 idiomas</strong> no servidor</span><span data-en><strong>20 languages</strong> per server</span></li>
+          <li><span data-pt>Tudo do grátis, sem os limites dele</span><span data-en>Everything in Free, without its limits</span></li>
+          <li><span data-pt>Até 200 canais · 10 canais-fonte</span><span data-en>Up to 200 channels · 10 source channels</span></li>
+          <li><span data-pt>40 mil caracteres/dia no tradutor da casa</span><span data-en>40k characters/day on the house translator</span></li>
+          <li><span data-pt>Chave própria de tradutor: <strong>sem teto</strong></span><span data-en>Bring your own translator key: <strong>no ceiling</strong></span></li>
+          <li><span data-pt>Glossário: nomes e siglas que não se traduzem</span><span data-en>Glossary: names and tags that stay untranslated</span></li>
+        </ul>
+        <a class="bt bt-3" href="./painel.html"><span data-pt>Assinar</span><span data-en>Subscribe</span></a>
+      </div>
+
+      <div class="plano">
+        <h3>Pro</h3>
+        <div class="preco">R$ 149<small> <span data-pt>/mês</span><span data-en>/mo</span></small></div>
+        <ul>
+          <li><span data-pt>Tudo do plano pago</span><span data-en>Everything in Paid</span></li>
+          <li><span data-pt>O melhor tradutor da casa, sempre</span><span data-en>The best house translator, always</span></li>
+          <li><span data-pt>Cotas diárias altas</span><span data-en>High daily quotas</span></li>
+          <li class="nao"><span data-pt>Ainda em construção</span><span data-en>Still being built</span></li>
+        </ul>
+        <div class="breve">
+          <span data-pt>Em breve — o plano pago já faz quase tudo isto hoje</span>
+          <span data-en>Coming soon — the paid plan already does most of this today</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="nota">
+      <span data-pt><strong>Sobre a cota:</strong> ela vale para o tradutor que vem incluído. Servidores muito movimentados podem colar a própria chave de tradutor (Azure ou DeepL) no plano pago — aí não há teto nenhum, e o CYRON usa a chave de vocês.</span>
+      <span data-en><strong>About the quota:</strong> it applies to the translator that comes included. Busy servers can paste their own translator key (Azure or DeepL) on the paid plan — then there's no ceiling at all, and CYRON uses your key.</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="env">
+    <div class="rotulo"><span data-pt>Perguntas</span><span data-en>Questions</span></div>
+    <h2><span data-pt>O que costumam perguntar</span><span data-en>What people usually ask</span></h2>
+
+    <details open>
+      <summary><span data-pt>Preciso configurar alguma coisa?</span><span data-en>Do I have to configure anything?</span></summary>
+      <p>
+        <span data-pt>Não. Quando o CYRON entra no servidor ele se instala sozinho: cria o canal onde as pessoas escolhem o idioma, cria a sala de configuração e mostra um painel com botões. Se você não abrir esse painel nunca, ele continua funcionando.</span>
+        <span data-en>No. When CYRON joins, it installs itself: it creates the channel where people pick their language, creates its config room, and posts a panel with buttons. If you never open that panel, it keeps working anyway.</span>
+      </p>
+    </details>
+
+    <details>
+      <summary><span data-pt>Ele lê tudo o que escrevem no meu servidor?</span><span data-en>Does it read everything in my server?</span></summary>
+      <p>
+        <span data-pt>Ele lê os canais que você mandou traduzir, porque é o que traduzir significa. O texto vai ao serviço de tradução e volta; o que fica guardado é um cache de frases curtas repetidas, para não pagar duas vezes pela mesma frase. Nada de mensagem privada, e nada é vendido a ninguém.</span>
+        <span data-en>It reads the channels you told it to translate, because that's what translating means. The text goes to the translation service and comes back; what's stored is a cache of short repeated phrases, so the same sentence isn't paid for twice. No DMs, and nothing is sold to anyone.</span>
+      </p>
+    </details>
+
+    <details>
+      <summary><span data-pt>E se o tradutor errar?</span><span data-en>What if the translation is wrong?</span></summary>
+      <p>
+        <span data-pt>Vai errar às vezes — tradução automática erra. Duas coisas ajudam: o glossário, onde você lista nomes, siglas e apelidos que não devem ser traduzidos, e o selo de origem em cada mensagem traduzida, que mostra de qual língua ela veio. Quando não há tradução, a mensagem chega no original em vez de sumir.</span>
+        <span data-en>Sometimes, yes — machine translation gets things wrong. Two things help: the glossary, where you list names, tags and nicknames that must not be translated, and the origin stamp on every translated message showing which language it came from. When there's no translation, the message arrives in the original instead of vanishing.</span>
+      </p>
+    </details>
+
+    <details>
+      <summary><span data-pt>Posso cancelar quando quiser?</span><span data-en>Can I cancel any time?</span></summary>
+      <p>
+        <span data-pt>Pode. A assinatura é mensal e o cancelamento é pelo próprio Stripe. O servidor volta ao plano grátis no fim do período já pago — nada é apagado, só os limites do grátis voltam a valer.</span>
+        <span data-en>Yes. The subscription is monthly and cancelling is done through Stripe itself. The server falls back to the free plan at the end of the period you already paid for — nothing is deleted, the free limits simply apply again.</span>
+      </p>
+    </details>
+
+    <details>
+      <summary><span data-pt>Serve para servidor que não é de jogo?</span><span data-en>Does it work for non-gaming servers?</span></summary>
+      <p>
+        <span data-pt>Serve. O CYRON não sabe o que é um urso nem o que é uma aliança: ele copia os canais que já existem no seu servidor. Quem tem um #receitas ganha receitas-pt e receitas-en. É por não saber do que vocês falam que ele serve para qualquer assunto.</span>
+        <span data-en>It does. CYRON doesn't know what a bear or an alliance is: it mirrors the channels your server already has. If you have a #recipes, you get recipes-pt and recipes-en. It's precisely by not knowing your subject that it fits any of them.</span>
+      </p>
+    </details>
+  </div>
+</section>
+
+<div class="fecho">
+  <div class="env">
+    <h2><span data-pt>Põe no seu servidor e vê.</span><span data-en>Put it in your server and see.</span></h2>
+    <p>
+      <span data-pt>Instala sozinho, começa a traduzir na mesma hora, e o plano grátis não vence nunca.</span>
+      <span data-en>It installs itself, starts translating right away, and the free plan never expires.</span>
+    </p>
+    <a class="bt bt-1 convite" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
+  </div>
+</div>
+
+</main>
+
+<footer>
+  <div class="env">
+    <span>CYRON</span>
+    <nav>
+      <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
+      <a href="../"><span data-pt>Portal das Alianças</span><span data-en>Alliance Portal</span></a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+/* O convite é montado aqui, e não escrito à mão em cada botão: são três
+   botões na página, e um deles com a permissão errada seria um servidor onde
+   o bot entra sem poder criar canal -- falha que só aparece depois, e para o
+   cliente. */
+var CLIENT_ID = "1498142929041096856";
+var PERMISSOES = "327223209040";
+var CONVITE = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
+  "&permissions=" + PERMISSOES + "&scope=bot%20applications.commands";
+
+document.getElementById("convite").href = CONVITE;
+[].forEach.call(document.querySelectorAll(".convite"), function (a) { a.href = CONVITE; });
+
+/* A troca de idioma é CSS, não reescrita de texto: os dois idiomas já estão
+   na página, e o navegador só mostra um. Isso mantém o conteúdo inteiro
+   visível para o buscador e faz a troca ser instantânea.
+
+   A escolha fica guardada porque quem entra aqui em inglês uma vez quase
+   sempre volta em inglês -- e obrigar a clicar de novo a cada visita é o tipo
+   de atrito que ninguém reclama e todo mundo abandona. */
+function idioma(qual) {
+  document.documentElement.lang = qual === "en" ? "en" : "pt-BR";
+  [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.troca === qual));
+  });
+  try { localStorage.setItem("cyron-idioma", qual); } catch (e) { /* modo privado */ }
+}
+
+[].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+  b.addEventListener("click", function () { idioma(b.dataset.troca); });
+});
+
+/* Na primeira visita, vale a língua do navegador: quem chega de um servidor
+   internacional quase nunca lê português, e cair numa página que ele não
+   entende é perder a pessoa antes da primeira frase. */
+(function () {
+  var guardado = null;
+  try { guardado = localStorage.getItem("cyron-idioma"); } catch (e) { /* modo privado */ }
+  if (guardado) return idioma(guardado);
+  var nav = (navigator.language || "pt").toLowerCase();
+  if (nav.indexOf("pt") !== 0) idioma("en");
+})();
+</script>
+
+</body>
+</html>
