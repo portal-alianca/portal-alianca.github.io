@@ -224,7 +224,8 @@ function linha(s) {
       : "";
   } else {
     cracha = '<span class="cracha c-gratis">' + pt("grátis", "free") + "</span>";
-    detalhe = pt("3 idiomas · 8 mil caracteres/dia", "3 languages · 8k characters/day");
+    detalhe = pt("Tradução por bandeira e por botão, sem limite",
+      "Flag and button translation, unlimited");
     acao = s.pagar
       ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Assinar R$ 79/mês", "Subscribe R$ 79/mo") + "</a>"
       : '<a class="bt bt-2 bt-p" href="./#planos">' + pt("Ver planos", "See pricing") + "</a>";
