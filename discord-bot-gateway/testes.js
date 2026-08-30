@@ -693,7 +693,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 {
   const { espelharMensagem, ultimaFalaDaSala } = carregar([
     "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
-    "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem",
+    "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -727,7 +727,8 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   };
   /* Sem tradução: o que interessa aqui é a montagem do cartão, e texto igual
      dos dois lados deixa a conferência legível. */
-  globalThis.vantajosoTraduzir = () => false;
+  globalThis.porQueNaoTraduzir = () => "curto";
+  globalThis.anotarUso = () => {};
   globalThis.protegerDoTradutor = (t) => ({ marcado: t, pecas: [] });
   globalThis.devolverPecas = (t) => t;
   globalThis.traduzirComCache = async (t) => t;
@@ -811,7 +812,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     ultimaFalaDaSala.clear();
     const mundo = montarMundo();
     /* Só esta fala não traduz: passa do teto. */
-    globalThis.vantajosoTraduzir = (t) => t.length <= TEXTO_MAXIMO;
+    globalThis.porQueNaoTraduzir = (t) => (t.length <= TEXTO_MAXIMO ? null : "tamanho");
     globalThis.traduzirLongo = async (t) => `[traduzido] ${t}`;
 
     await falar(mundo, "x".repeat(TEXTO_MAXIMO + 1));
@@ -829,7 +830,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     verdade("o traduzido mostra a seta", /🇧🇷 → 🇬🇧$/.test(en[1].embed.description));
 
     /* De volta ao normal para os testes seguintes. */
-    globalThis.vantajosoTraduzir = () => false;
+    globalThis.porQueNaoTraduzir = () => "curto";
     globalThis.traduzirLongo = async (t) => t;
   }
 
@@ -1080,7 +1081,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    Sem traduzir, ele chega igualzinho ao original. */
 {
   const { pareceDesenho, vantajosoTraduzir } =
-    carregar(["RISCO_DE_DESENHO", "UNIVERSAIS", "pareceDesenho", "vantajosoTraduzir"]);
+    carregar(["RISCO_DE_DESENHO", "UNIVERSAIS", "pareceDesenho", "porQueNaoTraduzir", "vantajosoTraduzir"]);
 
   const mapa = [
     "(Message) .",
@@ -1196,6 +1197,44 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     nome: "reino", descricao: "ranking do reino", quem_pode: "todos",
     cada_minutos: 60, codigo: "return 1;",
   }), "editar comando");
+}
+
+/* ====== contar o que NÃO foi traduzido ======
+
+   Era um booleano, e o booleano escondia a diferença que importa: "não vale a
+   pena" cobria tanto o "ok" de duas letras — economia funcionando — quanto o
+   aviso de 4000 caracteres — o produto falhando. Do lado de fora os dois
+   sumiam igual, e foi assim que um teto baixo demais passou dias mandando
+   aviso de aliança sem traduzir, sem deixar rastro em lugar nenhum. */
+{
+  const { porQueNaoTraduzir, somaDoDia, MOTIVOS_QUE_DOEM } =
+    carregar(["RISCO_DE_DESENHO", "UNIVERSAIS", "pareceDesenho",
+      "MOTIVOS_QUE_DOEM", "porQueNaoTraduzir", "somaDoDia"]);
+
+  ok("fala normal é traduzida", porQueNaoTraduzir("vamos no urso hoje as 20h", 3500, 2), null);
+  ok("acima do teto tem nome próprio", porQueNaoTraduzir("x".repeat(3501), 3500, 2), "tamanho");
+  ok("curto demais é economia, não falha", porQueNaoTraduzir("ok", 3500, 2), "curto");
+  ok("emoji sozinho é economia", porQueNaoTraduzir("😅😅", 3500, 2), "curto");
+  ok("link sozinho é economia", porQueNaoTraduzir("https://x.com/a", 3500, 2), "curto");
+  ok("desenho tem nome próprio",
+    porQueNaoTraduzir("a  /  b\nc  \\  d\n  e  |  f", 3500, 2), "desenho");
+
+  /* Só três viram número. "curto" é a maior parte do movimento; contá-lo
+     afogaria os dois que importam. */
+  verdade("tamanho conta", MOTIVOS_QUE_DOEM.has("tamanho"));
+  verdade("desenho conta", MOTIVOS_QUE_DOEM.has("desenho"));
+  verdade("recusa do tradutor conta", MOTIVOS_QUE_DOEM.has("recusa"));
+  verdade("curto NÃO conta", !MOTIVOS_QUE_DOEM.has("curto"));
+
+  /* As linhas `sem:*` moram na mesma tabela e no mesmo campo. Somar junto
+     faria o cartão dizer que traduziu justamente o que não traduziu. */
+  const linhas = [
+    { motor: "dono-deepl", caracteres: 1000, traducoes: 20, do_cache: 2 },
+    { motor: "sem:tamanho", caracteres: 0, traducoes: 7, do_cache: 0 },
+    { motor: "sem:recusa", caracteres: 0, traducoes: 3, do_cache: 0 },
+  ];
+  ok("a soma do dia ignora o que não foi traduzido",
+    somaDoDia(linhas), { c: 1000, t: 20, k: 2 });
 }
 
 /* ---- o resultado ---- */

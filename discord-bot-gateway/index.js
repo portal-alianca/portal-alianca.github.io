@@ -367,28 +367,54 @@ const UNIVERSAIS = new Set([
    deles chega a doze letras. Ali o minimo e' dois, e quem segura o custo e' o
    cache -- vocabulario curto se repete o tempo todo, entao "obrigado" se paga
    uma vez e nunca mais. */
-function vantajosoTraduzir(texto, teto = 800, minimo = 12) {
+/* Por que esta fala NAO vai ser traduzida -- ou null, se vai.
+
+   Era um booleano, e o booleano escondia a diferenca que importa. "Nao vale a
+   pena" cobre tanto o "ok" de duas letras, que e' economia funcionando, quanto
+   o aviso de 4000 caracteres, que e' o produto falhando. Do lado de fora os
+   dois somem igual, e foi assim que um teto baixo demais passou dias mandando
+   aviso de alianca sem traduzir sem deixar rastro em lugar nenhum.
+
+   Agora o motivo tem nome, e os que significam "alguem perdeu uma traducao
+   que queria" viram numero no cartao do dia. */
+function porQueNaoTraduzir(texto, teto = 800, minimo = 12) {
   const t = String(texto || "").trim();
-  if (t.length < minimo || t.length > teto) return false;
+  if (t.length > teto) return "tamanho";
+  if (t.length < minimo) return "curto";
 
   /* Sem a pontuacao do fim: "ok!" e "ok" sao a mesma coisa. */
-  if (UNIVERSAIS.has(t.toLowerCase().replace(/[!?.…\s]+$/u, ""))) return false;
+  if (UNIVERSAIS.has(t.toLowerCase().replace(/[!?.…\s]+$/u, ""))) return "curto";
 
-  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(t)) return false;
-  if (/^https?:\/\/\S+$/i.test(t)) return false;
-  if (/^[\d\s.,:!?-]+$/.test(t)) return false;
-  if (/^[/!.][a-z]/i.test(t)) return false; // parece comando
+  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(t)) return "curto";
+  if (/^https?:\/\/\S+$/i.test(t)) return "curto";
+  if (/^[\d\s.,:!?-]+$/.test(t)) return "curto";
+  if (/^[/!.][a-z]/i.test(t)) return "curto"; // parece comando
 
   /* So risadas e interjeicoes: "kkkkkk", "hahaha", "rsrsrs", "hehe".
 
      Exige quatro letras porque com o piso de dois esta regra passou a ser
      perigosa: "se", "as", "ei", "ir" e "ha" sao palavras de verdade e caem
      todas neste conjunto de letras. Risada de verdade nao tem duas letras. */
-  if (t.length >= 4 && /^[kkhaeirs\s!?.]+$/i.test(t)) return false;
+  if (t.length >= 4 && /^[kkhaeirs\s!?.]+$/i.test(t)) return "curto";
 
-  if (pareceDesenho(t)) return false;
+  if (pareceDesenho(t)) return "desenho";
 
-  return true;
+  return null;
+}
+
+function vantajosoTraduzir(texto, teto = 800, minimo = 12) {
+  return !porQueNaoTraduzir(texto, teto, minimo);
+}
+
+/* Os motivos que valem contar: alguem ficou sem uma traducao que queria.
+
+   "curto" fica de fora de proposito -- e' a economia funcionando, e' a maior
+   parte do movimento, e contar isso afogaria os dois numeros que importam. */
+const MOTIVOS_QUE_DOEM = new Set(["tamanho", "desenho", "recusa"]);
+
+function anotarSemTraducao(servidorId, motivo, quantas = 1) {
+  if (!MOTIVOS_QUE_DOEM.has(motivo) || quantas < 1) return;
+  anotarUso(servidorId, `sem:${motivo}`, { traducoes: quantas });
 }
 
 /* Desenho feito de texto -- mapa de batalha, tabela, formacao.
@@ -1716,12 +1742,16 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      E passa a usar traduzirLongo, que corta em pedacos de 1500 nas quebras de
      linha: acima de 1500 uma chamada so' e' recusa na certa em qualquer
      tradutor. */
-  const vale = texto && vantajosoTraduzir(texto, TEXTO_MAXIMO, 2);
-  const idiomas = vale
-    ? [...new Set(lista
-      .filter((d) => d.canal_id !== origem.canal_id && d.idioma !== origem.idioma)
-      .map((d) => d.idioma))]
-    : [];
+  const alvos = [...new Set(lista
+    .filter((d) => d.canal_id !== origem.canal_id && d.idioma !== origem.idioma)
+    .map((d) => d.idioma))];
+  const motivo = texto ? porQueNaoTraduzir(texto, TEXTO_MAXIMO, 2) : "curto";
+  const vale = !motivo;
+  /* Conta em TRADUCOES PERDIDAS, nao em falas: a fala e' uma, mas quem ficou
+     sem ela sao as salas. Assim o numero fica na mesma unidade do "traduções"
+     do cartao, e da' pra ler um contra o outro. */
+  if (motivo) anotarSemTraducao(servidorId, motivo, alvos.length);
+  const idiomas = vale ? alvos : [];
   const { marcado, pecas } = vale ? protegerDoTradutor(texto, termos) : { marcado: "", pecas: [] };
   const traduzido = new Map();
   /* Quais idiomas receberam traducao DE VERDADE. Sem isto o cartao nao tem
@@ -1734,6 +1764,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        a pessoa se virar, que e' melhor do que a mensagem sumir. */
     const saiu = await traduzirLongo(marcado, idioma, motor);
     if (saiu) traduzidoMesmo.add(idioma);
+    else anotarSemTraducao(servidorId, "recusa");
     traduzido.set(idioma, saiu ? devolverPecas(saiu, pecas) : texto);
   };
 
@@ -6060,8 +6091,13 @@ function ontemISO() {
   return d.toISOString().slice(0, 10);
 }
 
+/* As linhas `sem:*` ficam de fora da soma.
+
+   Elas moram na mesma tabela e no mesmo campo `traducoes`, porque contam na
+   mesma unidade -- traducoes que deviam ter acontecido. Somar junto faria o
+   cartao dizer que traduziu o que justamente NAO traduziu. */
 function somaDoDia(linhas) {
-  return (linhas || []).reduce((a, l) => ({
+  return (linhas || []).filter((l) => !String(l.motor || "").startsWith("sem:")).reduce((a, l) => ({
     c: a.c + Number(l.caracteres || 0),
     t: a.t + Number(l.traducoes || 0),
     k: a.k + Number(l.do_cache || 0),
@@ -6133,10 +6169,24 @@ async function cartaoDoDia() {
      sua chave" custam coisas diferentes e quebram de jeitos diferentes. */
   const porMotor = new Map();
   for (const l of linhasDoDia || []) {
+    if (String(l.motor || "").startsWith("sem:")) continue;
     porMotor.set(l.motor, (porMotor.get(l.motor) || 0) + Number(l.traducoes || 0));
   }
   const motores = [...porMotor.entries()].sort((a, b) => b[1] - a[1])
     .map(([m, t]) => `\`${m}\` ${t}`).join(" · ") || "_ninguém traduziu_";
+
+  /* O que NAO foi traduzido, e por quê. Este é o número que faltava: até
+     ontem, uma fala grande demais sumia sem deixar rastro em lugar nenhum. */
+  const perdidas = new Map();
+  for (const l of linhasDoDia || []) {
+    const m = String(l.motor || "");
+    if (m.startsWith("sem:")) perdidas.set(m.slice(4), (perdidas.get(m.slice(4)) || 0) + Number(l.traducoes || 0));
+  }
+  const NOME_DO_MOTIVO = { tamanho: "grandes demais", desenho: "desenho", recusa: "tradutor recusou" };
+  const totalPerdidas = [...perdidas.values()].reduce((a, b) => a + b, 0);
+  const detalhePerdidas = [...perdidas.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([m, q]) => `${q} ${NOME_DO_MOTIVO[m] || m}`).join(" · ");
 
   const cota = comoEstaACota().map((c) => `**${MOTORES[c.tipo]?.nome || c.tipo}** ${c.pct}%`).join(" · ");
   const parado = !hoje.t && !copias;
@@ -6156,6 +6206,8 @@ async function cartaoDoDia() {
       { name: "Caracteres", inline: true,
         value: `**${(hoje.c / 1000).toFixed(1)}k**${variacao(hoje.c, ontem.c)}` },
       { name: "Quem traduziu", value: motores },
+      ...(totalPerdidas ? [{ name: "Sem tradução",
+        value: `**${totalPerdidas}** traduções não aconteceram\n${detalhePerdidas}` }] : []),
       ...(cota ? [{ name: "Cota do mês", value: cota }] : []),
       { name: "Servidores ativos", inline: true, value: servidores == null ? "—" : String(servidores) },
       { name: "De pé desde", inline: true, value: quandoFoi(Date.now() - process.uptime() * 1000, "R") },
