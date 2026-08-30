@@ -1142,6 +1142,62 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("destino desconhecido mantém a origem", seloDeOrigem("en", "xx", true), "🇬🇧");
 }
 
+/* ====== contar linha sem trazer linha ======
+
+   O cartão de ontem disse "1000 cópias entregues" e era mil redondo demais:
+   não era o número, era o TETO do PostgREST, que devolve no máximo mil linhas
+   por consulta. Tinham sido 1.777.
+
+   Erro que mente sempre para baixo: no dia em que o movimento dobrar o cartão
+   continua dizendo mil, e a leitura vira "estamos estáveis" justamente quando
+   não estamos. */
+{
+  const { totalDaFaixa } = carregar(["totalDaFaixa"]);
+
+  ok("o total vem depois da barra", totalDaFaixa("0-0/1777"), 1777);
+  ok("faixa de tabela vazia", totalDaFaixa("*/0"), 0);
+  /* Sem `Prefer: count=exact` o Postgrest devolve `*` no lugar do total — e
+     `Number("*")` é NaN, que num embed apareceria como "NaN cópias". */
+  ok("total desconhecido não vira NaN", totalDaFaixa("0-0/*"), null);
+  ok("cabeçalho ausente não vira NaN", totalDaFaixa(null), null);
+  ok("cabeçalho estranho não vira NaN", totalDaFaixa("sei lá"), null);
+}
+
+/* ====== as janelas cabem nos limites do Discord ======
+
+   O formulário de comando abria com um exemplo de 109 caracteres, e o teto é
+   100. A janelaValida cortava e mandava um cartão para o canal de erros — um
+   erro por abertura, sobre o meu próprio texto, ao lado dos erros de verdade.
+
+   Este teste confere as janelas ANTES da janelaValida: ela é a rede, não a
+   regra. Texto meu que precisa ser cortado é texto meu escrito errado. */
+{
+  const { janelaDeComando, janelaDeBusca, janelaDeCodigos } =
+    carregar(["CAIXA_DE_CODIGO", "pedacosDoCodigo", "janelaDeComando", "janelaDeBusca", "janelaDeCodigos"]);
+
+  const confere = (j, nome) => {
+    verdade(`${nome}: título até 45`, String(j.title || "").length <= 45);
+    verdade(`${nome}: até 5 linhas`, (j.components || []).length <= 5);
+    for (const linha of j.components || []) {
+      for (const c of linha.components || []) {
+        verdade(`${nome}: rótulo de "${c.custom_id}" até 45`, String(c.label || "").length <= 45);
+        verdade(`${nome}: exemplo de "${c.custom_id}" até 100`,
+          String(c.placeholder || "").length <= 100);
+      }
+    }
+  };
+
+  confere(await janelaDeComando(null), "novo comando");
+  confere(janelaDeBusca(), "busca");
+  confere(janelaDeCodigos(), "códigos");
+
+  /* E a janela de um comando que já existe, que é a que abre preenchida. */
+  confere(await janelaDeComando({
+    nome: "reino", descricao: "ranking do reino", quem_pode: "todos",
+    cada_minutos: 60, codigo: "return 1;",
+  }), "editar comando");
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);

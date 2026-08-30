@@ -297,7 +297,11 @@ client.on("guildMemberAdd", async (member) => {
 
     const aliancaId = await aliancaDoGuild(member.guild.id);
     if (!aliancaId) {
-      return console.error(`boas-vindas ${quem}: servidor ${member.guild.id} nao esta ligado a nenhuma alianca`);
+      /* Nao e' erro: e' o estado NORMAL de quem instalou o CYRON so' pelo
+         tradutor e nunca ligou alianca nenhuma. Como erro, ele enchia o canal
+         do dono toda vez que alguem entrava num servidor desses -- e erro que
+         aparece sem nada pra consertar ensina a ignorar o canal. */
+      return console.log(`boas-vindas ${quem}: ${member.guild.name} não tem aliança ligada, sem cartão de entrada`);
     }
     const canalId = await canalBoasVindas(aliancaId);
     if (!canalId) {
@@ -6075,16 +6079,52 @@ function variacao(hoje, ontem) {
   return ` ${pct > 0 ? "▲" : "▼"} **${Math.abs(pct)}%** vs. o dia anterior`;
 }
 
+/* Contar linha sem trazer linha.
+
+   O cartao de ontem disse "1000 cópias entregues" e eu quase acreditei: mil e
+   redondo. Nao era o numero, era o TETO -- o PostgREST devolve no maximo mil
+   linhas por consulta, e contar o que voltou conta o limite dele. Tinham sido
+   1.777.
+
+   Erro pior do que parece porque mente pra baixo e nunca pra cima: no dia em
+   que o movimento dobrar, o cartao vai continuar dizendo mil, e a leitura vai
+   ser "estamos estaveis" justamente quando nao estamos. E de quebra trazia mil
+   linhas pela rede so' pra jogar fora.
+
+   `Prefer: count=exact` faz o total vir no cabecalho, e `Range: 0-0` faz o
+   corpo vir vazio. */
+function totalDaFaixa(cabecalho) {
+  const depois = String(cabecalho || "").split("/")[1];
+  const n = Number(depois);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function contar(caminho) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+      method: "HEAD",
+      headers: {
+        apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+        Prefer: "count=exact", Range: "0-0",
+      },
+    });
+    if (!r.ok) return null;
+    return totalDaFaixa(r.headers.get("content-range"));
+  } catch {
+    return null; // cartao com um campo vazio e' melhor que cartao nenhum
+  }
+}
+
 async function cartaoDoDia() {
   const dia = ontemISO();
   const anterior = new Date(Date.parse(dia) - 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  const [linhasDoDia, linhasDeAntes, falas, servidores] = await Promise.all([
-    sb(`cyron_uso_diario?dia=eq.${dia}&select=caracteres,traducoes,do_cache,motor`),
-    sb(`cyron_uso_diario?dia=eq.${anterior}&select=caracteres,traducoes,do_cache`),
-    sb(`discord_fala_espelhada?criado_em=gte.${dia}T00:00:00Z&criado_em=lt.${dia}T23:59:59Z&select=msg_id`),
-    sb("cyron_servidor?saiu_em=is.null&select=id"),
-  ].map((p) => p.catch(() => null)));
+  const [linhasDoDia, linhasDeAntes, copias, servidores] = await Promise.all([
+    sb(`cyron_uso_diario?dia=eq.${dia}&select=caracteres,traducoes,do_cache,motor`).catch(() => null),
+    sb(`cyron_uso_diario?dia=eq.${anterior}&select=caracteres,traducoes,do_cache`).catch(() => null),
+    contar(`discord_fala_espelhada?criado_em=gte.${dia}T00:00:00Z&criado_em=lt.${dia}T23:59:59Z&select=msg_id`),
+    contar("cyron_servidor?saiu_em=is.null&select=id"),
+  ]);
 
   const hoje = somaDoDia(linhasDoDia);
   const ontem = somaDoDia(linhasDeAntes);
@@ -6099,7 +6139,7 @@ async function cartaoDoDia() {
     .map(([m, t]) => `\`${m}\` ${t}`).join(" · ") || "_ninguém traduziu_";
 
   const cota = comoEstaACota().map((c) => `**${MOTORES[c.tipo]?.nome || c.tipo}** ${c.pct}%`).join(" · ");
-  const parado = !hoje.t && !(falas || []).length;
+  const parado = !hoje.t && !copias;
 
   return {
     color: parado ? 0xB4534A : 0x2E8B7A,
@@ -6110,14 +6150,14 @@ async function cartaoDoDia() {
       : undefined,
     fields: [
       { name: "Mensagens espelhadas", inline: true,
-        value: `**${(falas || []).length}** cópias entregues` },
+        value: copias == null ? "_não consegui contar_" : `**${copias}** cópias entregues` },
       { name: "Traduções", inline: true,
         value: `**${hoje.t}**${variacao(hoje.t, ontem.t)}\n${hoje.k} vieram do cache` },
       { name: "Caracteres", inline: true,
         value: `**${(hoje.c / 1000).toFixed(1)}k**${variacao(hoje.c, ontem.c)}` },
       { name: "Quem traduziu", value: motores },
       ...(cota ? [{ name: "Cota do mês", value: cota }] : []),
-      { name: "Servidores ativos", inline: true, value: String((servidores || []).length) },
+      { name: "Servidores ativos", inline: true, value: servidores == null ? "—" : String(servidores) },
       { name: "De pé desde", inline: true, value: quandoFoi(Date.now() - process.uptime() * 1000, "R") },
     ],
     footer: { text: "um por dia, sobre o dia que terminou" },
@@ -7635,7 +7675,11 @@ async function janelaDeComando(existente) {
           ? "Código — o que der return vira a resposta"
           : "Código: grande demais pra caber aqui (vazio = mantém)",
         placeholder: partes.coube
-          ? "const r = await fetch(\"https://exemplo.com/api\");\nconst j = await r.json();\nreturn `Poder total: ${j.power}`;"
+          /* 100 e' o teto do Discord pra exemplo. Este tinha 109, entao toda
+             vez que o formulario abria a janelaValida cortava e mandava um
+             cartao pro canal de erros -- um erro por abertura, sobre o meu
+             proprio texto. */
+          ? "const r = await fetch(URL);\nconst j = await r.json();\nreturn `Poder: ${j.power}`;"
           : "deixe vazio pra manter o código atual e mudar só o resto",
         ...(partes.um ? { value: partes.um } : {}) }] },
       { type: 1, components: [{
