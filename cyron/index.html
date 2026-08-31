@@ -39,11 +39,36 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 .marca{font-weight:800; letter-spacing:.14em; font-size:15px; color:var(--texto)}
 .marca b{color:var(--ambar); font-weight:800}
 .barra nav{margin-left:auto; display:flex; align-items:center; gap:6px}
-.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px}
+/* nowrap sempre: sem isso o link se parte em duas linhas dentro de uma barra de
+   60px de altura e as duas metades saem por cima e por baixo dela. */
+.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px; white-space:nowrap}
 .barra nav a:hover{color:var(--texto); background:var(--painel-2); text-decoration:none}
-.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px}
+.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px; flex:0 0 auto}
 .idioma button{background:none; border:0; color:var(--fraco); font:700 12px/1 inherit; padding:8px 10px; cursor:pointer}
 .idioma button[aria-pressed="true"]{background:var(--ambar); color:#1a1206}
+
+/* ---------- a barra no telefone ----------
+
+   Quatro links, a marca e o PT/EN não cabem lado a lado em 390px: a página
+   inteira ficava com 470px de largura, "Meus servidores" saía cortado na
+   direita, o PT/EN ficava fora da tela e cada link se quebrava em duas linhas
+   espremidas. Quem entrou pelo celular não achou "Primeiros passos" porque não
+   dava para ler nem tocar.
+
+   No telefone a barra vira duas fileiras: marca e idioma em cima, os links
+   embaixo numa faixa que rola de lado. Rolar é honesto -- a barra de rolagem
+   fica escondida, mas o último link aparece pela metade de propósito, que é o
+   que diz ao dedo que há mais coisa à direita. */
+@media (max-width:760px){
+  .barra .env{height:auto; padding:9px 16px 0; flex-wrap:wrap; gap:0 10px}
+  .barra nav{
+    order:3; width:100%; margin:6px -16px 0; padding:0 16px 8px;
+    overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; gap:2px;
+  }
+  .barra nav::-webkit-scrollbar{display:none}
+  .barra nav a{padding:7px 10px; font-size:14px}
+  .idioma{margin-left:auto}
+}
 
 /* ---------- botões ---------- */
 .bt{display:inline-flex; align-items:center; justify-content:center; gap:9px; padding:14px 24px;
@@ -140,7 +165,12 @@ section h2{font-size:clamp(26px,3.8vw,38px)}
 .passo-texto > span{color:var(--fraco); font-size:16px}
 .passo-texto strong{color:var(--texto); font-weight:600}
 .passo-texto em{color:var(--ambar); font-style:normal; font-size:15px}
-.passo-bt{margin-top:18px}
+/* O botão vem logo depois do texto do passo, sem nada em volta. Herdando o
+   inline-flex de .bt ele entrava na MESMA linha do parágrafo, e margin-top não
+   empurra caixa inline: no celular ele caía por cima da última frase, tapando
+   "onde você pode.". Bloco que encolhe até o conteúdo -- desce de linha e
+   continua do tamanho do texto dele. */
+.passo-bt{display:flex; width:fit-content; margin-top:18px}
 .passo-foto{position:static; max-width:300px; margin:20px 0 0}
 @media (max-width:600px){
   .passos li{padding-left:52px}
@@ -211,11 +241,11 @@ html[lang="en"] [data-en]{display:revert}
       <a href="#passos"><span data-pt>Primeiros passos</span><span data-en>Get started</span></a>
       <a href="#planos"><span data-pt>Planos</span><span data-en>Pricing</span></a>
       <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
-      <div class="idioma" role="group" aria-label="Idioma / Language">
-        <button type="button" data-troca="pt" aria-pressed="true">PT</button>
-        <button type="button" data-troca="en" aria-pressed="false">EN</button>
-      </div>
     </nav>
+    <div class="idioma" role="group" aria-label="Idioma / Language">
+      <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+      <button type="button" data-troca="en" aria-pressed="false">EN</button>
+    </div>
   </div>
 </header>
 
@@ -233,7 +263,7 @@ html[lang="en"] [data-en]{display:revert}
     </p>
     <div class="acoes">
       <a class="bt bt-1 convite" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
-      <a class="bt bt-2" href="#funciona"><span data-pt>Ver como funciona</span><span data-en>See how it works</span></a>
+      <a class="bt bt-2" href="#passos"><span data-pt>Ver o passo a passo</span><span data-en>See the walkthrough</span></a>
     </div>
     <p class="mini">
       <span data-pt>Grátis para sempre · sem cartão · funcionando em menos de um minuto</span>
