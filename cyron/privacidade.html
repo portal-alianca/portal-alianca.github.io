@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — Política de Privacidade</title>
+<meta name="description" content="O que o CYRON lê, o que guarda, por quanto tempo, e para quem manda.">
+<meta name="robots" content="index,follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+<style>
+/* Mesma paleta do site: uma página legal com outra cara parece de outra
+   empresa, e a hora de parecer outra empresa é a pior possível. */
+:root{
+  --fundo:#0B0D11; --painel:#13161C; --painel-2:#1A1E26; --painel-3:#222833;
+  --borda:#232935; --borda-viva:#333B49;
+  --texto:#EDEFF3; --fraco:#98A1AE; --fraquinho:#6C7583;
+  --ambar:#F5A623; --ambar-claro:#FFC768; --verde:#5EBB83; --azul:#5865F2;
+  --r:16px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:17px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:760px; margin:0 auto; padding:0 22px}
+
+.barra{position:sticky; top:0; z-index:30; background:rgba(11,13,17,.86); backdrop-filter:blur(12px); border-bottom:1px solid var(--borda)}
+.barra .env{display:flex; align-items:center; gap:14px; height:60px; max-width:1000px}
+.marca{font-weight:800; letter-spacing:.14em; font-size:15px; color:var(--texto)}
+.marca b{color:var(--ambar); font-weight:800}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:6px}
+.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px; white-space:nowrap}
+.barra nav a:hover{color:var(--texto); background:var(--painel-2); text-decoration:none}
+.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px; flex:0 0 auto}
+.idioma button{background:none; border:0; color:var(--fraco); font:700 12px/1 inherit; padding:8px 10px; cursor:pointer}
+.idioma button[aria-pressed="true"]{background:var(--ambar); color:#1a1206}
+/* A mesma correção do site: em 390px isto não cabe numa fileira só. */
+@media (max-width:760px){
+  .barra .env{height:auto; padding:9px 16px 0; flex-wrap:wrap; gap:0 10px}
+  .barra nav{order:3; width:100%; margin:6px -16px 0; padding:0 16px 8px;
+    overflow-x:auto; scrollbar-width:none; gap:2px}
+  .barra nav::-webkit-scrollbar{display:none}
+  .idioma{margin-left:auto}
+}
+
+.topo{padding:64px 0 8px}
+.rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px}
+h1{font-size:clamp(30px,5vw,42px); line-height:1.14; letter-spacing:-.022em; margin:0}
+.data{margin-top:16px; color:var(--fraquinho); font-size:14.5px}
+.abre{margin:26px 0 0; color:var(--fraco); font-size:18px}
+
+main{padding:20px 0 90px}
+h2{font-size:23px; letter-spacing:-.015em; margin:56px 0 0}
+h3{font-size:17.5px; margin:30px 0 0; color:var(--ambar-claro)}
+p{margin:14px 0 0}
+ul{margin:14px 0 0; padding-left:22px}
+li{margin:8px 0}
+strong{font-weight:650}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:14.5px;
+  background:var(--painel-2); border:1px solid var(--borda); border-radius:6px; padding:1px 6px}
+
+/* O quadro do que se guarda: é a resposta que a pessoa veio buscar, então
+   ganha a forma de tabela em vez de virar mais um parágrafo. */
+.quadro{margin-top:22px; border:1px solid var(--borda); border-radius:var(--r); overflow:hidden}
+table{width:100%; border-collapse:collapse; font-size:15.5px}
+th,td{text-align:left; padding:13px 16px; border-bottom:1px solid var(--borda); vertical-align:top}
+th{background:var(--painel-2); font-size:12.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fraquinho); font-weight:750}
+tr:last-child td{border-bottom:0}
+td b{display:block; font-weight:650; margin-bottom:3px}
+td span{color:var(--fraco); font-size:14.5px}
+.prazo{white-space:nowrap; font-weight:650; color:var(--ambar)}
+.rot{display:none}
+/* `td span` alcança o span do idioma aqui dentro e venceria a herança: sem
+   isto o rótulo sai com o tamanho e a cor do texto da célula. Mesmo laço da
+   legenda das fotos no site. */
+.rot span{color:inherit; font-size:inherit; font-style:normal}
+
+/* No telefone a tabela vira cartão, e não uma tabela que rola de lado.
+
+   Três colunas de texto corrido em 390px davam uma palavra por linha e
+   cortavam a coluna do prazo -- que é justamente a resposta que a pessoa veio
+   buscar. Rolar de lado resolveria o corte e manteria a leitura horrível.
+   Empilhado, cada linha vira um bloco: o quê, para quê, por quanto tempo.
+
+   O cabeçalho some porque cada célula passa a carregar o próprio rótulo; sem
+   isso, "14 dias" solto não diz do quê. */
+@media (max-width:700px){
+  thead{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%)}
+  table, tbody, tr, td{display:block; width:100%}
+  tr{border-bottom:1px solid var(--borda); padding:6px 0 14px}
+  tr:last-child{border-bottom:0}
+  td{border-bottom:0; padding:8px 16px}
+  .rot{display:block; font-size:11.5px; font-weight:750; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--fraquinho); margin-bottom:4px}
+  .prazo{white-space:normal}
+}
+
+.aviso{margin-top:24px; background:var(--painel); border:1px solid var(--borda-viva);
+  border-left:3px solid var(--ambar); border-radius:12px; padding:18px 20px}
+.aviso p:first-child{margin-top:0}
+
+footer{border-top:1px solid var(--borda); padding:28px 0; color:var(--fraquinho); font-size:14px}
+footer .env{display:flex; gap:18px; flex-wrap:wrap; max-width:1000px}
+footer nav{margin-left:auto; display:flex; gap:18px; flex-wrap:wrap}
+
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<b>RON</b></a>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./#passos"><span data-pt>Primeiros passos</span><span data-en>Get started</span></a>
+      <a href="./termos.html"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></a>
+    </nav>
+    <div class="idioma" role="group" aria-label="Idioma / Language">
+      <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+      <button type="button" data-troca="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<div class="topo">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Política de privacidade</span><span data-en>Privacy policy</span></div>
+    <h1>
+      <span data-pt>O que eu leio, o que guardo,<br>e por quanto tempo</span>
+      <span data-en>What I read, what I keep,<br>and for how long</span>
+    </h1>
+    <p class="data">
+      <span data-pt>Em vigor desde 31 de agosto de 2026.</span>
+      <span data-en>In effect since 31 August 2026.</span>
+    </p>
+    <p class="abre">
+      <span data-pt>O CYRON traduz conversas. Para traduzir uma mensagem é preciso lê-la, e é justo que você saiba exatamente o que acontece com ela depois. Esta página diz isso em palavras normais, sem letra miúda — os prazos abaixo são os mesmos que estão escritos no código do bot.</span>
+      <span data-en>CYRON translates conversations. Translating a message means reading it, and you deserve to know exactly what happens to it afterwards. This page says so in plain words, with no fine print — the retention periods below are the same ones written in the bot's code.</span>
+    </p>
+  </div>
+</div>
+
+<main>
+  <div class="env">
+
+    <h2><span data-pt>Quem é o responsável</span><span data-en>Who is responsible</span></h2>
+    <p>
+      <span data-pt>O CYRON é operado por uma pessoa física, não por uma empresa. Para qualquer assunto desta página — inclusive pedir a exclusão dos seus dados — <strong>mande uma mensagem privada ao CYRON no Discord</strong>. Ela chega em quem opera o bot, e é o canal oficial de contato.</span>
+      <span data-en>CYRON is run by an individual, not a company. For anything on this page — including asking for your data to be deleted — <strong>send CYRON a direct message on Discord</strong>. It reaches the person who operates the bot, and it is the official contact channel.</span>
+    </p>
+
+    <h2><span data-pt>O que eu leio</span><span data-en>What I read</span></h2>
+    <p>
+      <span data-pt>Dentro de um servidor, eu recebo as mensagens dos canais que o administrador daquele servidor apontou para mim, e mais nada. Canal que ele não apontou, eu não traduzo e não guardo.</span>
+      <span data-en>Inside a server, I receive messages from the channels that server's administrator pointed me at, and nothing else. A channel they did not point at is one I neither translate nor store.</span>
+    </p>
+    <p>
+      <span data-pt>Num privado comigo, eu leio o que você me manda — é como o tradutor pessoal funciona.</span>
+      <span data-en>In a direct message with me, I read what you send me — that is how the personal translator works.</span>
+    </p>
+    <p>
+      <span data-pt><strong>Eu não leio mensagens privadas entre outras pessoas.</strong> O Discord não me dá acesso a elas, e eu não peço.</span>
+      <span data-en><strong>I do not read private messages between other people.</strong> Discord gives me no access to those, and I do not ask for any.</span>
+    </p>
+
+    <h2><span data-pt>O que eu guardo, e por quanto tempo</span><span data-en>What I keep, and for how long</span></h2>
+    <p>
+      <span data-pt>Uma varredura roda uma vez por dia e apaga tudo que passou do prazo. Não há exceção e não há arquivo morto.</span>
+      <span data-en>A sweep runs once a day and deletes everything past its window. There is no exception and no archive.</span>
+    </p>
+
+    <div class="quadro rolar">
+      <table>
+        <thead>
+          <tr>
+            <th><span data-pt>O quê</span><span data-en>What</span></th>
+            <th><span data-pt>Para quê</span><span data-en>What for</span></th>
+            <th><span data-pt>Prazo</span><span data-en>Kept</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <b><span data-pt>O texto da mensagem</span><span data-en>The message text</span></b>
+              <span data-pt>Até 4.000 caracteres, sem o seu nome nem o seu identificador.</span>
+              <span data-en>Up to 4,000 characters, with neither your name nor your ID attached.</span>
+            </td>
+            <td><i class="rot"><span data-pt>Para quê</span><span data-en>What for</span></i><span data-pt>Para o menu “ler no seu idioma” funcionar quando alguém clica nele.</span>
+                <span data-en>So the “read in your language” menu works when someone clicks it.</span></td>
+            <td class="prazo"><i class="rot"><span data-pt>Por quanto tempo</span><span data-en>Kept for</span></i><span data-pt>7 dias</span><span data-en>7 days</span></td>
+          </tr>
+          <tr>
+            <td>
+              <b><span data-pt>A tradução pronta</span><span data-en>The finished translation</span></b>
+              <span data-pt>Guardada sob um código embaralhado do texto de origem, que não pode ser desfeito.</span>
+              <span data-en>Stored under a scrambled fingerprint of the source text, which cannot be reversed.</span>
+            </td>
+            <td><i class="rot"><span data-pt>Para quê</span><span data-en>What for</span></i><span data-pt>Para eu não pagar duas vezes pela mesma frase — é o que mantém o plano grátis existindo.</span>
+                <span data-en>So I don't pay twice for the same sentence — it is what keeps the free plan alive.</span></td>
+            <td class="prazo"><i class="rot"><span data-pt>Por quanto tempo</span><span data-en>Kept for</span></i><span data-pt>90 dias</span><span data-en>90 days</span></td>
+          </tr>
+          <tr>
+            <td>
+              <b><span data-pt>Números de mensagem e de canal</span><span data-en>Message and channel numbers</span></b>
+              <span data-pt>Só os identificadores do Discord. Nenhum texto.</span>
+              <span data-en>Discord identifiers only. No text at all.</span>
+            </td>
+            <td><i class="rot"><span data-pt>Para quê</span><span data-en>What for</span></i><span data-pt>Para que responder a uma mensagem apareça como resposta também na cópia traduzida.</span>
+                <span data-en>So replying to a message still reads as a reply in the translated copy.</span></td>
+            <td class="prazo"><i class="rot"><span data-pt>Por quanto tempo</span><span data-en>Kept for</span></i><span data-pt>14 dias</span><span data-en>14 days</span></td>
+          </tr>
+          <tr>
+            <td>
+              <b><span data-pt>O idioma que você escolheu</span><span data-en>The language you picked</span></b>
+              <span data-pt>Seu identificador do Discord e um código de idioma, por exemplo <code>pt</code>.</span>
+              <span data-en>Your Discord ID and a language code, for example <code>en</code>.</span>
+            </td>
+            <td><i class="rot"><span data-pt>Para quê</span><span data-en>What for</span></i><span data-pt>Para eu falar com você na sua língua sem perguntar de novo a cada vez.</span>
+                <span data-en>So I speak your language without asking again every time.</span></td>
+            <td class="prazo"><i class="rot"><span data-pt>Por quanto tempo</span><span data-en>Kept for</span></i><span data-pt>Até você pedir para apagar</span><span data-en>Until you ask me to delete it</span></td>
+          </tr>
+          <tr>
+            <td>
+              <b><span data-pt>Dados do servidor</span><span data-en>Server data</span></b>
+              <span data-pt>Nome e número do servidor, quais canais traduzir, plano e ajustes.</span>
+              <span data-en>The server's name and ID, which channels to translate, plan and settings.</span>
+            </td>
+            <td><i class="rot"><span data-pt>Para quê</span><span data-en>What for</span></i><span data-pt>É a configuração do serviço. Não contém mensagem de ninguém.</span>
+                <span data-en>This is the service's configuration. It contains nobody's messages.</span></td>
+            <td class="prazo"><i class="rot"><span data-pt>Por quanto tempo</span><span data-en>Kept for</span></i><span data-pt>Enquanto eu estiver no servidor</span><span data-en>While I'm in the server</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="aviso">
+      <p>
+        <span data-pt><strong>O texto guardado não é ligado a você.</strong> Eu guardo a frase para poder traduzi-la no clique, sem o nome nem o identificador de quem escreveu. Passados os 7 dias ela é apagada, e o menu daquela mensagem passa a responder que ela expirou.</span>
+        <span data-en><strong>The stored text is not tied to you.</strong> I keep the sentence so I can translate it on click, without the name or ID of whoever wrote it. After 7 days it is deleted, and that message's menu starts saying it has expired.</span>
+      </p>
+    </div>
+
+    <h2><span data-pt>Para quem eu mando</span><span data-en>Who I send it to</span></h2>
+    <p>
+      <span data-pt>Traduzir é uma coisa que eu não faço sozinho. O texto a traduzir é enviado ao serviço de tradução usado pelo seu servidor — DeepL, Microsoft Azure Translator ou Google Tradutor, conforme a escolha do administrador. Esses serviços têm as próprias políticas de privacidade, e eu não controlo o que eles fazem.</span>
+      <span data-en>Translating is not something I do on my own. The text to translate is sent to the translation service your server uses — DeepL, Microsoft Azure Translator or Google Translate, depending on the administrator's choice. Those services have their own privacy policies, and I do not control what they do.</span>
+    </p>
+    <p>
+      <span data-pt>Fora isso, eu me apoio em três lugares: <strong>Fly.io</strong> roda o bot, <strong>Supabase</strong> guarda o banco de dados, e <strong>GitHub Pages</strong> serve este site. Quando houver pagamento, ele passa pela <strong>Stripe</strong> — eu não vejo nem guardo número de cartão em momento nenhum.</span>
+      <span data-en>Beyond that, I rely on three places: <strong>Fly.io</strong> runs the bot, <strong>Supabase</strong> holds the database, and <strong>GitHub Pages</strong> serves this site. When there is a payment, it goes through <strong>Stripe</strong> — I never see or store a card number.</span>
+    </p>
+    <p>
+      <span data-pt><strong>Eu não vendo dado nenhum, não faço propaganda com ele e não entrego a terceiros fora desta lista.</strong> A única exceção seria uma ordem judicial, que eu cumpriria porque não teria escolha.</span>
+      <span data-en><strong>I sell no data, I run no advertising on it, and I hand it to nobody outside this list.</strong> The only exception would be a court order, which I would comply with because I would have no choice.</span>
+    </p>
+
+    <h2><span data-pt>Crianças</span><span data-en>Children</span></h2>
+    <p>
+      <span data-pt>O próprio Discord exige idade mínima para ter conta. Eu não faço nada dirigido a crianças e não peço idade a ninguém.</span>
+      <span data-en>Discord itself sets a minimum age for having an account. I do nothing aimed at children and I ask nobody their age.</span>
+    </p>
+
+    <h2><span data-pt>Seus direitos</span><span data-en>Your rights</span></h2>
+    <p>
+      <span data-pt>Você pode pedir para <strong>ver</strong>, <strong>corrigir</strong> ou <strong>apagar</strong> o que eu tenho de você, e pode pedir a qualquer momento. É só me mandar uma mensagem privada no Discord. Na prática, o único registro ligado à sua pessoa é o idioma que você escolheu — o resto ou não é seu ou não tem o seu nome.</span>
+      <span data-en>You may ask to <strong>see</strong>, <strong>correct</strong> or <strong>delete</strong> what I hold about you, at any time. Just send me a direct message on Discord. In practice the only record tied to you personally is the language you picked — the rest is either not yours or carries no name.</span>
+    </p>
+    <p>
+      <span data-pt>Se o administrador tirar o CYRON do servidor, eu paro de receber as mensagens de lá na mesma hora, e a configuração daquele servidor deixa de ter uso.</span>
+      <span data-en>If an administrator removes CYRON from a server, I stop receiving that server's messages immediately, and that server's configuration stops being of any use.</span>
+    </p>
+
+    <h2><span data-pt>Se esta página mudar</span><span data-en>If this page changes</span></h2>
+    <p>
+      <span data-pt>A data no topo diz desde quando ela vale. Mudança que aumente prazo ou acrescente para quem eu mando será avisada no painel do seu servidor antes de valer — descobrir depois seria o mesmo que não avisar.</span>
+      <span data-en>The date at the top says since when it applies. Any change that lengthens a retention window or adds a recipient will be announced in your server's panel before it takes effect — finding out afterwards would be the same as no notice at all.</span>
+    </p>
+
+  </div>
+</main>
+
+<footer>
+  <div class="env">
+    <span>CYRON</span>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./termos.html"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></a>
+      <a href="../"><span data-pt>Portal das Alianças</span><span data-en>Alliance Portal</span></a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+/* A mesma troca de idioma do site: os dois textos já estão na página, e o CSS
+   decide qual aparece. O buscador enxerga os dois. */
+function idioma(qual) {
+  document.documentElement.lang = qual === "en" ? "en" : "pt-BR";
+  [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.troca === qual));
+  });
+  try { localStorage.setItem("cyron-idioma", qual); } catch (e) { /* aba anônima */ }
+}
+[].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+  b.addEventListener("click", function () { idioma(b.dataset.troca); });
+});
+(function () {
+  var guardado = null;
+  try { guardado = localStorage.getItem("cyron-idioma"); } catch (e) { /* idem */ }
+  if (guardado) return idioma(guardado);
+  var nav = (navigator.language || "pt").toLowerCase();
+  if (nav.indexOf("pt") !== 0) idioma("en");
+})();
+</script>
+</body>
+</html>

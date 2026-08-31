@@ -106,6 +106,29 @@ async function sbDel(caminho) {
   if (!r.ok) throw new Error(`supabase ${r.status} ao apagar ${caminho}: ${(await r.text()).slice(0, 200)}`);
 }
 
+/* O que eu guardo, e por quanto tempo.
+
+   Escrito num lugar so' porque e' o que a pagina de privacidade promete: duas
+   verdades sobre o mesmo assunto, em arquivos diferentes, divergem no dia em
+   que alguem mexer numa. Um teste confere que os numeros daqui sao os numeros
+   que a pagina mostra.
+
+   Os prazos vem do uso, nao de numero redondo:
+
+   - texto (7 dias): serve ao seletor "ler no seu idioma", que se usa nos
+     minutos seguintes a mensagem. O clique depois disso ja respondia "pode ter
+     expirado" -- frase que so' agora e' verdade.
+   - cache (90 dias): existe pra nao pagar duas vezes pela mesma frase. Frase
+     que se repete, se repete dentro de semanas; guardar pra sempre nao
+     economiza mais nada e so' aumenta o que eu teria a perder.
+   - falas (14 dias): responder e' coisa de conversa viva. Aqui nao ha texto,
+     so' os numeros das mensagens. */
+const GUARDO_POR = [
+  ["discord_msg_traducao", 7, "o texto das mensagens"],
+  ["discord_traducao_cache", 90, "o cache de traduções"],
+  ["discord_fala_espelhada", 14, "as falas espelhadas"],
+];
+
 async function sbPatch(caminho, corpo) {
   const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
     method: "PATCH",
@@ -9149,16 +9172,26 @@ client.once("clientReady", () => {
   recarregarAjustes().then(() => umaPassada());
   setInterval(umaPassada, INTERVALO_SINCRONIA);
 
-  /* Varre as falas velhas uma vez por dia.
+  /* Uma vez por dia, joga fora o que passou do prazo.
 
-     Responder e' coisa de conversa viva. Quem responde a uma fala de duas
-     semanas atras e' raro o bastante pra valer o cabecalho mudo, e sem esta
-     limpeza a tabela cresceria pra sempre por causa desse caso raro. */
-  const limparFalasVelhas = () => sbDel(
-    `discord_fala_espelhada?criado_em=lt.${new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString()}`)
-    .catch((e) => console.error("espelho: nao consegui limpar falas velhas:", e?.message || e));
-  limparFalasVelhas();
-  setInterval(limparFalasVelhas, 24 * 60 * 60 * 1000);
+     A limpeza das falas existia sozinha desde sempre. O texto das mensagens e
+     o cache de traducao nao tinham nenhuma: eu acumulava, sem prazo, o
+     conteudo de mensagens de gente que nem sabe que eu existo. Numa lista, uma
+     tabela nova sem prazo fica visivel; espalhada em setInterval, some.
+
+     Falhar aqui e' barulhento de proposito. Se a tabela nao tiver `criado_em`,
+     o PostgREST recusa e o erro nomeia a tabela: limpeza que nao limpa em
+     silencio e' pior que limpeza nenhuma, porque a pagina de privacidade
+     promete o prazo. */
+  const limparOVelho = async () => {
+    for (const [tabela, dias, oQue] of GUARDO_POR) {
+      const corte = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString();
+      await sbDel(`${tabela}?criado_em=lt.${corte}`).catch((e) => console.error(
+        `retencao: NAO consegui apagar ${oQue} com mais de ${dias} dias (${tabela}): ${e?.message || e}`));
+    }
+  };
+  limparOVelho();
+  setInterval(limparOVelho, 24 * 60 * 60 * 1000);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
     descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));

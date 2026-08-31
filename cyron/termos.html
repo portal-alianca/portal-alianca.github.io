@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — Termos de Uso</title>
+<meta name="description" content="O que eu prometo, o que eu não prometo, e o que acontece se você parar de pagar.">
+<meta name="robots" content="index,follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+<style>
+:root{
+  --fundo:#0B0D11; --painel:#13161C; --painel-2:#1A1E26; --painel-3:#222833;
+  --borda:#232935; --borda-viva:#333B49;
+  --texto:#EDEFF3; --fraco:#98A1AE; --fraquinho:#6C7583;
+  --ambar:#F5A623; --ambar-claro:#FFC768; --verde:#5EBB83; --azul:#5865F2;
+  --r:16px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:17px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:760px; margin:0 auto; padding:0 22px}
+
+.barra{position:sticky; top:0; z-index:30; background:rgba(11,13,17,.86); backdrop-filter:blur(12px); border-bottom:1px solid var(--borda)}
+.barra .env{display:flex; align-items:center; gap:14px; height:60px; max-width:1000px}
+.marca{font-weight:800; letter-spacing:.14em; font-size:15px; color:var(--texto)}
+.marca b{color:var(--ambar); font-weight:800}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:6px}
+.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px; white-space:nowrap}
+.barra nav a:hover{color:var(--texto); background:var(--painel-2); text-decoration:none}
+.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px; flex:0 0 auto}
+.idioma button{background:none; border:0; color:var(--fraco); font:700 12px/1 inherit; padding:8px 10px; cursor:pointer}
+.idioma button[aria-pressed="true"]{background:var(--ambar); color:#1a1206}
+@media (max-width:760px){
+  .barra .env{height:auto; padding:9px 16px 0; flex-wrap:wrap; gap:0 10px}
+  .barra nav{order:3; width:100%; margin:6px -16px 0; padding:0 16px 8px;
+    overflow-x:auto; scrollbar-width:none; gap:2px}
+  .barra nav::-webkit-scrollbar{display:none}
+  .idioma{margin-left:auto}
+}
+
+.topo{padding:64px 0 8px}
+.rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px}
+h1{font-size:clamp(30px,5vw,42px); line-height:1.14; letter-spacing:-.022em; margin:0}
+.data{margin-top:16px; color:var(--fraquinho); font-size:14.5px}
+.abre{margin:26px 0 0; color:var(--fraco); font-size:18px}
+
+main{padding:20px 0 90px}
+h2{font-size:23px; letter-spacing:-.015em; margin:56px 0 0}
+p{margin:14px 0 0}
+ul{margin:14px 0 0; padding-left:22px}
+li{margin:8px 0}
+strong{font-weight:650}
+
+.aviso{margin-top:24px; background:var(--painel); border:1px solid var(--borda-viva);
+  border-left:3px solid var(--ambar); border-radius:12px; padding:18px 20px}
+.aviso p:first-child{margin-top:0}
+
+footer{border-top:1px solid var(--borda); padding:28px 0; color:var(--fraquinho); font-size:14px}
+footer .env{display:flex; gap:18px; flex-wrap:wrap; max-width:1000px}
+footer nav{margin-left:auto; display:flex; gap:18px; flex-wrap:wrap}
+
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<b>RON</b></a>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./#passos"><span data-pt>Primeiros passos</span><span data-en>Get started</span></a>
+      <a href="./privacidade.html"><span data-pt>Privacidade</span><span data-en>Privacy</span></a>
+    </nav>
+    <div class="idioma" role="group" aria-label="Idioma / Language">
+      <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+      <button type="button" data-troca="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<div class="topo">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></div>
+    <h1>
+      <span data-pt>O que eu prometo,<br>e o que eu não prometo</span>
+      <span data-en>What I promise,<br>and what I don't</span>
+    </h1>
+    <p class="data">
+      <span data-pt>Em vigor desde 31 de agosto de 2026.</span>
+      <span data-en>In effect since 31 August 2026.</span>
+    </p>
+    <p class="abre">
+      <span data-pt>Adicionar o CYRON ao seu servidor é aceitar o que está escrito aqui. É curto de propósito: o que eu não puder cumprir, eu prefiro não prometer.</span>
+      <span data-en>Adding CYRON to your server means accepting what is written here. It is short on purpose: what I cannot deliver, I would rather not promise.</span>
+    </p>
+  </div>
+</div>
+
+<main>
+  <div class="env">
+
+    <h2><span data-pt>O que o CYRON é</span><span data-en>What CYRON is</span></h2>
+    <p>
+      <span data-pt>Um bot do Discord que traduz conversas: cada pessoa escreve na língua dela e lê as outras na dela. Ele é operado por uma pessoa física, não por uma empresa, e não tem qualquer vínculo com a Discord Inc.</span>
+      <span data-en>A Discord bot that translates conversations: each person writes in their own language and reads everyone else in theirs. It is run by an individual, not a company, and has no affiliation with Discord Inc.</span>
+    </p>
+
+    <h2><span data-pt>Quem pode instalar</span><span data-en>Who may install it</span></h2>
+    <p>
+      <span data-pt>Quem for dono do servidor ou tiver a permissão <strong>Gerenciar Servidor</strong> — o próprio Discord já cuida disso na tela de autorização. Ao instalar, você declara que pode decidir por aquele servidor, e assume a responsabilidade de contar às pessoas dele que as mensagens dos canais escolhidos passam por tradução.</span>
+      <span data-en>Whoever owns the server or holds the <strong>Manage Server</strong> permission — Discord itself enforces that on the authorization screen. By installing, you state that you may decide for that server, and you take on telling its people that messages in the chosen channels go through translation.</span>
+    </p>
+
+    <h2><span data-pt>O que você não pode fazer</span><span data-en>What you may not do</span></h2>
+    <ul>
+      <li><span data-pt>Usar o CYRON para conteúdo ilegal, ou para o que os <a href="https://discord.com/terms" target="_blank" rel="noopener">Termos</a> e as <a href="https://discord.com/guidelines" target="_blank" rel="noopener">Diretrizes</a> do Discord proíbem — as regras deles valem aqui dentro também.</span>
+          <span data-en>Use CYRON for illegal content, or for anything Discord's <a href="https://discord.com/terms" target="_blank" rel="noopener">Terms</a> and <a href="https://discord.com/guidelines" target="_blank" rel="noopener">Guidelines</a> forbid — their rules apply in here too.</span></li>
+      <li><span data-pt>Traduzir conversas de pessoas que não sabem que existe um bot no servidor.</span>
+          <span data-en>Translate the conversations of people who don't know a bot is in the server.</span></li>
+      <li><span data-pt>Tentar derrubar o serviço, contornar os limites do plano, ou automatizar tráfego para esgotar a cota alheia.</span>
+          <span data-en>Try to knock the service over, work around plan limits, or automate traffic to drain someone else's quota.</span></li>
+      <li><span data-pt>Revender o CYRON como se fosse seu.</span>
+          <span data-en>Resell CYRON as if it were yours.</span></li>
+    </ul>
+
+    <h2><span data-pt>Os planos</span><span data-en>The plans</span></h2>
+    <p>
+      <span data-pt>O plano grátis é grátis de verdade e não pede cartão. O plano pago é mensal, cobrado pela Stripe, e vale enquanto estiver pago — a data aparece no painel do seu servidor.</span>
+      <span data-en>The free plan is genuinely free and asks for no card. The paid plan is monthly, charged through Stripe, and lasts as long as it is paid — the date shows in your server's panel.</span>
+    </p>
+    <p>
+      <span data-pt>Você pode cancelar quando quiser, e o plano segue até o fim do período já pago. <strong>Se o pagamento parar, nada é apagado:</strong> o servidor volta aos limites do grátis, e o que passar do limite apenas para de crescer. Você escolhe o que manter.</span>
+      <span data-en>You may cancel whenever you like, and the plan runs to the end of the period already paid for. <strong>If payment stops, nothing is deleted:</strong> the server returns to the free limits, and whatever is over the limit simply stops growing. You choose what to keep.</span>
+    </p>
+    <p>
+      <span data-pt>Preços podem mudar. Se mudarem, o aviso chega no painel do seu servidor com pelo menos <strong>30 dias</strong> de antecedência, e o preço novo só vale na renovação seguinte.</span>
+      <span data-en>Prices may change. If they do, notice reaches your server's panel at least <strong>30 days</strong> beforehand, and the new price only applies at the following renewal.</span>
+    </p>
+
+    <h2><span data-pt>O que eu não prometo</span><span data-en>What I don't promise</span></h2>
+    <div class="aviso">
+      <p>
+        <span data-pt><strong>Tradução automática erra.</strong> Ela erra gíria, erra ironia, erra nome próprio e erra o que depende de contexto. O CYRON não substitui tradutor humano, e eu não recomendo usá-lo para nada onde um erro custe caro — contrato, assunto médico, questão jurídica.</span>
+        <span data-en><strong>Machine translation gets things wrong.</strong> It misses slang, it misses irony, it mangles proper names, and it fails on anything that needs context. CYRON is no substitute for a human translator, and I don't recommend it where a mistake is expensive — contracts, medical matters, legal questions.</span>
+      </p>
+      <p>
+        <span data-pt>Também não prometo funcionamento sem interrupção. Eu dependo do Discord, do serviço de tradução e da hospedagem; quando um deles cai, eu caio junto.</span>
+        <span data-en>Nor do I promise uninterrupted service. I depend on Discord, on the translation service and on hosting; when one of them goes down, I go with it.</span>
+      </p>
+    </div>
+    <p>
+      <span data-pt>O serviço é oferecido <strong>como está</strong>. Na medida em que a lei permitir, minha responsabilidade fica limitada ao que você tiver pago pelo CYRON nos últimos 12 meses — o que, no plano grátis, é zero. Isto não afasta direitos que a lei do seu país garanta e não permita afastar.</span>
+      <span data-en>The service is offered <strong>as is</strong>. To the extent the law allows, my liability is capped at whatever you have paid for CYRON in the last 12 months — which, on the free plan, is nothing. This does not set aside rights your country's law grants and does not allow to be set aside.</span>
+    </p>
+
+    <h2><span data-pt>Quando isto acaba</span><span data-en>When this ends</span></h2>
+    <p>
+      <span data-pt>Você encerra quando quiser: é só remover o CYRON do servidor. Eu posso encerrar em caso de uso que quebre as regras acima, e aviso antes sempre que der — a exceção é o abuso que esteja causando dano agora.</span>
+      <span data-en>You end it whenever you like: just remove CYRON from the server. I may end it in case of use that breaks the rules above, and I give notice beforehand whenever I can — the exception is abuse doing damage right now.</span>
+    </p>
+    <p>
+      <span data-pt>Se eu desligar o CYRON de vez, o aviso chega com pelo menos <strong>30 dias</strong> de antecedência, e quem tiver plano pago recebe de volta a parte não usada.</span>
+      <span data-en>If I shut CYRON down for good, notice comes at least <strong>30 days</strong> beforehand, and anyone on a paid plan gets the unused part back.</span>
+    </p>
+
+    <h2><span data-pt>Privacidade</span><span data-en>Privacy</span></h2>
+    <p>
+      <span data-pt>O que eu leio, o que guardo e por quanto tempo está na <a href="./privacidade.html">Política de Privacidade</a>, que faz parte destes termos.</span>
+      <span data-en>What I read, what I keep and for how long is in the <a href="./privacidade.html">Privacy Policy</a>, which forms part of these terms.</span>
+    </p>
+
+    <h2><span data-pt>Lei e contato</span><span data-en>Law and contact</span></h2>
+    <p>
+      <span data-pt>Vale a lei brasileira, e o foro é o do domicílio do consumidor quando a lei assim determinar. Para qualquer assunto — inclusive reclamação — <strong>mande uma mensagem privada ao CYRON no Discord</strong>.</span>
+      <span data-en>Brazilian law applies, and the venue is the consumer's home jurisdiction where the law so requires. For anything at all — complaints included — <strong>send CYRON a direct message on Discord</strong>.</span>
+    </p>
+    <p>
+      <span data-pt>Se estes termos mudarem, a data no topo muda junto, e mudança relevante é avisada no painel do seu servidor antes de valer.</span>
+      <span data-en>If these terms change, the date at the top changes with them, and any material change is announced in your server's panel before it takes effect.</span>
+    </p>
+
+  </div>
+</main>
+
+<footer>
+  <div class="env">
+    <span>CYRON</span>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./privacidade.html"><span data-pt>Privacidade</span><span data-en>Privacy</span></a>
+      <a href="../"><span data-pt>Portal das Alianças</span><span data-en>Alliance Portal</span></a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+function idioma(qual) {
+  document.documentElement.lang = qual === "en" ? "en" : "pt-BR";
+  [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.troca === qual));
+  });
+  try { localStorage.setItem("cyron-idioma", qual); } catch (e) { /* aba anônima */ }
+}
+[].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+  b.addEventListener("click", function () { idioma(b.dataset.troca); });
+});
+(function () {
+  var guardado = null;
+  try { guardado = localStorage.getItem("cyron-idioma"); } catch (e) { /* idem */ }
+  if (guardado) return idioma(guardado);
+  var nav = (navigator.language || "pt").toLowerCase();
+  if (nav.indexOf("pt") !== 0) idioma("en");
+})();
+</script>
+</body>
+</html>

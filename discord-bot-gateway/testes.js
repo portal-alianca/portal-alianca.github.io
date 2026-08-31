@@ -1639,6 +1639,66 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("mensagem nenhuma não quebra", textoDaMensagem(null), "");
 }
 
+/* ============ o que eu guardo, e o que a página promete ============
+
+   Os prazos existem em dois lugares: na lista GUARDO_POR, que manda na
+   varredura, e escritos na página de privacidade, que é o que o cliente lê.
+   Duas verdades sobre o mesmo assunto divergem no dia em que alguém mexer
+   numa -- e a que fica errada é sempre a página, porque ela não quebra nada
+   ao mentir. Este bloco é o que faz ela quebrar. */
+{
+  const { GUARDO_POR } = carregar(["GUARDO_POR"]);
+  const site = `${aqui}/../cyron`;
+  const privacidade = readFileSync(`${site}/privacidade.html`, "utf8");
+  const termos = readFileSync(`${site}/termos.html`, "utf8");
+  const inicio = readFileSync(`${site}/index.html`, "utf8");
+
+  verdade("tenho uma lista de prazos", Array.isArray(GUARDO_POR) && GUARDO_POR.length > 0);
+
+  for (const linha of GUARDO_POR) {
+    const [tabela, dias, oQue] = linha;
+    ok(`a linha de ${tabela} tem três partes`, linha.length, 3);
+    verdade(`${tabela}: o prazo é um número de dias`, Number.isInteger(dias) && dias > 0);
+    verdade(`${tabela}: tem uma descrição em português`, typeof oQue === "string" && oQue.length > 3);
+    /* O prazo tem que aparecer na página, nas duas línguas. Uma tabela nova
+       sem a linha correspondente é exatamente o caso que isto pega. */
+    verdade(`${tabela}: "${dias} dias" está na página de privacidade`,
+      privacidade.includes(`${dias} dias`));
+    verdade(`${tabela}: "${dias} days" está na versão inglesa`,
+      privacidade.includes(`${dias} days`));
+  }
+
+  /* O contrário também: prazo escrito na página que não existe no código
+     seria promessa que ninguém cumpre. Só conto os que estão na tabela do
+     quadro, com a classe que só ela usa. */
+  const naPagina = [...privacidade.matchAll(/class="prazo"[^]*?data-pt>(\d+) dias</g)].map((m) => Number(m[1]));
+  const noCodigo = GUARDO_POR.map(([, d]) => d);
+  for (const d of naPagina) {
+    verdade(`o prazo de ${d} dias na página existe no código`, noCodigo.includes(d));
+  }
+  ok("a página mostra um prazo por tabela guardada", naPagina.length, noCodigo.length);
+
+  /* As duas páginas precisam existir E estar alcançáveis: página legal que
+     ninguém acha não serve para verificação nenhuma. */
+  for (const [nome, texto] of [["privacidade", privacidade], ["termos", termos]]) {
+    verdade(`${nome}.html está ligada no rodapé do site`, inicio.includes(`./${nome}.html`));
+    verdade(`${nome}.html tem título próprio`, /<title>[^<]*CYRON[^<]+<\/title>/.test(texto));
+    /* Bilíngue de verdade: todo trecho em português precisa do par em inglês,
+       senão o visitante estrangeiro lê um buraco. */
+    const pt = (texto.match(/data-pt>/g) || []).length;
+    const en = (texto.match(/data-en>/g) || []).length;
+    ok(`${nome}.html tem um inglês para cada português`, en, pt);
+    verdade(`${nome}.html aponta para a outra`,
+      texto.includes(nome === "termos" ? "privacidade.html" : "termos.html"));
+  }
+
+  /* A frase que o bot já responde quando o texto sumiu passou a ser verdade
+     só agora -- antes nada expirava. Se a varredura do texto sair da lista, a
+     frase volta a ser mentira. */
+  verdade("o texto das mensagens tem prazo",
+    GUARDO_POR.some(([t]) => t === "discord_msg_traducao"));
+}
+
 /* ---- o resultado ---- */
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
