@@ -7019,9 +7019,16 @@ async function cliqueEscolherIdioma(inter) {
      pessoa sem o proximo passo. Aqui ela segue direto para a apresentacao, ja
      na lingua que acabou de escolher. */
   if (!inter.guild) {
+    /* Reconhece o clique ANTES de traduzir. O Discord derruba a interacao em
+       3 segundos, e montar esta tela pode passar disso com o cache frio: sao
+       a descricao e dois rotulos, e um tradutor gratuito leva ~2,2s por
+       chamada. Sem isto, a PRIMEIRA pessoa a escolher cada idioma veria
+       "Esta interação falhou" -- e so ela, porque da segunda em diante o
+       cache responde na hora. Defeito que nao apareceria em teste nenhum meu. */
+    await inter.deferUpdate();
     await salvarIdiomaJogador(inter.user.id, idioma).catch((e) =>
       console.error("privado: nao consegui salvar o idioma:", e?.message || e));
-    return inter.update(await telaDeApresentacao(idioma));
+    return inter.editReply(await telaDeApresentacao(idioma));
   }
 
   /* No cartao de boas-vindas a propria mensagem e' reescrita no idioma
@@ -7396,13 +7403,19 @@ async function telaDeAjuda(idioma, tema = null) {
    resposta nova a cada clique deixaria a conversa com o historico inteiro de
    telas mortas, e a viva perdida no meio. */
 async function cliqueNoPrivado(inter) {
+  /* Reconhece o clique antes de qualquer traducao, pelo mesmo motivo do
+     seletor de idioma: montar uma tela nova pode passar dos 3 segundos que o
+     Discord da', e a pessoa veria "Esta interação falhou" num botao que
+     funcionou. Depois do deferUpdate, o editReply troca o cartao no lugar --
+     que e' o mesmo efeito do update, sem o relogio correndo. */
+  await inter.deferUpdate();
   const idioma = await idiomaDoJogador(inter.user.id);
 
-  if (inter.customId === PASSO.sim) return inter.update(await telaDosPlanos(idioma));
-  if (inter.customId === PASSO.nao) return inter.update(await telaDeAjuda(idioma));
-  if (inter.customId === PASSO.inicio) return inter.update(await telaDeApresentacao(idioma));
+  if (inter.customId === PASSO.sim) return inter.editReply(await telaDosPlanos(idioma));
+  if (inter.customId === PASSO.nao) return inter.editReply(await telaDeAjuda(idioma));
+  if (inter.customId === PASSO.inicio) return inter.editReply(await telaDeApresentacao(idioma));
   if (inter.customId === PASSO.ajuda) {
-    return inter.update(await telaDeAjuda(idioma, String(inter.values?.[0] || "")));
+    return inter.editReply(await telaDeAjuda(idioma, String(inter.values?.[0] || "")));
   }
 }
 
