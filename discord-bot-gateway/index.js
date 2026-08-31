@@ -7013,6 +7013,17 @@ async function cliqueEscolherIdioma(inter) {
     return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
   }
 
+  /* No privado, escolher idioma nao e' o fim de nada -- e' o primeiro passo da
+     conversa. Dizer "idioma salvo, sua categoria aparece em um minuto" ali
+     seria falar de categoria para quem talvez nem tenha servidor, e deixar a
+     pessoa sem o proximo passo. Aqui ela segue direto para a apresentacao, ja
+     na lingua que acabou de escolher. */
+  if (!inter.guild) {
+    await salvarIdiomaJogador(inter.user.id, idioma).catch((e) =>
+      console.error("privado: nao consegui salvar o idioma:", e?.message || e));
+    return inter.update(await telaDeApresentacao(idioma));
+  }
+
   /* No cartao de boas-vindas a propria mensagem e' reescrita no idioma
      escolhido: ela e' publica e e' sobre uma pessoa so, entao faz sentido. Num
      aviso fixado seria estranho -- aquele e' de todo mundo. */
@@ -7140,32 +7151,53 @@ function paginaDoMembro(souAdmin) {
    antes de qualquer instrucao. */
 const SITE_DO_CYRON = "https://portal-alianca.github.io/cyron/";
 
-function paginaDeApresentacao() {
-  return {
-    title: "🌐 CYRON",
-    description: [
-      "**Eu faço um servidor do Discord funcionar em várias línguas ao mesmo tempo.**",
-      "",
-      "**Me mande um texto aqui** e eu traduzo para você, em 20 idiomas. " +
-      "Pode testar agora mesmo — escreva qualquer coisa nesta conversa.",
-      "",
-      "**Reaja com a sua bandeira** em qualquer mensagem, em qualquer servidor onde " +
-      "eu esteja, e ela chega traduzida aqui no privado. Vale a bandeira do seu país: " +
-      "🇲🇽, 🇵🇹, 🇦🇪 — não só as do menu.",
-      "",
-      "**No seu servidor**, cada língua ganha uma ala própria com os canais copiados. " +
-      "Você escreve na sala da sua língua, e quem escolheu outra recebe traduzido, " +
-      "com o seu nome e a sua foto.",
-      "",
-      "Escolha seu idioma no menu abaixo — a partir daí eu falo com você nele.",
-    ].join("\n"),
-  };
+/* O estado da conversa mora no custom_id, e nao numa tabela.
+
+   Cada tela pendura no proprio botao o passo seguinte, entao o clique chega
+   aqui ja dizendo de onde veio. Guardar isso no banco seria criar uma sessao
+   por pessoa -- com expiracao, limpeza e um jeito novo de ficar
+   inconsistente -- para uma conversa de quatro telas que o Discord ja carrega
+   sozinho na mensagem.
+
+   E como cada passo EDITA a mensagem em vez de mandar outra, a conversa
+   inteira acontece num cartao so', que se transforma. Empilhar telas deixaria
+   a DM com sete cartoes mortos e o vivo la' embaixo. */
+const PASSO = {
+  inicio: "dm:inicio",
+  sim: "dm:sim",
+  nao: "dm:nao",
+  ajuda: "dm:ajuda",
+};
+
+/* Rotulo de botao nao passa pelo traduzirEmbed -- ele so' olha titulo,
+   descricao, rodape e campos.
+
+   Sem isto o cartao chegava em arabe com os botoes em portugues, num bot cujo
+   produto E' traducao. E' o tipo de detalhe que ninguem reclama e todo mundo
+   repara. Sai barato: sao sempre as mesmas frases, entao o cache traduz cada
+   uma uma vez por idioma e nunca mais. */
+async function traduzirLinha(linha, idioma) {
+  if (!idioma || idioma === "pt") return linha;
+  const componentes = [];
+  for (const c of linha.components) {
+    const novo = { ...c };
+    if (novo.label) novo.label = (await traduzirComCache(novo.label, idioma, MOTOR_AUTO)) || novo.label;
+    if (novo.placeholder) {
+      novo.placeholder = (await traduzirComCache(novo.placeholder, idioma, MOTOR_AUTO)) || novo.placeholder;
+    }
+    if (Array.isArray(novo.options)) {
+      novo.options = [];
+      for (const o of c.options) {
+        novo.options.push({ ...o, label: (await traduzirComCache(o.label, idioma, MOTOR_AUTO)) || o.label });
+      }
+    }
+    componentes.push(novo);
+  }
+  return { ...linha, components: componentes };
 }
 
-/* Botao de link nao tem custom_id e nao volta pra ca: o Discord abre e pronto.
-   Por isso eles ficam numa linha separada do menu de idioma, que e' o unico
-   componente daqui que gera interacao. */
-function botoesDaApresentacao() {
+/* Botao de link nao tem custom_id e nao volta pra ca: o Discord abre e pronto. */
+function botoesDeConvite() {
   return {
     type: 1,
     components: [
@@ -7173,6 +7205,205 @@ function botoesDaApresentacao() {
       { type: 2, style: 5, emoji: { name: "🌐" }, label: "Ver o site", url: SITE_DO_CYRON },
     ],
   };
+}
+
+/* ---- passo 0: que língua você fala? ---- */
+
+/* Perguntar o idioma ANTES de me apresentar, e nao depois, e' o ponto inteiro.
+
+   Antes eu me apresentava em portugues e oferecia o menu no fim -- ou seja, a
+   primeira coisa que um turco lia era uma parede de texto que ele nao entende,
+   e a saida estava embaixo dela. Agora a primeira tela e' a unica que pode ser
+   bilingue sem custo, e tudo depois dela chega na lingua certa. */
+function telaDoIdioma() {
+  return {
+    embeds: [{
+      color: COR,
+      title: "🌐 CYRON",
+      description: "**Qual língua você fala?**\n_Pick your language — I'll talk to you in it from here on._",
+    }],
+    components: menuIdioma(),
+  };
+}
+
+/* ---- passo 1: quem eu sou, e a pergunta ---- */
+
+function paginaDeApresentacao() {
+  return {
+    title: "🌐 CYRON",
+    description: [
+      "**Eu faço um servidor do Discord funcionar em várias línguas ao mesmo tempo.**",
+      "",
+      "Cada pessoa escreve na língua dela e lê todo mundo na dela — mesma conversa, " +
+      "ao mesmo tempo, sem ninguém digitar comando nenhum.",
+      "",
+      "**Você pode me testar agora:** me mande qualquer texto nesta conversa e eu " +
+      "traduzo para você, em 20 idiomas.",
+      "",
+      "— — —",
+      "",
+      "**Você quer usar o CYRON no seu servidor?**",
+    ].join("\n"),
+  };
+}
+
+function botoesDaPergunta() {
+  return {
+    type: 1,
+    components: [
+      { type: 2, style: 3, custom_id: PASSO.sim, emoji: { name: "✅" }, label: "Sim, quero" },
+      { type: 2, style: 2, custom_id: PASSO.nao, emoji: { name: "💬" }, label: "Ainda não" },
+    ],
+  };
+}
+
+async function telaDeApresentacao(idioma) {
+  return {
+    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDeApresentacao(), idioma, MOTOR_AUTO)) }],
+    components: [await traduzirLinha(botoesDaPergunta(), idioma)],
+  };
+}
+
+/* ---- passo 2: disse que sim ---- */
+
+function paginaDosPlanos() {
+  return {
+    title: "🌐 Como o CYRON funciona no seu servidor",
+    description: [
+      "Instalar leva menos de um minuto: eu entro, crio o canal onde as pessoas " +
+      "escolhem o idioma e um painel com botões. Se você nunca abrir o painel, " +
+      "eu continuo funcionando.",
+    ].join("\n"),
+    fields: [
+      {
+        name: "🆓 Grátis, para sempre",
+        value: "Tradução por bandeira sem limite · botão de tradução nos avisos · " +
+          "eu falo com cada pessoa na língua dela.\n" +
+          "_Nada é construído no seu servidor: a tradução acontece quando alguém pede._",
+      },
+      {
+        name: "⭐ Pago — R$ 79/mês",
+        value: "Cada língua ganha uma ala própria, com os seus canais copiados e " +
+          "traduzidos. Quem escreve na sala dele aparece na dos outros já traduzido, " +
+          "com nome e foto. Até 20 idiomas.",
+      },
+    ],
+    footer: { text: "Você começa no grátis. Não há cartão nem prazo." },
+  };
+}
+
+function botoesDosPlanos() {
+  return [
+    botoesDeConvite(),
+    { type: 1, components: [
+      { type: 2, style: 2, custom_id: PASSO.nao, emoji: { name: "💬" }, label: "Tenho outra dúvida" },
+    ] },
+  ];
+}
+
+async function telaDosPlanos(idioma) {
+  const linhas = [];
+  for (const l of botoesDosPlanos()) linhas.push(await traduzirLinha(l, idioma));
+  return {
+    embeds: [{ color: COR_OK, ...(await traduzirEmbed(paginaDosPlanos(), idioma, MOTOR_AUTO)) }],
+    components: linhas,
+  };
+}
+
+/* ---- passo 3: disse que não ---- */
+
+/* Menu fechado, e nao conversa aberta.
+
+   "Em que posso ajudar?" com campo livre promete um atendente que nao existe:
+   quem escrevesse uma pergunta de verdade receberia o seletor de traducao, que
+   nao e' resposta nenhuma. Cinco temas cobrem o que de fato perguntam, e cada
+   um tem uma resposta escrita -- honesto sobre o que eu sei fazer. */
+const TEMAS = {
+  ler: {
+    rotulo: "Como eu leio uma mensagem na minha língua",
+    titulo: "🏳️ Reaja com a sua bandeira",
+    texto: "Em qualquer servidor onde eu esteja, ponha a bandeira do seu país numa " +
+      "mensagem e ela chega traduzida aqui no privado.\n\n" +
+      "Vale a bandeira que você tem: 🇲🇽, 🇵🇹, 🇦🇪, 🇺🇸 — não só as do menu. " +
+      "Se a sua caixa de mensagens estiver fechada, eu respondo na própria sala e " +
+      "apago sozinho em 90 segundos.",
+  },
+  falar: {
+    rotulo: "Como eu falo e todo mundo entende",
+    titulo: "💬 Escreva normal, na sua língua",
+    texto: "Nos servidores com o plano pago, cada língua tem a sala dela. Você escreve " +
+      "na sua, e a sua fala aparece na sala dos outros já traduzida — com o seu nome " +
+      "e a sua foto, como se você tivesse escrito ali.\n\n" +
+      "Você não muda nada no jeito de escrever.",
+  },
+  idioma: {
+    rotulo: "Trocar o meu idioma",
+    titulo: "🌐 Trocar de idioma",
+    texto: "Use `/mylanguage` em qualquer servidor onde eu esteja, ou me mande " +
+      "`idioma` aqui nesta conversa.\n\nPode trocar quantas vezes quiser.",
+  },
+  preco: {
+    rotulo: "Quanto custa",
+    titulo: "💳 Preço",
+    texto: "O plano grátis não vence nunca: tradução por bandeira e botão de tradução, " +
+      "sem limite de idioma nem de gente.\n\n" +
+      "O plano pago custa **R$ 79/mês** e é o que constrói as salas por idioma. " +
+      "Mensal, cancela quando quiser.",
+  },
+  traduzir: {
+    rotulo: "Só quero traduzir um texto",
+    titulo: "✍️ Me mande o texto",
+    texto: "Escreva ou cole qualquer coisa nesta conversa e eu ofereço a tradução " +
+      "em 20 idiomas. Não precisa de comando, e ninguém mais vê.",
+  },
+};
+
+function menuDeTemas() {
+  return {
+    type: 1,
+    components: [{
+      type: 3,
+      custom_id: PASSO.ajuda,
+      placeholder: "No que eu posso ajudar?",
+      options: Object.entries(TEMAS).map(([valor, t]) => ({ label: t.rotulo, value: valor })),
+    }],
+  };
+}
+
+async function telaDeAjuda(idioma, tema = null) {
+  const escolhido = tema && TEMAS[tema];
+  const embed = escolhido
+    ? { title: escolhido.titulo, description: escolhido.texto }
+    : {
+      title: "💬 Tudo bem",
+      description: "Estou aqui de qualquer jeito. Escolha um assunto abaixo, ou " +
+        "simplesmente me mande um texto que eu traduzo para você.",
+    };
+  return {
+    embeds: [{ color: COR, ...(await traduzirEmbed(embed, idioma, MOTOR_AUTO)) }],
+    components: [
+      await traduzirLinha(menuDeTemas(), idioma),
+      await traduzirLinha({ type: 1, components: [
+        { type: 2, style: 2, custom_id: PASSO.inicio, emoji: { name: "↩️" }, label: "Voltar ao começo" },
+      ] }, idioma),
+    ],
+  };
+}
+
+/* ---- o roteador dos cliques da conversa ---- */
+
+/* Tudo com `update`, e nao `reply`: o cartao se transforma no lugar. Uma
+   resposta nova a cada clique deixaria a conversa com o historico inteiro de
+   telas mortas, e a viva perdida no meio. */
+async function cliqueNoPrivado(inter) {
+  const idioma = await idiomaDoJogador(inter.user.id);
+
+  if (inter.customId === PASSO.sim) return inter.update(await telaDosPlanos(idioma));
+  if (inter.customId === PASSO.nao) return inter.update(await telaDeAjuda(idioma));
+  if (inter.customId === PASSO.inicio) return inter.update(await telaDeApresentacao(idioma));
+  if (inter.customId === PASSO.ajuda) {
+    return inter.update(await telaDeAjuda(idioma, String(inter.values?.[0] || "")));
+  }
 }
 
 /* Uma apresentacao por hora, por pessoa.
@@ -7198,15 +7429,23 @@ function devoApresentar(userId) {
    plateia, entao nao existe a pergunta de encher canal de ninguem. */
 async function atenderNoPrivado(msg) {
   const texto = String(msg.content || "").trim();
+  const idioma = await idiomaDoJogador(msg.author.id);
+
+  /* "idioma" numa conversa de tradutor quase nunca e' texto pra traduzir: e'
+     alguem pedindo pra trocar. Vale nas duas linguas em que a pessoa poderia
+     pedir sem ja ter escolhido uma. */
+  if (/^(idioma|language|lingua|língua)$/i.test(texto)) {
+    return msg.reply({ ...telaDoIdioma(), allowedMentions: { parse: [] } })
+      .catch((e) => console.error("privado: nao consegui abrir o menu de idioma:", e?.message || e));
+  }
 
   if (devoApresentar(msg.author.id)) {
-    const idioma = await idiomaDoJogador(msg.author.id);
-    const embed = await traduzirEmbed(paginaDeApresentacao(), idioma, MOTOR_AUTO);
-    await msg.reply({
-      embeds: [{ color: COR, ...embed }],
-      components: [botoesDaApresentacao(), ...menuIdioma()],
-      allowedMentions: { parse: [] },
-    }).catch((e) => console.error("privado: nao consegui me apresentar:", e?.message || e));
+    /* Sem idioma escolhido, a PRIMEIRA tela e' a pergunta do idioma -- e nao a
+       apresentacao. Me apresentar em portugues para quem fala turco e' entregar
+       uma parede de texto que ele nao le, com a saida escondida embaixo. */
+    const tela = idioma ? await telaDeApresentacao(idioma) : telaDoIdioma();
+    await msg.reply({ ...tela, allowedMentions: { parse: [] } })
+      .catch((e) => console.error("privado: nao consegui me apresentar:", e?.message || e));
   }
 
   /* Texto de verdade ganha o seletor de traducao. O limite por pessoa e' o
@@ -7379,6 +7618,12 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("cli:")) {
       return await cliqueDaFicha(inter);
+    }
+    /* A conversa do privado. Vem antes dos seletores porque um dos passos E'
+       um seletor (o menu de temas), e la' embaixo ele cairia no ramo de
+       idioma sem nunca chegar aqui. */
+    if (inter.isMessageComponent() && inter.customId.startsWith("dm:")) {
+      return await cliqueNoPrivado(inter);
     }
     /* Botao e formulario de um comando que o dono escreveu.
 

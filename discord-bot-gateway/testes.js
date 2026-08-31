@@ -24,8 +24,13 @@ import { dirname } from "node:path";
 
 /* Do discord.js so' a tabela de permissoes -- ela e' constante, e importar a
    biblioteca nao liga bot nenhum. Quem liga o bot e' o index.js. */
-import { PermissionFlagsBits } from "discord.js";
+import { PermissionFlagsBits, ActionRowBuilder, StringSelectMenuBuilder } from "discord.js";
 globalThis.PermissionFlagsBits = PermissionFlagsBits;
+/* Os construtores entram pelo mesmo motivo: são fábricas de objeto, e nenhuma
+   delas abre conexão. Quem liga o bot é o `new Client()` do index.js, que
+   nunca é avaliado aqui. */
+globalThis.ActionRowBuilder = ActionRowBuilder;
+globalThis.StringSelectMenuBuilder = StringSelectMenuBuilder;
 
 const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
@@ -1334,43 +1339,103 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     limitesDo({ plano: "gratis", teste_ate: "2020-01-01T00:00:00Z" }).idiomas, 0);
 }
 
-/* ================= o primeiro contato no privado =================
+/* ================= a conversa do privado =================
 
-   Quem manda mensagem para o bot recebia silêncio, que é indistinguível de bot
-   quebrado -- e acontecia justamente no momento em que a pessoa está decidindo
-   se instala. O cartão que responde tem que caber nos limites do Discord: se
-   estourar, a resposta inteira é recusada e o silêncio volta, agora com um
-   erro no log que ninguém lê. */
+   Quatro telas que se substituem no mesmo cartão, com o estado no custom_id.
+   Duas coisas quebram isso em silêncio, e são as que estes testes olham: um
+   custom_id fora do prefixo (o roteador nunca vê o clique, e o botão parece
+   morto) e um texto acima do limite do Discord (a mensagem inteira é recusada,
+   e a conversa trava sem dizer por quê). */
 {
   globalThis.client = { user: { id: "1498142929041096856" } };
-  const { paginaDeApresentacao, botoesDaApresentacao, devoApresentar, APRESENTEI } =
-    carregar(["PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite",
-      "paginaDeApresentacao", "botoesDaApresentacao", "APRESENTEI", "ESPERA_APRESENTACAO",
-      "devoApresentar"]);
+  const {
+    PASSO, TEMAS, menuDeTemas, botoesDaPergunta, botoesDeConvite, botoesDosPlanos,
+    paginaDeApresentacao, paginaDosPlanos, telaDoIdioma, traduzirLinha,
+    devoApresentar, APRESENTEI,
+  } = carregar([
+    "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
+    "PASSO", "TEMAS", "menuDeTemas", "botoesDaPergunta", "botoesDeConvite", "botoesDosPlanos",
+    "paginaDeApresentacao", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
+    "APRESENTEI", "ESPERA_APRESENTACAO", "devoApresentar",
+  ]);
 
-  const p = paginaDeApresentacao();
-  verdade("a apresentação cabe na descrição de um embed", p.description.length <= 4096);
-  verdade("e o título cabe no título", p.title.length <= 256);
-  verdade("ela convida a testar ali mesmo", /texto aqui/.test(p.description));
-
-  const linha = botoesDaApresentacao();
-  ok("os botões vêm numa linha de ação", linha.type, 1);
-  ok("são dois", linha.components.length, 2);
-
-  for (const b of linha.components) {
-    /* Botão de link é estilo 5, e é o único que aceita `url`. Com custom_id
-       junto, o Discord recusa a mensagem inteira. */
-    ok(`"${b.label}" é botão de link`, b.style, 5);
-    verdade(`"${b.label}" tem endereço`, /^https:\/\//.test(b.url || ""));
-    verdade(`"${b.label}" não tem custom_id`, b.custom_id === undefined);
-    verdade(`"${b.label}" cabe no rótulo`, b.label.length <= 80);
+  /* O roteador desvia por `startsWith("dm:")`. Um passo fora do prefixo vira
+     um botão que não faz nada, e nada no log conta isso. */
+  for (const [nome, id] of Object.entries(PASSO)) {
+    verdade(`o passo "${nome}" cai no roteador do privado`, id.startsWith("dm:"));
   }
 
-  verdade("o convite carrega as permissões que eu preciso",
-    linha.components[0].url.includes("permissions=327223209040"));
+  /* ---- limites do Discord, tela por tela ---- */
+  const embedCabe = (nome, e) => {
+    verdade(`${nome}: o título cabe`, (e.title || "").length <= 256);
+    verdade(`${nome}: a descrição cabe`, (e.description || "").length <= 4096);
+    for (const f of e.fields || []) {
+      verdade(`${nome}: o campo "${f.name}" cabe`, f.value.length <= 1024);
+      verdade(`${nome}: o nome do campo "${f.name}" cabe`, f.name.length <= 256);
+    }
+    verdade(`${nome}: o rodapé cabe`, (e.footer?.text || "").length <= 2048);
+  };
+  embedCabe("apresentação", paginaDeApresentacao());
+  embedCabe("planos", paginaDosPlanos());
+  embedCabe("idioma", telaDoIdioma().embeds[0]);
+  for (const [k, t] of Object.entries(TEMAS)) embedCabe(`tema ${k}`, { title: t.titulo, description: t.texto });
 
-  /* Reenviar o cartão a cada mensagem empurraria para cima o texto que a
-     pessoa acabou de mandar traduzir -- ajuda virando spam. */
+  const linhaCabe = (nome, linha) => {
+    ok(`${nome} é uma linha de ação`, linha.type, 1);
+    verdade(`${nome} cabe em 5 componentes`, linha.components.length <= 5);
+    for (const c of linha.components) {
+      if (c.type === 2) {
+        verdade(`${nome}: o rótulo "${c.label}" cabe`, c.label.length <= 80);
+        /* Estilo 5 é botão de link: exige url e recusa custom_id. Os dois
+           juntos derrubam a mensagem inteira. */
+        if (c.style === 5) {
+          verdade(`${nome}: "${c.label}" tem url`, /^https:\/\//.test(c.url || ""));
+          verdade(`${nome}: "${c.label}" não tem custom_id`, c.custom_id === undefined);
+        } else {
+          verdade(`${nome}: "${c.label}" tem custom_id`, !!c.custom_id);
+          verdade(`${nome}: "${c.label}" não tem url`, c.url === undefined);
+        }
+      }
+      if (c.type === 3) {
+        verdade(`${nome}: o texto do menu cabe`, (c.placeholder || "").length <= 150);
+        verdade(`${nome}: o menu cabe em 25 opções`, c.options.length <= 25);
+        for (const o of c.options) {
+          verdade(`${nome}: a opção "${o.label}" cabe`, o.label.length <= 100);
+        }
+      }
+    }
+  };
+  linhaCabe("a pergunta", botoesDaPergunta());
+  linhaCabe("o convite", botoesDeConvite());
+  linhaCabe("o menu de temas", menuDeTemas());
+  for (const l of botoesDosPlanos()) linhaCabe("os planos", l);
+
+  /* Opção do menu que não tem tema escrito devolveria uma tela vazia. */
+  const semTema = menuDeTemas().components[0].options.filter((o) => !TEMAS[o.value]);
+  ok("toda opção do menu tem uma resposta escrita", semTema, []);
+
+  verdade("o convite carrega as permissões que eu preciso",
+    botoesDeConvite().components[0].url.includes("permissions=327223209040"));
+
+  /* ---- a primeira tela é a do idioma, e ela é bilíngue ---- */
+  const primeira = telaDoIdioma();
+  verdade("a tela do idioma fala inglês também", /Pick your language/.test(primeira.embeds[0].description));
+  verdade("e traz o menu dos 20 idiomas", primeira.components[0].components[0].options.length === LINGUAS_MENU.length);
+
+  /* ---- rótulo de botão também é traduzido ---- */
+  globalThis.traduzirComCache = async (t) => `<${t}>`;
+  ok("em português, nada é traduzido", await traduzirLinha(botoesDaPergunta(), "pt"), botoesDaPergunta());
+
+  const emArabe = await traduzirLinha(botoesDaPergunta(), "ar");
+  ok("em outra língua, o rótulo vai junto", emArabe.components[0].label, "<Sim, quero>");
+  ok("e o custom_id NÃO é traduzido", emArabe.components[0].custom_id, PASSO.sim);
+
+  const menuArabe = await traduzirLinha(menuDeTemas(), "ar");
+  ok("o texto do menu é traduzido", menuArabe.components[0].placeholder, "<No que eu posso ajudar?>");
+  ok("as opções também", menuArabe.components[0].options[0].label, `<${TEMAS.ler.rotulo}>`);
+  ok("mas o valor da opção fica", menuArabe.components[0].options[0].value, "ler");
+
+  /* ---- a apresentação não se repete ---- */
   APRESENTEI.clear();
   verdade("a primeira mensagem ganha apresentação", devoApresentar("u1"));
   verdade("a segunda, não", !devoApresentar("u1"));
