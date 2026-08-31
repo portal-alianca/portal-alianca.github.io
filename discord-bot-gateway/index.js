@@ -7428,11 +7428,22 @@ async function cliqueNoPrivado(inter) {
 const APRESENTEI = new Map(); // userId -> quando
 const ESPERA_APRESENTACAO = 60 * 60 * 1000;
 
-function devoApresentar(userId) {
-  const antes = APRESENTEI.get(userId) || 0;
-  if (Date.now() - antes < ESPERA_APRESENTACAO) return false;
+/* Perguntar e marcar sao duas coisas, e junta-las custou uma conversa.
+
+   A versao anterior marcava a pessoa como apresentada no MOMENTO DA PERGUNTA.
+   Se o envio falhasse logo depois -- e ele falha, por exemplo, quando quem
+   escreveu apaga a propria mensagem antes de eu responder --, ela ficava
+   marcada sem nunca ter visto o cartao, e calada por uma hora. Foi exatamente
+   isso que aconteceu no primeiro teste real: "oi", apagado, e a mensagem
+   seguinte nao trouxe nada.
+
+   Agora quem marca e' o sucesso. */
+function podeApresentar(userId) {
+  return Date.now() - (APRESENTEI.get(userId) || 0) >= ESPERA_APRESENTACAO;
+}
+
+function marcarApresentado(userId) {
   APRESENTEI.set(userId, Date.now());
-  return true;
 }
 
 /* O privado vira um tradutor pessoal.
@@ -7440,6 +7451,26 @@ function devoApresentar(userId) {
    E' o mesmo motor do seletor que ja existe nos canais, e reaproveita as duas
    funcoes que o alimentam. Aqui ele custa ainda menos: no privado nao ha
    plateia, entao nao existe a pergunta de encher canal de ninguem. */
+/* Falar na conversa, e nao responder A mensagem.
+
+   `reply` pendura a resposta numa mensagem especifica, e morre inteira se essa
+   mensagem sumir -- foi o que derrubou o primeiro teste real. Numa DM a
+   referencia nao serve pra nada de qualquer jeito: so' existem duas pessoas
+   ali, e nao ha' o que desambiguar.
+
+   Devolve se conseguiu, porque quem chama precisa saber: marcar como
+   apresentado um envio que falhou e' o defeito que isto conserta. */
+async function falarNoPrivado(msg, carga) {
+  const onde = msg.channel;
+  if (typeof onde?.send !== "function") return false;
+  return onde.send({ ...carga, allowedMentions: { parse: [] } })
+    .then(() => true)
+    .catch((e) => {
+      console.error("privado: nao consegui falar:", e?.message || e);
+      return false;
+    });
+}
+
 async function atenderNoPrivado(msg) {
   const texto = String(msg.content || "").trim();
   const idioma = await idiomaDoJogador(msg.author.id);
@@ -7448,17 +7479,17 @@ async function atenderNoPrivado(msg) {
      alguem pedindo pra trocar. Vale nas duas linguas em que a pessoa poderia
      pedir sem ja ter escolhido uma. */
   if (/^(idioma|language|lingua|língua)$/i.test(texto)) {
-    return msg.reply({ ...telaDoIdioma(), allowedMentions: { parse: [] } })
-      .catch((e) => console.error("privado: nao consegui abrir o menu de idioma:", e?.message || e));
+    return falarNoPrivado(msg, telaDoIdioma());
   }
 
-  if (devoApresentar(msg.author.id)) {
+  if (podeApresentar(msg.author.id)) {
     /* Sem idioma escolhido, a PRIMEIRA tela e' a pergunta do idioma -- e nao a
        apresentacao. Me apresentar em portugues para quem fala turco e' entregar
        uma parede de texto que ele nao le, com a saida escondida embaixo. */
     const tela = idioma ? await telaDeApresentacao(idioma) : telaDoIdioma();
-    await msg.reply({ ...tela, allowedMentions: { parse: [] } })
-      .catch((e) => console.error("privado: nao consegui me apresentar:", e?.message || e));
+    /* Marca so' depois de entregar: assim uma falha de envio nao cala o bot
+       por uma hora para alguem que nunca viu o cartao. */
+    if (await falarNoPrivado(msg, tela)) marcarApresentado(msg.author.id);
   }
 
   /* Texto de verdade ganha o seletor de traducao. O limite por pessoa e' o
@@ -7470,11 +7501,10 @@ async function atenderNoPrivado(msg) {
   const id = await guardarPraTraduzir(texto, msg.url).catch(() => null);
   if (!id) return;
 
-  await msg.reply({
+  await falarNoPrivado(msg, {
     content: "-# 🌐 Ler no seu idioma / Read in your language",
     components: menuTraduzir(id),
-    allowedMentions: { parse: [] },
-  }).catch((e) => console.error("privado: nao consegui oferecer traducao:", e?.message || e));
+  });
 }
 
 async function comandoAjuda(inter) {

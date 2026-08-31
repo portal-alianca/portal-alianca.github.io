@@ -1351,12 +1351,12 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   const {
     PASSO, TEMAS, menuDeTemas, botoesDaPergunta, botoesDeConvite, botoesDosPlanos,
     paginaDeApresentacao, paginaDosPlanos, telaDoIdioma, traduzirLinha,
-    devoApresentar, APRESENTEI,
+    podeApresentar, marcarApresentado, APRESENTEI,
   } = carregar([
     "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
     "PASSO", "TEMAS", "menuDeTemas", "botoesDaPergunta", "botoesDeConvite", "botoesDosPlanos",
     "paginaDeApresentacao", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
-    "APRESENTEI", "ESPERA_APRESENTACAO", "devoApresentar",
+    "APRESENTEI", "ESPERA_APRESENTACAO", "podeApresentar", "marcarApresentado",
   ]);
 
   /* O roteador desvia por `startsWith("dm:")`. Um passo fora do prefixo vira
@@ -1435,11 +1435,24 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("as opções também", menuArabe.components[0].options[0].label, `<${TEMAS.ler.rotulo}>`);
   ok("mas o valor da opção fica", menuArabe.components[0].options[0].value, "ler");
 
-  /* ---- a apresentação não se repete ---- */
+  /* ---- a apresentação não se repete, mas só depois de acontecer ----
+
+     Perguntar e marcar são duas coisas, e juntá-las custou uma conversa real:
+     quem mandou "oi" e apagou a mensagem antes de eu responder ficou marcado
+     como apresentado sem nunca ter visto o cartão, e calado por uma hora. */
   APRESENTEI.clear();
-  verdade("a primeira mensagem ganha apresentação", devoApresentar("u1"));
-  verdade("a segunda, não", !devoApresentar("u1"));
-  verdade("mas outra pessoa ganha a dela", devoApresentar("u2"));
+  verdade("a primeira mensagem pode ser apresentada", podeApresentar("u1"));
+  verdade("perguntar não marca nada", podeApresentar("u1"));
+
+  marcarApresentado("u1");
+  verdade("depois de entregue, não repete", !podeApresentar("u1"));
+  verdade("e outra pessoa continua livre", podeApresentar("u2"));
+
+  /* Envio que falhou não marca — é isto que devolve o cartão a quem não o viu. */
+  APRESENTEI.clear();
+  const entregou = false;
+  if (entregou) marcarApresentado("u3");
+  verdade("falha no envio deixa a próxima mensagem tentar de novo", podeApresentar("u3"));
 }
 
 /* ================= a tradução por bandeira =================
