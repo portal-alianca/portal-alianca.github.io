@@ -4250,9 +4250,15 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
         emoji: { name: "💬" },
         label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
       },
-      { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
-      { type: 2, custom_id: "cyron:palavras", style: 2, emoji: { name: "📖" }, label: "Palavras da casa" },
-      { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
+      /* Havia DOIS botões chamados "Tradutor" nesta mesma linha: este, que
+         escolhe o motor, e o liga/desliga por mensagem ao lado. O nome passa a
+         ser o mesmo do campo que ele mexe -- botão e campo com nomes
+         diferentes obrigam a pessoa a descobrir a ligação sozinha. */
+      { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Motor de tradução" },
+      /* "Palavras da casa" e "Remontar agora" não dizem o que fazem nem se
+         desfazem algo. Verbo e objeto: dá para decidir sem clicar para ver. */
+      { type: 2, custom_id: "cyron:palavras", style: 2, emoji: { name: "📖" }, label: "Palavras que eu não traduzo" },
+      { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Reconstruir os canais" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
     ],
   });
@@ -4372,6 +4378,40 @@ function comoEstaOMotor(servidor) {
    fixada no canal de configuracao e a copia efemera que o /cyron abre onde a
    pessoa estiver. Fossem duas montagens, elas iam divergir na primeira vez que
    eu mexesse numa e esquecesse da outra. */
+/* A primeira linha do painel responde "eu preciso fazer alguma coisa?".
+
+   Sem ela, quem abre o painel precisa ler os doze campos para descobrir que
+   nao ha nada a fazer -- e quem abre com pressa fecha sem ver o 🚨 que havia.
+   A resposta cabe numa linha, e a linha diz o NUMERO de problemas, porque
+   "tem algo errado" nao ajuda a saber se acabou depois de consertar um.
+
+   O plural e' escrito, e nao "problema(s)": a barra e o parenteses sao lixo
+   que o leitor de tela tambem le, e este cartao e' o lugar onde a pessoa mais
+   precisa entender de primeira. */
+function vereditoDoPainel(problemas, canais, idiomas) {
+  const quantos = problemas.length;
+  if (quantos) {
+    const nomes = problemas.map((p) => String(p.name || "").replace(/^\W+\s*/, "")).slice(0, 3);
+    return `**🔴 ${quantos === 1 ? "Uma coisa precisa de você" : `${quantos} coisas precisam de você`}.**\n` +
+      nomes.map((n) => `• ${n}`).join("\n") +
+      (quantos > nomes.length ? `\n• _…e mais ${quantos - nomes.length}_` : "") +
+      "\n\n_O conserto de cada uma está escrito logo abaixo._";
+  }
+  /* Servidor recem-instalado nao esta "tudo funcionando": nada esta quebrado,
+     mas nada esta acontecendo tambem, e a pessoa PRECISA fazer o proximo
+     passo. Dizer que esta tudo certo ali seria verdade tecnica e mentira
+     pratica -- ela fecharia o painel achando que acabou. */
+  if (!canais) {
+    return "**👋 Falta um passo.** Ninguém apontou um canal para eu traduzir ainda — " +
+      "escolha no menu aqui embaixo e eu começo.";
+  }
+  /* Com canal apontado, a linha diz o que esta acontecendo -- e nao "tudo
+     certo" sozinho, que nao deixa conferir se e' o que a pessoa esperava. */
+  return `**🟢 Está tudo funcionando.** Eu traduzo ` +
+    `**${canais} ${canais === 1 ? "canal" : "canais"}** ` +
+    `em **${idiomas} ${idiomas === 1 ? "idioma" : "idiomas"}**.`;
+}
+
 async function montarPainel(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
@@ -4498,8 +4538,20 @@ async function montarPainel(guild, servidor) {
     },
   ];
 
+  /* O que pede ação fica numa lista separada, e ela vai na frente.
+
+     O painel tinha até doze campos misturando três coisas diferentes: como
+     está indo, o que está quebrado, e o que dá para comprar. Um 🚨 "ninguém
+     está recebendo o cargo do idioma" aparecia DEPOIS das cotas e do aviso de
+     beta -- quem abre o painel para ver se precisa fazer algo tinha que ler
+     tudo para descobrir.
+
+     Separadas, as duas listas também respondem a pergunta que decide o resto:
+     a lista de problemas está vazia ou não. É dela que sai o veredito. */
+  const problemas = [];
+
   if (fila.length) {
-    campos.push({
+    problemas.push({
       name: "⚠️ Escolheram um idioma e não couberam",
       value: fila.map((f) => `${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`).join("\n") +
         "\n_Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum._",
@@ -4565,7 +4617,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (cargoRuim) {
-    campos.push({
+    problemas.push({
       name: "🚨 Ninguém está recebendo o cargo do idioma",
       value: [
         `Os cargos ${cargoRuim.nomes.slice(0, 6).map((n) => `**${n}**`).join(", ")} estão **acima** do meu na lista de cargos, ` +
@@ -4581,7 +4633,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (inalcancaveis.length) {
-    campos.push({
+    problemas.push({
       name: `⛔ Não consigo dar o cargo de idioma a ${inalcancaveis.length} ${inalcancaveis.length === 1 ? "pessoa" : "pessoas"}`,
       value: inalcancaveis.slice(0, 10).map((id) => `<@${id}>`).join(" ") +
         (inalcancaveis.length > 10 ? ` _…e mais ${inalcancaveis.length - 10}_` : "") +
@@ -4593,7 +4645,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (orfas.length) {
-    campos.push({
+    problemas.push({
       name: `🗑️ Cópias sem origem — ${orfas.length}`,
       value: orfas.slice(0, 15).map((o) => `<#${o.canal_id}>`).join("\n") +
         (orfas.length > 15 ? `\n_…e mais ${orfas.length - 15}_` : "") +
@@ -4609,10 +4661,10 @@ async function montarPainel(guild, servidor) {
      painel, empurrando o estado (que e' o que se olha todo dia) pra cima. */
   const embed = {
     title: "⚙️ CYRON",
-    description: "O que for postado nos canais abaixo sai traduzido numa cópia por idioma, " +
-      "dentro da categoria de quem escolheu aquele idioma.",
+    description: vereditoDoPainel(problemas, vivas.length, idiomas.length),
     color: corDoPainel(noTeto, fila.length > 0 || inalcancaveis.length > 0 || !!cargoRuim),
-    fields: campos,
+    /* Problemas primeiro, sempre. */
+    fields: [...problemas, ...campos],
     footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${prazo}` },
   };
 

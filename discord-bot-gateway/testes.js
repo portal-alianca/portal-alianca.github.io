@@ -1695,6 +1695,97 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("banco fora ainda respeita o cliente", await idiomaDoJogador("u7", "pt-BR"), "pt");
 }
 
+/* ============ o painel responde antes de ser lido ============
+
+   Ele tinha até doze campos misturando como está indo, o que está quebrado e
+   o que dá para comprar -- e um 🚨 aparecia depois das cotas. Quem abre o
+   painel quer saber uma coisa antes de tudo: preciso fazer algo agora? */
+{
+  const { vereditoDoPainel } = carregar(["vereditoDoPainel"]);
+
+  const limpo = vereditoDoPainel([], 2, 4);
+  verdade("sem problema, o sinal é verde", limpo.startsWith("**🟢"));
+  verdade("e diz o que está acontecendo, não só 'tudo certo'", /2 canais/.test(limpo));
+  verdade("com o número de idiomas junto", /4 idiomas/.test(limpo));
+
+  /* Singular escrito, e não "canal(is)": a barra e o parêntese são lixo que o
+     leitor de tela também lê em voz alta. */
+  const um = vereditoDoPainel([], 1, 1);
+  verdade("um canal é 'canal', não 'canais'", /1 canal\b/.test(um) && !/1 canais/.test(um));
+  verdade("um idioma é 'idioma'", /1 idioma\b/.test(um) && !/1 idiomas/.test(um));
+  for (const t of [limpo, um]) {
+    verdade("nenhum plural com barra ou parêntese", !/\(s\)|\bs\/|canal\(/.test(t));
+  }
+
+  /* Servidor recém-instalado não é "tudo funcionando": nada quebrou, mas nada
+     acontece, e quem lê "está tudo certo" fecha o painel achando que acabou. */
+  const vazio = vereditoDoPainel([], 0, 0);
+  verdade("sem canal apontado, o veredito diz o que fazer", /menu/i.test(vazio));
+  verdade("e não diz que está tudo funcionando", !/tudo funcionando/i.test(vazio));
+  verdade("mas também não acusa problema", !vazio.startsWith("**🔴"));
+
+  /* Com problema, o veredito conta QUANTOS -- "tem algo errado" não deixa
+     saber se acabou depois de consertar um. */
+  const um1 = vereditoDoPainel([{ name: "🚨 Ninguém está recebendo o cargo do idioma" }], 2, 4);
+  verdade("com problema, o sinal é vermelho", um1.startsWith("**🔴"));
+  verdade("um problema é 'uma coisa'", /Uma coisa precisa de você/.test(um1));
+  verdade("e o problema é nomeado", /Ninguém está recebendo o cargo/.test(um1));
+  verdade("sem o emoji repetido na lista", !/• 🚨/.test(um1));
+
+  const dois = vereditoDoPainel(
+    [{ name: "🚨 Um" }, { name: "⛔ Dois" }], 2, 4);
+  verdade("dois problemas são 'coisas'", /2 coisas precisam de você/.test(dois));
+
+  /* Mais de três não vira uma parede: os três primeiros e a contagem. */
+  const muitos = vereditoDoPainel(
+    [1, 2, 3, 4, 5].map((n) => ({ name: `⚠️ Problema ${n}` })), 2, 4);
+  verdade("cinco problemas contam cinco", /5 coisas precisam de você/.test(muitos));
+  ok("mas só três aparecem na lista", (muitos.match(/• Problema/g) || []).length, 3);
+  verdade("e o resto é contado", /e mais 2/.test(muitos));
+
+  for (const t of [limpo, um, vazio, um1, dois, muitos]) {
+    verdade("o veredito cabe na descrição do embed", t.length <= 4096);
+  }
+}
+
+/* ---- os botões dizem o que fazem ---- */
+{
+  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  /* Vive num `let` que só o carregamento dos ajustes preenche; aqui ele nunca
+     roda, então o botão de assinar entra pelo mesmo caminho de um servidor
+     sem link configurado. */
+  globalThis.LINK_PAGAMENTO_VIVO = "https://pague.exemplo/x";
+  const servidor = { id: "s1", plano: "gratis", tradutor_topico: true };
+  const linhas = componentesDoPainel(servidor, [], { fontes: 10, idiomas: 20 }, [], []);
+  const botoes = linhas.flatMap((l) => l.components).filter((c) => c.type === 2);
+  const rotulos = botoes.map((b) => String(b.label || ""));
+
+  /* Dois botões chamados "Tradutor" na mesma linha: um era o liga/desliga por
+     mensagem, o outro o motor. Nenhum rótulo pode ser prefixo de outro -- é
+     o que fazia os dois se confundirem. */
+  for (const a of rotulos) {
+    for (const b of rotulos) {
+      if (a === b) continue;
+      verdade(`"${a}" não é começo de "${b}"`, !b.startsWith(a));
+    }
+  }
+  ok("nenhum rótulo se repete", new Set(rotulos).size, rotulos.length);
+  for (const r of rotulos) verdade(`"${r}" cabe no botão`, r.length <= 80);
+}
+
+/* ---- a tradução por bandeira vem ligada, e sem precisar de nada ---- */
+{
+  const fonte = readFileSync(`${aqui}/index.js`, "utf8");
+  /* `=== false` e não `=== true`: enquanto a coluna não existir no banco, a
+     leitura devolve undefined, e undefined tem que LIGAR. Trocar por
+     `!== true` desligaria o recurso em todo servidor de uma vez, em silêncio,
+     e o painel continuaria dizendo "sempre ligada". */
+  verdade("a bandeira só desliga com um false explícito",
+    fonte.includes("servidor.tradutor_bandeira === false"));
+  verdade("e não há nenhuma leitura que exija um true",
+    !/tradutor_bandeira\s*===\s*true|!servidor\.tradutor_bandeira/.test(fonte));
+}
+
 /* ============ a bandeira que não deu em nada ============
 
    Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem
