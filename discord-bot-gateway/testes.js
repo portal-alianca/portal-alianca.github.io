@@ -1618,6 +1618,109 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("todo idioma do mapa de países existe no menu", forasteiros, []);
 }
 
+/* ============ a língua de quem nunca escolheu uma ============
+
+   Uma jogadora alemã pediu a tradução de uma mensagem em inglês e recebeu
+   INGLÊS de volta, porque quem nunca usou /mylanguage caía num "en" fixo. Ela
+   entendeu que o bot dizia que inglês já estava em inglês, e desistiu depois
+   de uma hora. O palpite passa a ser a língua em que a pessoa usa o Discord,
+   que vem em toda interação. */
+{
+  const { idiomaDoAplicativo, LINGUAS_MENU } = carregar(["LINGUAS_MENU", "idiomaDoAplicativo"]);
+
+  ok("alemão do cliente vira alemão", idiomaDoAplicativo("de"), "de");
+  ok("pt-BR vira pt", idiomaDoAplicativo("pt-BR"), "pt");
+  ok("en-US vira en", idiomaDoAplicativo("en-US"), "en");
+  ok("en-GB também", idiomaDoAplicativo("en-GB"), "en");
+  ok("es-419 vira es", idiomaDoAplicativo("es-419"), "es");
+  /* zh-CN é código do meu menu: tem que passar inteiro, e não virar "zh". */
+  ok("o chinês simplificado passa inteiro", idiomaDoAplicativo("zh-CN"), "zh-CN");
+  ok("o tradicional cai no simplificado, que é o que eu tenho",
+    idiomaDoAplicativo("zh-TW"), "zh-CN");
+
+  /* Língua que eu não falo não pode virar um código que eu não sei traduzir:
+     quem decide o padrão é quem chama, e ele usa "en". */
+  ok("dinamarquês, que eu não falo, não vira idioma", idiomaDoAplicativo("da"), "");
+  ok("sueco também não", idiomaDoAplicativo("sv-SE"), "");
+  ok("vazio não vira nada", idiomaDoAplicativo(""), "");
+  ok("nulo não quebra", idiomaDoAplicativo(null), "");
+  ok("lixo não vira idioma", idiomaDoAplicativo("¿?"), "");
+
+  /* Todo código do meu próprio menu tem que se reconhecer: se um dia entrar um
+     idioma com código composto, este teste é quem avisa. */
+  for (const [cod] of LINGUAS_MENU) {
+    ok(`o menu fala ${cod}, então ${cod} se reconhece`, idiomaDoAplicativo(cod), cod);
+  }
+}
+
+/* ---- "escolheu inglês" e "nunca escolheu" são coisas diferentes ----
+
+   Estavam colapsadas num "en", e isso matou a primeira tela inteira: a
+   conversa no privado abria com `idioma ? apresentação : perguntar`, e "en" é
+   verdadeiro, então ela nunca chegava a perguntar. A pergunta existia no
+   código e não existia na tela. */
+{
+  const { idiomaEscolhido, idiomaDoJogador } = carregar(["idiomaEscolhido", "idiomaDoJogador"]);
+
+  let pedido = "";
+  const responderBanco = (linhas) => { globalThis.sb = async (c) => { pedido = c; return linhas; }; };
+
+  responderBanco([{ idioma: "de" }]);
+  ok("quem escolheu alemão tem alemão escolhido", await idiomaEscolhido("u1"), "de");
+  verdade("a busca é pelo id de quem perguntou", pedido.includes("u1"));
+
+  responderBanco([]);
+  ok("quem nunca escolheu não tem nada", await idiomaEscolhido("u2"), "");
+  /* O ponto do conserto: vazio, e não "en". Se isto voltar a ser "en", a
+     pergunta do idioma some da conversa outra vez, sem nada quebrar. */
+  verdade("e vazio é falso, que é o que a primeira tela testa", !(await idiomaEscolhido("u2")));
+
+  responderBanco([{ idioma: "" }]);
+  ok("linha com idioma vazio também conta como nunca escolheu", await idiomaEscolhido("u3"), "");
+
+  globalThis.sb = async () => { throw new Error("banco fora"); };
+  ok("banco fora não inventa idioma", await idiomaEscolhido("u4"), "");
+
+  /* Já o de palpite sempre devolve alguma coisa -- é para escrever nela. */
+  responderBanco([]);
+  ok("sem escolha, vale a língua do cliente", await idiomaDoJogador("u5", "de"), "de");
+  ok("sem escolha e sem cliente, inglês", await idiomaDoJogador("u5", ""), "en");
+  ok("cliente numa língua que eu não falo cai em inglês",
+    await idiomaDoJogador("u5", "da"), "en");
+
+  responderBanco([{ idioma: "ar" }]);
+  ok("a escolha vence a língua do cliente", await idiomaDoJogador("u6", "de"), "ar");
+
+  globalThis.sb = async () => { throw new Error("banco fora"); };
+  ok("banco fora ainda respeita o cliente", await idiomaDoJogador("u7", "pt-BR"), "pt");
+}
+
+/* ============ a bandeira que não deu em nada ============
+
+   Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem
+   texto. Do lado de fora, bot que não responde é bot quebrado -- e foi
+   exatamente uma hora perdida adivinhando. */
+{
+  const { PORQUE_NAO } = carregar(["PORQUE_NAO"]);
+
+  const motivos = Object.keys(PORQUE_NAO);
+  verdade("há motivo escrito para cada saída sem resultado", motivos.length >= 3);
+  for (const m of ["semServidor", "desligado", "semTexto"]) {
+    verdade(`o motivo "${m}" tem texto`, !!PORQUE_NAO[m]);
+  }
+
+  for (const [m, p] of Object.entries(PORQUE_NAO)) {
+    verdade(`${m}: o título cabe no embed`, p.titulo.length <= 256);
+    /* Bilíngue sempre: a bandeira é justamente de quem não lê português. */
+    verdade(`${m}: fala inglês também`, /[a-z]/.test(p.ingles) && p.ingles.includes("_"));
+    verdade(`${m}: cabe na descrição`, `${p.texto}\n\n${p.ingles}`.length <= 4096);
+    /* A armadilha da tradução automática que já me pegou: frase começada por
+       pronome indefinido vira nome próprio e inverte o sentido. */
+    verdade(`${m}: não começa com pronome indefinido`,
+      !/^(Nada|Ninguém|Nenhum|Tudo|Todos)\b/i.test(p.texto));
+  }
+}
+
 /* ================= de onde sai o texto de uma mensagem ================= */
 {
   const { textoDaMensagem } = carregar(["textoDaMensagem"]);
