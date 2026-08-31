@@ -7254,16 +7254,29 @@ function paginaDeApresentacao() {
       "— — —",
       "",
       "**Você quer usar o CYRON no seu servidor?**",
+      "_Se preferir, veja antes o passo a passo da instalação._",
     ].join("\n"),
   };
 }
 
+/* O passo a passo tambem AQUI, na primeira tela.
+
+   Eu tinha posto as duas entradas dele atras de uma pergunta: "Sim, quero" ->
+   planos -> botao, ou "Ainda nao" -> menu -> tema. Quem mandou "oi" e olhou o
+   primeiro cartao nao via a expressao "passo a passo" em lugar nenhum, e
+   concluiu -- com razao -- que nao existia. Recurso a dois toques de distancia,
+   sem nada na superficie que o anuncie, e' recurso que ninguem acha.
+
+   Fica em terceiro, e nao em primeiro: quem ja decidiu instalar continua
+   caindo nos planos pelo caminho mais curto. O passo a passo e' para quem
+   ainda esta olhando. */
 function botoesDaPergunta() {
   return {
     type: 1,
     components: [
       { type: 2, style: 3, custom_id: PASSO.sim, emoji: { name: "✅" }, label: "Sim, quero" },
       { type: 2, style: 2, custom_id: PASSO.nao, emoji: { name: "💬" }, label: "Ainda não" },
+      { type: 2, style: 2, custom_id: `${PASSO.passo}:1`, emoji: { name: "📋" }, label: "Ver o passo a passo" },
     ],
   };
 }
@@ -7351,6 +7364,7 @@ const PASSOS = [
     texto: "Um clique no botão, escolher o servidor, autorizar.\n\n" +
       "Você precisa ser dono ou ter **Gerenciar Servidor** — o Discord só mostra " +
       "na lista os servidores onde você pode.",
+    foto: "passo-autorizar",
     convite: true,
   },
   {
@@ -7359,19 +7373,21 @@ const PASSOS = [
       "Eu crio o canal onde as pessoas escolhem o idioma e um canal de " +
       "administração com um painel de botões, e já começo a funcionar. " +
       "Se você nunca abrir o painel, eu continuo funcionando.",
+    foto: "passo-canais",
   },
   {
     titulo: "Cada pessoa escolhe a língua dela",
     texto: "No canal de entrada, num menu com 20 idiomas.\n\n" +
       "A partir daí eu falo com ela nessa língua, e ela só enxerga a ala dela " +
-      "do servidor. A foto mostra o que vê quem escolheu inglês.",
-    foto: `${SITE_DO_CYRON}img/membro-en.jpg`,
+      "do servidor.",
+    foto: "passo-idioma",
   },
   {
     titulo: "Você aponta quais canais eu traduzo",
     texto: "No painel de administração, num menu de canais do próprio Discord.\n\n" +
       "Cada canal que você marcar ganha uma cópia traduzida em cada idioma que " +
       "alguém escolheu.",
+    foto: "passo-painel",
   },
   {
     titulo: "Pronto — o servidor vive em todas as línguas",
@@ -7379,7 +7395,7 @@ const PASSOS = [
       "as alas.\n\n" +
       "Quem escreve na sala da língua dele aparece na dos outros já traduzido, " +
       "com o nome e a foto de quem falou.",
-    foto: `${SITE_DO_CYRON}img/duas-alas.jpg`,
+    foto: "passo-alas",
     convite: true,
   },
 ];
@@ -7394,13 +7410,27 @@ function passoValido(n) {
   return Math.min(Math.max(i, 1), PASSOS.length);
 }
 
-function paginaDoPasso(n) {
+/* O desenho do passo, na lingua de quem le.
+
+   Duas versoes de cada um, e nao vinte: o texto dentro do desenho e' pixel, e
+   pixel nao passa pelo tradutor. Portugues para quem fala portugues, ingles
+   para todo o resto -- que e' a lingua em que o Discord ja se entende.
+
+   Os arquivos moram no site, pelo endereco publico: sem upload, sem anexo, e
+   trocar o desenho la' troca aqui junto. */
+function fotoDoPasso(nome, idioma) {
+  if (!nome) return null;
+  return `${SITE_DO_CYRON}img/${nome}${idioma === "pt" ? "" : "-en"}.png`;
+}
+
+function paginaDoPasso(n, idioma) {
   const i = passoValido(n);
   const p = PASSOS[i - 1];
+  const foto = fotoDoPasso(p.foto, idioma);
   return {
     title: `${i}. ${p.titulo}`,
     description: p.texto,
-    ...(p.foto ? { image: { url: p.foto } } : {}),
+    ...(foto ? { image: { url: foto } } : {}),
     footer: { text: `Passo ${i} de ${PASSOS.length}` },
   };
 }
@@ -7429,7 +7459,7 @@ async function telaDoPasso(idioma, n) {
   const linhas = [];
   for (const l of botoesDoPasso(n)) linhas.push(await traduzirLinha(l, idioma));
   return {
-    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDoPasso(n), idioma, MOTOR_AUTO)) }],
+    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDoPasso(n, idioma), idioma, MOTOR_AUTO)) }],
     components: linhas,
   };
 }
