@@ -1355,7 +1355,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   } = carregar([
     "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
     "PASSO", "TEMAS", "menuDeTemas", "botoesDaPergunta", "botoesDeConvite", "botoesDosPlanos",
-    "paginaDeApresentacao", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
+    "paginaDeApresentacao", "precoDoPlano", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
     "APRESENTEI", "ESPERA_APRESENTACAO", "podeApresentar", "marcarApresentado",
   ]);
 
@@ -1376,7 +1376,31 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     verdade(`${nome}: o rodapé cabe`, (e.footer?.text || "").length <= 2048);
   };
   embedCabe("apresentação", paginaDeApresentacao());
-  embedCabe("planos", paginaDosPlanos());
+  embedCabe("planos", paginaDosPlanos("pt"));
+  embedCabe("planos em inglês", paginaDosPlanos("en"));
+
+  /* O preço acompanha a língua, e não só a palavra.
+
+     "R$ 79/mês" não diz nada a um americano -- ele não sabe se é caro ou
+     barato, e procurar a cotação é onde ele fecha a conversa. */
+  verdade("em português o preço é em reais",
+    paginaDosPlanos("pt").fields[1].name.includes("R$ 79"));
+  verdade("em inglês o preço é em dólares",
+    paginaDosPlanos("en").fields[1].name.includes("US$ 15"));
+  verdade("em árabe também não é em reais",
+    !paginaDosPlanos("ar").fields[1].name.includes("R$"));
+
+  /* Texto meu passa por tradução automática, e ela devolveu "Nada is built on
+     your server" -- o oposto do que a frase dizia. Começar por pronome
+     indefinido é o que arma essa armadilha, então nenhuma frase minha começa
+     assim. */
+  const frases = [paginaDeApresentacao(), paginaDosPlanos("pt")]
+    .flatMap((e) => [e.description, ...(e.fields || []).map((f) => f.value)])
+    .flatMap((t) => String(t).split(/\n+/))
+    .map((l) => l.replace(/^[_*\s]+/, "").trim())
+    .filter(Boolean);
+  const armadilhas = frases.filter((l) => /^(Nada|Ninguém|Nenhum|Tudo|Todos)\b/i.test(l));
+  ok("nenhuma frase começa por pronome que o tradutor confunde com nome", armadilhas, []);
   embedCabe("idioma", telaDoIdioma().embeds[0]);
   for (const [k, t] of Object.entries(TEMAS)) embedCabe(`tema ${k}`, { title: t.titulo, description: t.texto });
 

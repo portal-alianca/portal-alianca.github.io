@@ -7273,7 +7273,29 @@ async function telaDeApresentacao(idioma) {
 
 /* ---- passo 2: disse que sim ---- */
 
-function paginaDosPlanos() {
+/* O preço na moeda de quem lê.
+
+   "R$ 79/mês" não diz nada a um americano: ele não sabe se é caro ou barato, e
+   ir procurar a cotação é onde ele fecha a conversa. É o mesmo conserto que o
+   site levou, e que aqui tinha ficado para trás. */
+function precoDoPlano(idioma) {
+  return idioma === "pt" ? "R$ 79/mês" : "US$ 15/mês";
+}
+
+/* Texto meu passa por tradução automática, e frase curta de venda é
+   exatamente onde ela quebra.
+
+   A versão anterior dizia "Nada é construído no seu servidor: a tradução
+   acontece quando alguém pede." Voltou do inglês como "Nada is built on your
+   server: the translation happens when someone pede." Duas palavras
+   sobreviveram, e "Nada is built" um inglês lê como se ALGO fosse construído
+   -- o oposto do que a frase existe para dizer, na tela que decide a venda.
+
+   O conserto não é trocar de tradutor: é escrever para ser traduzido. Sujeito
+   explícito, verbo com objeto, e nada de começar por pronome indefinido que
+   pareça nome próprio. Isso vale para as vinte línguas de uma vez, e não só
+   para a única que eu vi quebrar. */
+function paginaDosPlanos(idioma) {
   return {
     title: "🌐 Como o CYRON funciona no seu servidor",
     description: [
@@ -7286,16 +7308,17 @@ function paginaDosPlanos() {
         name: "🆓 Grátis, para sempre",
         value: "Tradução por bandeira sem limite · botão de tradução nos avisos · " +
           "eu falo com cada pessoa na língua dela.\n" +
-          "_Nada é construído no seu servidor: a tradução acontece quando alguém pede._",
+          "_Eu não crio nenhum canal no seu servidor. Só traduzo quando alguém " +
+          "pede uma tradução._",
       },
       {
-        name: "⭐ Pago — R$ 79/mês",
+        name: `⭐ Pago — ${precoDoPlano(idioma)}`,
         value: "Cada língua ganha uma ala própria, com os seus canais copiados e " +
           "traduzidos. Quem escreve na sala dele aparece na dos outros já traduzido, " +
           "com nome e foto. Até 20 idiomas.",
       },
     ],
-    footer: { text: "Você começa no grátis. Não há cartão nem prazo." },
+    footer: { text: "Você começa no plano grátis. Eu não peço cartão." },
   };
 }
 
@@ -7312,7 +7335,7 @@ async function telaDosPlanos(idioma) {
   const linhas = [];
   for (const l of botoesDosPlanos()) linhas.push(await traduzirLinha(l, idioma));
   return {
-    embeds: [{ color: COR_OK, ...(await traduzirEmbed(paginaDosPlanos(), idioma, MOTOR_AUTO)) }],
+    embeds: [{ color: COR_OK, ...(await traduzirEmbed(paginaDosPlanos(idioma), idioma, MOTOR_AUTO)) }],
     components: linhas,
   };
 }
