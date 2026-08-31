@@ -7174,6 +7174,10 @@ const PASSO = {
   sim: "dm:sim",
   nao: "dm:nao",
   ajuda: "dm:ajuda",
+  /* O numero do passo entra depois dos dois pontos: `dm:passo:3`. E' o mesmo
+     truque do resto da conversa -- o estado viaja no botao --, so' que aqui
+     ele carrega uma posicao em vez de um destino. */
+  passo: "dm:passo",
 };
 
 /* Rotulo de botao nao passa pelo traduzirEmbed -- ele so' olha titulo,
@@ -7326,9 +7330,108 @@ function botoesDosPlanos() {
   return [
     botoesDeConvite(),
     { type: 1, components: [
+      { type: 2, style: 1, custom_id: `${PASSO.passo}:1`, emoji: { name: "📋" }, label: "Ver o passo a passo" },
       { type: 2, style: 2, custom_id: PASSO.nao, emoji: { name: "💬" }, label: "Tenho outra dúvida" },
     ] },
   ];
+}
+
+/* ---- o passo a passo, um cartão por vez ----
+
+   Os mesmos cinco passos do site, e de propósito: quem viu lá e veio para cá
+   reconhece, e eu tenho um texto só para manter. O que muda é o meio -- aqui a
+   pessoa avança no próprio ritmo, e o Discord desenha a imagem do passo dentro
+   do cartão.
+
+   As fotos vêm do site, pelo endereço público. Não há upload, não há anexo, e
+   trocar a foto no site troca aqui junto. */
+const PASSOS = [
+  {
+    titulo: "Adicione o CYRON ao seu servidor",
+    texto: "Um clique no botão, escolher o servidor, autorizar.\n\n" +
+      "Você precisa ser dono ou ter **Gerenciar Servidor** — o Discord só mostra " +
+      "na lista os servidores onde você pode.",
+    convite: true,
+  },
+  {
+    titulo: "Ele se instala sozinho",
+    texto: "Sem formulário e sem configuração.\n\n" +
+      "Eu crio o canal onde as pessoas escolhem o idioma e um canal de " +
+      "administração com um painel de botões, e já começo a funcionar. " +
+      "Se você nunca abrir o painel, eu continuo funcionando.",
+  },
+  {
+    titulo: "Cada pessoa escolhe a língua dela",
+    texto: "No canal de entrada, num menu com 20 idiomas.\n\n" +
+      "A partir daí eu falo com ela nessa língua, e ela só enxerga a ala dela " +
+      "do servidor. A foto mostra o que vê quem escolheu inglês.",
+    foto: `${SITE_DO_CYRON}img/membro-en.jpg`,
+  },
+  {
+    titulo: "Você aponta quais canais eu traduzo",
+    texto: "No painel de administração, num menu de canais do próprio Discord.\n\n" +
+      "Cada canal que você marcar ganha uma cópia traduzida em cada idioma que " +
+      "alguém escolheu.",
+  },
+  {
+    titulo: "Pronto — o servidor vive em todas as línguas",
+    texto: "Você publica uma vez no canal de sempre, e chega traduzido em todas " +
+      "as alas.\n\n" +
+      "Quem escreve na sala da língua dele aparece na dos outros já traduzido, " +
+      "com o nome e a foto de quem falou.",
+    foto: `${SITE_DO_CYRON}img/duas-alas.jpg`,
+    convite: true,
+  },
+];
+
+/* Recebe o numero do jeito que ele chega do botao -- texto, e vindo de fora --
+   e devolve uma posicao que existe. Sem isto, um custom_id adulterado ou um
+   passo removido no futuro dariam `undefined.titulo` e a conversa morreria com
+   "Esta interação falhou". */
+function passoValido(n) {
+  const i = Math.trunc(Number(n));
+  if (!Number.isFinite(i)) return 1;
+  return Math.min(Math.max(i, 1), PASSOS.length);
+}
+
+function paginaDoPasso(n) {
+  const i = passoValido(n);
+  const p = PASSOS[i - 1];
+  return {
+    title: `${i}. ${p.titulo}`,
+    description: p.texto,
+    ...(p.foto ? { image: { url: p.foto } } : {}),
+    footer: { text: `Passo ${i} de ${PASSOS.length}` },
+  };
+}
+
+/* Primeiro e ultimo passo nao tem para onde voltar nem para onde ir. Botao
+   desabilitado, e nao botao ausente: a linha muda de tamanho a cada passo se
+   eles sumirem, e os outros dancam de lugar embaixo do dedo de quem esta
+   tocando. */
+function botoesDoPasso(n) {
+  const i = passoValido(n);
+  const linhas = [{
+    type: 1,
+    components: [
+      { type: 2, style: 2, custom_id: `${PASSO.passo}:${i - 1}`, emoji: { name: "◀" },
+        label: "Anterior", disabled: i === 1 },
+      { type: 2, style: 1, custom_id: `${PASSO.passo}:${i + 1}`, emoji: { name: "▶" },
+        label: "Próximo", disabled: i === PASSOS.length },
+      { type: 2, style: 2, custom_id: PASSO.sim, emoji: { name: "↩️" }, label: "Voltar aos planos" },
+    ],
+  }];
+  if (PASSOS[i - 1].convite) linhas.push(botoesDeConvite());
+  return linhas;
+}
+
+async function telaDoPasso(idioma, n) {
+  const linhas = [];
+  for (const l of botoesDoPasso(n)) linhas.push(await traduzirLinha(l, idioma));
+  return {
+    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDoPasso(n), idioma, MOTOR_AUTO)) }],
+    components: linhas,
+  };
 }
 
 async function telaDosPlanos(idioma) {
@@ -7349,6 +7452,15 @@ async function telaDosPlanos(idioma) {
    nao e' resposta nenhuma. Cinco temas cobrem o que de fato perguntam, e cada
    um tem uma resposta escrita -- honesto sobre o que eu sei fazer. */
 const TEMAS = {
+  instalar: {
+    rotulo: "Como instalar, passo a passo",
+    /* Titulo e texto existem para o caso de alguem chegar aqui pelo caminho
+       normal -- mas o roteador desvia este tema para a sequencia de cartoes
+       antes de usa-los. */
+    titulo: "📋 Como instalar",
+    texto: "São cinco passos, e três acontecem sozinhos. Use os botões para " +
+      "avançar no seu ritmo.",
+  },
   ler: {
     rotulo: "Como eu leio uma mensagem na minha língua",
     titulo: "🏳️ Reaja com a sua bandeira",
@@ -7425,6 +7537,13 @@ async function telaDeAjuda(idioma, tema = null) {
 /* Tudo com `update`, e nao `reply`: o cartao se transforma no lugar. Uma
    resposta nova a cada clique deixaria a conversa com o historico inteiro de
    telas mortas, e a viva perdida no meio. */
+/* O tema que abre o passo a passo em vez de um cartao de texto.
+
+   Ele mora na mesma lista dos outros para aparecer no menu, mas o valor e'
+   tratado a parte no roteador: aqui a resposta nao e' uma explicacao, e' uma
+   sequencia. */
+const TEMA_INSTALAR = "instalar";
+
 async function cliqueNoPrivado(inter) {
   /* Reconhece o clique antes de qualquer traducao, pelo mesmo motivo do
      seletor de idioma: montar uma tela nova pode passar dos 3 segundos que o
@@ -7434,11 +7553,21 @@ async function cliqueNoPrivado(inter) {
   await inter.deferUpdate();
   const idioma = await idiomaDoJogador(inter.user.id);
 
+  /* Antes das comparacoes exatas: este e' o unico custom_id da conversa que
+     carrega um valor depois do nome. */
+  if (inter.customId.startsWith(`${PASSO.passo}:`)) {
+    return inter.editReply(await telaDoPasso(idioma, inter.customId.split(":")[2]));
+  }
   if (inter.customId === PASSO.sim) return inter.editReply(await telaDosPlanos(idioma));
   if (inter.customId === PASSO.nao) return inter.editReply(await telaDeAjuda(idioma));
   if (inter.customId === PASSO.inicio) return inter.editReply(await telaDeApresentacao(idioma));
   if (inter.customId === PASSO.ajuda) {
-    return inter.editReply(await telaDeAjuda(idioma, String(inter.values?.[0] || "")));
+    const tema = String(inter.values?.[0] || "");
+    /* Instalar nao e' uma explicacao de um paragrafo: e' uma sequencia. Por
+       isso ele aparece no menu como qualquer tema e sai daqui por outro
+       caminho. */
+    if (tema === TEMA_INSTALAR) return inter.editReply(await telaDoPasso(idioma, 1));
+    return inter.editReply(await telaDeAjuda(idioma, tema));
   }
 }
 

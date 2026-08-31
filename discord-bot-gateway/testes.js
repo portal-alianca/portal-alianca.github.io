@@ -1456,8 +1456,55 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 
   const menuArabe = await traduzirLinha(menuDeTemas(), "ar");
   ok("o texto do menu é traduzido", menuArabe.components[0].placeholder, "<No que eu posso ajudar?>");
-  ok("as opções também", menuArabe.components[0].options[0].label, `<${TEMAS.ler.rotulo}>`);
-  ok("mas o valor da opção fica", menuArabe.components[0].options[0].value, "ler");
+  /* Pelo primeiro tema que existir, e não por um nome escrito aqui: a lista
+     ganha temas com o tempo, e um teste preso à ordem quebra sem ter achado
+     defeito nenhum -- foi o que aconteceu quando "instalar" entrou. */
+  const primeiroTema = Object.keys(TEMAS)[0];
+  ok("as opções também", menuArabe.components[0].options[0].label, `<${TEMAS[primeiroTema].rotulo}>`);
+  ok("mas o valor da opção fica", menuArabe.components[0].options[0].value, primeiroTema);
+
+  /* ---- o passo a passo ----
+
+     Cinco cartões que se substituem, com a posição viajando no custom_id. O
+     número vem de fora, então ele é a superfície que precisa aguentar
+     qualquer coisa: um id adulterado ou um passo removido no futuro dariam
+     `undefined.titulo`, e a conversa morreria com "Esta interação falhou". */
+  const { PASSOS, passoValido, paginaDoPasso, botoesDoPasso, TEMA_INSTALAR, SITE_DO_CYRON: site } =
+    carregar(["SITE_DO_CYRON", "PASSOS", "passoValido", "paginaDoPasso", "botoesDoPasso", "TEMA_INSTALAR"]);
+
+  ok("o primeiro passo é 1", passoValido(1), 1);
+  ok("abaixo do primeiro volta para o primeiro", passoValido(0), 1);
+  ok("muito abaixo também", passoValido(-99), 1);
+  ok("acima do último para no último", passoValido(PASSOS.length + 1), PASSOS.length);
+  ok("texto que não é número vira o primeiro", passoValido("abacaxi"), 1);
+  ok("vazio também", passoValido(undefined), 1);
+  ok("número em texto funciona, porque é assim que ele chega", passoValido("3"), 3);
+  ok("quebrado vira inteiro", passoValido("2.7"), 2);
+
+  for (let i = 1; i <= PASSOS.length; i++) {
+    embedCabe(`passo ${i}`, paginaDoPasso(i));
+    for (const l of botoesDoPasso(i)) linhaCabe(`passo ${i}`, l);
+  }
+
+  /* Botão desabilitado, e não botão ausente: sumindo, a linha muda de tamanho
+     a cada passo e os outros dançam de lugar embaixo do dedo. */
+  const primeiro = botoesDoPasso(1)[0].components;
+  verdade("no primeiro passo, Anterior está desabilitado", primeiro[0].disabled === true);
+  verdade("mas continua na tela", primeiro.length === 3);
+  verdade("e Próximo está vivo", !primeiro[1].disabled);
+
+  const ultimo = botoesDoPasso(PASSOS.length)[0].components;
+  verdade("no último, Próximo está desabilitado", ultimo[1].disabled === true);
+  verdade("e Anterior está vivo", !ultimo[0].disabled);
+
+  /* As fotos são as do site, pelo endereço público: trocar lá troca aqui. */
+  const comFoto = PASSOS.filter((p) => p.foto);
+  verdade("algum passo mostra foto", comFoto.length > 0);
+  for (const p of comFoto) {
+    verdade(`a foto de "${p.titulo}" vem do site`, p.foto.startsWith(site));
+  }
+
+  verdade("o passo a passo tem entrada pelo menu de temas", !!TEMAS[TEMA_INSTALAR]);
 
   /* ---- a apresentação não se repete, mas só depois de acontecer ----
 
