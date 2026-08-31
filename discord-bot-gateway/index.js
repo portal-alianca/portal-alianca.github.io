@@ -106,6 +106,29 @@ async function sbDel(caminho) {
   if (!r.ok) throw new Error(`supabase ${r.status} ao apagar ${caminho}: ${(await r.text()).slice(0, 200)}`);
 }
 
+/* O que eu guardo, e por quanto tempo.
+
+   Escrito num lugar so' porque e' o que a pagina de privacidade promete: duas
+   verdades sobre o mesmo assunto, em arquivos diferentes, divergem no dia em
+   que alguem mexer numa. Um teste confere que os numeros daqui sao os numeros
+   que a pagina mostra.
+
+   Os prazos vem do uso, nao de numero redondo:
+
+   - texto (7 dias): serve ao seletor "ler no seu idioma", que se usa nos
+     minutos seguintes a mensagem. O clique depois disso ja respondia "pode ter
+     expirado" -- frase que so' agora e' verdade.
+   - cache (90 dias): existe pra nao pagar duas vezes pela mesma frase. Frase
+     que se repete, se repete dentro de semanas; guardar pra sempre nao
+     economiza mais nada e so' aumenta o que eu teria a perder.
+   - falas (14 dias): responder e' coisa de conversa viva. Aqui nao ha texto,
+     so' os numeros das mensagens. */
+const GUARDO_POR = [
+  ["discord_msg_traducao", 7, "o texto das mensagens"],
+  ["discord_traducao_cache", 90, "o cache de traduções"],
+  ["discord_fala_espelhada", 14, "as falas espelhadas"],
+];
+
 async function sbPatch(caminho, corpo) {
   const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
     method: "PATCH",
@@ -4227,9 +4250,15 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
         emoji: { name: "💬" },
         label: servidor.tradutor_topico ? "Tradutor por mensagem: ligado" : "Tradutor por mensagem: desligado",
       },
-      { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Tradutor" },
-      { type: 2, custom_id: "cyron:palavras", style: 2, emoji: { name: "📖" }, label: "Palavras da casa" },
-      { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Remontar agora" },
+      /* Havia DOIS botões chamados "Tradutor" nesta mesma linha: este, que
+         escolhe o motor, e o liga/desliga por mensagem ao lado. O nome passa a
+         ser o mesmo do campo que ele mexe -- botão e campo com nomes
+         diferentes obrigam a pessoa a descobrir a ligação sozinha. */
+      { type: 2, custom_id: "cyron:motor", style: 2, emoji: { name: "🌐" }, label: "Motor de tradução" },
+      /* "Palavras da casa" e "Remontar agora" não dizem o que fazem nem se
+         desfazem algo. Verbo e objeto: dá para decidir sem clicar para ver. */
+      { type: 2, custom_id: "cyron:palavras", style: 2, emoji: { name: "📖" }, label: "Palavras que eu não traduzo" },
+      { type: 2, custom_id: "cyron:remontar", style: 2, emoji: { name: "🔄" }, label: "Reconstruir os canais" },
       { type: 2, custom_id: "cyron:ajuda", style: 2, emoji: { name: "❓" }, label: "Ajuda" },
     ],
   });
@@ -4349,6 +4378,40 @@ function comoEstaOMotor(servidor) {
    fixada no canal de configuracao e a copia efemera que o /cyron abre onde a
    pessoa estiver. Fossem duas montagens, elas iam divergir na primeira vez que
    eu mexesse numa e esquecesse da outra. */
+/* A primeira linha do painel responde "eu preciso fazer alguma coisa?".
+
+   Sem ela, quem abre o painel precisa ler os doze campos para descobrir que
+   nao ha nada a fazer -- e quem abre com pressa fecha sem ver o 🚨 que havia.
+   A resposta cabe numa linha, e a linha diz o NUMERO de problemas, porque
+   "tem algo errado" nao ajuda a saber se acabou depois de consertar um.
+
+   O plural e' escrito, e nao "problema(s)": a barra e o parenteses sao lixo
+   que o leitor de tela tambem le, e este cartao e' o lugar onde a pessoa mais
+   precisa entender de primeira. */
+function vereditoDoPainel(problemas, canais, idiomas) {
+  const quantos = problemas.length;
+  if (quantos) {
+    const nomes = problemas.map((p) => String(p.name || "").replace(/^\W+\s*/, "")).slice(0, 3);
+    return `**🔴 ${quantos === 1 ? "Uma coisa precisa de você" : `${quantos} coisas precisam de você`}.**\n` +
+      nomes.map((n) => `• ${n}`).join("\n") +
+      (quantos > nomes.length ? `\n• _…e mais ${quantos - nomes.length}_` : "") +
+      "\n\n_O conserto de cada uma está escrito logo abaixo._";
+  }
+  /* Servidor recem-instalado nao esta "tudo funcionando": nada esta quebrado,
+     mas nada esta acontecendo tambem, e a pessoa PRECISA fazer o proximo
+     passo. Dizer que esta tudo certo ali seria verdade tecnica e mentira
+     pratica -- ela fecharia o painel achando que acabou. */
+  if (!canais) {
+    return "**👋 Falta um passo.** Ninguém apontou um canal para eu traduzir ainda — " +
+      "escolha no menu aqui embaixo e eu começo.";
+  }
+  /* Com canal apontado, a linha diz o que esta acontecendo -- e nao "tudo
+     certo" sozinho, que nao deixa conferir se e' o que a pessoa esperava. */
+  return `**🟢 Está tudo funcionando.** Eu traduzo ` +
+    `**${canais} ${canais === 1 ? "canal" : "canais"}** ` +
+    `em **${idiomas} ${idiomas === 1 ? "idioma" : "idiomas"}**.`;
+}
+
 async function montarPainel(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
@@ -4475,8 +4538,20 @@ async function montarPainel(guild, servidor) {
     },
   ];
 
+  /* O que pede ação fica numa lista separada, e ela vai na frente.
+
+     O painel tinha até doze campos misturando três coisas diferentes: como
+     está indo, o que está quebrado, e o que dá para comprar. Um 🚨 "ninguém
+     está recebendo o cargo do idioma" aparecia DEPOIS das cotas e do aviso de
+     beta -- quem abre o painel para ver se precisa fazer algo tinha que ler
+     tudo para descobrir.
+
+     Separadas, as duas listas também respondem a pergunta que decide o resto:
+     a lista de problemas está vazia ou não. É dela que sai o veredito. */
+  const problemas = [];
+
   if (fila.length) {
-    campos.push({
+    problemas.push({
       name: "⚠️ Escolheram um idioma e não couberam",
       value: fila.map((f) => `${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`).join("\n") +
         "\n_Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum._",
@@ -4542,7 +4617,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (cargoRuim) {
-    campos.push({
+    problemas.push({
       name: "🚨 Ninguém está recebendo o cargo do idioma",
       value: [
         `Os cargos ${cargoRuim.nomes.slice(0, 6).map((n) => `**${n}**`).join(", ")} estão **acima** do meu na lista de cargos, ` +
@@ -4558,7 +4633,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (inalcancaveis.length) {
-    campos.push({
+    problemas.push({
       name: `⛔ Não consigo dar o cargo de idioma a ${inalcancaveis.length} ${inalcancaveis.length === 1 ? "pessoa" : "pessoas"}`,
       value: inalcancaveis.slice(0, 10).map((id) => `<@${id}>`).join(" ") +
         (inalcancaveis.length > 10 ? ` _…e mais ${inalcancaveis.length - 10}_` : "") +
@@ -4570,7 +4645,7 @@ async function montarPainel(guild, servidor) {
   }
 
   if (orfas.length) {
-    campos.push({
+    problemas.push({
       name: `🗑️ Cópias sem origem — ${orfas.length}`,
       value: orfas.slice(0, 15).map((o) => `<#${o.canal_id}>`).join("\n") +
         (orfas.length > 15 ? `\n_…e mais ${orfas.length - 15}_` : "") +
@@ -4586,10 +4661,10 @@ async function montarPainel(guild, servidor) {
      painel, empurrando o estado (que e' o que se olha todo dia) pra cima. */
   const embed = {
     title: "⚙️ CYRON",
-    description: "O que for postado nos canais abaixo sai traduzido numa cópia por idioma, " +
-      "dentro da categoria de quem escolheu aquele idioma.",
+    description: vereditoDoPainel(problemas, vivas.length, idiomas.length),
     color: corDoPainel(noTeto, fila.length > 0 || inalcancaveis.length > 0 || !!cargoRuim),
-    fields: campos,
+    /* Problemas primeiro, sempre. */
+    fields: [...problemas, ...campos],
     footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${prazo}` },
   };
 
@@ -6706,13 +6781,54 @@ async function traduzirEmbed(embed, idioma, motor = MOTOR_AUTO) {
   return novo;
 }
 
-async function idiomaDoJogador(userId) {
+/* A lingua do CLIENTE de quem clicou, quando ela nunca escolheu uma.
+
+   O Discord manda em toda interacao o idioma em que a pessoa usa o aplicativo.
+   Ele nao e' a verdade absoluta -- alguem pode usar o Discord em ingles e
+   preferir ler em alemao --, mas e' um palpite muito melhor que "ingles pra
+   todo mundo", que era o que havia.
+
+   E "ingles pra todo mundo" custou caro: uma jogadora alema pediu a traducao
+   de uma mensagem em ingles, eu a mandei de volta em INGLES, e o que ela
+   entendeu foi que o bot dizia que ingles ja estava em ingles. Ela e outro
+   jogador tentaram uma hora e desistiram. Do lado de fora, um tradutor que
+   devolve o texto igual esta quebrado.
+
+   Os codigos do Discord nem sempre sao os meus: pt-BR, en-US e es-419 viram
+   pt, en e es; o chines tradicional cai no simplificado, que e' o unico que eu
+   tenho. O que nao bater cai em ingles, como antes. */
+function idiomaDoAplicativo(local) {
+  const bruto = String(local || "").trim();
+  if (!bruto) return "";
+  if (LINGUAS_MENU.some(([c]) => c === bruto)) return bruto;      // "de", "fr", "zh-CN"
+  if (bruto === "zh-TW") return "zh-CN";                          // so' tenho o simplificado
+  const curto = bruto.split("-")[0];                              // "pt-BR" -> "pt"
+  return LINGUAS_MENU.some(([c]) => c === curto) ? curto : "";
+}
+
+/* O que a pessoa ESCOLHEU, e vazio se ela nunca escolheu.
+
+   Separado de propósito. Quem só quer uma lingua pra escrever nela usa o
+   idiomaDoJogador abaixo, que sempre devolve alguma. Mas quem precisa saber se
+   ela JA' passou por aqui -- a conversa no privado, que abre perguntando --
+   precisa distinguir "escolheu ingles" de "nunca escolheu", e as duas coisas
+   estavam colapsadas num "en".
+
+   O custo disso foi a primeira tela inteira: `idioma ? apresentacao : perguntar`
+   nunca chegava a perguntar, porque "en" e' verdadeiro. Todo mundo que mandava
+   "oi" recebia uma parede de texto em ingles, tivesse ou nao escolhido idioma.
+   A pergunta existia no codigo e nao existia na tela. */
+async function idiomaEscolhido(userId) {
   try {
     const r = await sb(`discord_idioma_jogador?discord_user_id=eq.${userId}&select=idioma`);
-    return r?.[0]?.idioma || "en"; // quem nunca escolheu le em ingles
+    return r?.[0]?.idioma || "";
   } catch {
-    return "en";
+    return "";
   }
+}
+
+async function idiomaDoJogador(userId, local) {
+  return (await idiomaEscolhido(userId)) || idiomaDoAplicativo(local) || "en";
 }
 
 async function salvarIdiomaJogador(userId, idioma) {
@@ -6999,7 +7115,7 @@ async function comandoSettings(inter) {
 
 /* Responder ja traduzido pro idioma de quem clicou. */
 async function responder(inter, embed, { efemera = true, idioma } = {}) {
-  const alvo = idioma ?? await idiomaDoJogador(inter.user.id);
+  const alvo = idioma ?? await idiomaDoJogador(inter.user.id, inter.locale);
   const final = await traduzirEmbed(embed, alvo, await motorDoGuild(inter.guildId));
   const carga = { embeds: [{ color: COR, ...final }] };
   if (inter.deferred || inter.replied) return inter.editReply(carga);
@@ -7581,7 +7697,7 @@ async function cliqueNoPrivado(inter) {
      funcionou. Depois do deferUpdate, o editReply troca o cartao no lugar --
      que e' o mesmo efeito do update, sem o relogio correndo. */
   await inter.deferUpdate();
-  const idioma = await idiomaDoJogador(inter.user.id);
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
 
   /* Antes das comparacoes exatas: este e' o unico custom_id da conversa que
      carrega um valor depois do nome. */
@@ -7655,7 +7771,9 @@ async function falarNoPrivado(msg, carga) {
 
 async function atenderNoPrivado(msg) {
   const texto = String(msg.content || "").trim();
-  const idioma = await idiomaDoJogador(msg.author.id);
+  /* O ESCOLHIDO, não o de palpite: é ele que decide se a conversa abre
+     perguntando a língua ou já se apresentando nela. */
+  const escolhido = await idiomaEscolhido(msg.author.id);
 
   /* "idioma" numa conversa de tradutor quase nunca e' texto pra traduzir: e'
      alguem pedindo pra trocar. Vale nas duas linguas em que a pessoa poderia
@@ -7668,7 +7786,7 @@ async function atenderNoPrivado(msg) {
     /* Sem idioma escolhido, a PRIMEIRA tela e' a pergunta do idioma -- e nao a
        apresentacao. Me apresentar em portugues para quem fala turco e' entregar
        uma parede de texto que ele nao le, com a saida escondida embaixo. */
-    const tela = idioma ? await telaDeApresentacao(idioma) : telaDoIdioma();
+    const tela = escolhido ? await telaDeApresentacao(escolhido) : telaDoIdioma();
     /* Marca so' depois de entregar: assim uma falha de envio nao cala o bot
        por uma hora para alguem que nunca viu o cartao. */
     if (await falarNoPrivado(msg, tela)) marcarApresentado(msg.author.id);
@@ -7690,7 +7808,7 @@ async function atenderNoPrivado(msg) {
 }
 
 async function comandoAjuda(inter) {
-  const idioma = await idiomaDoJogador(inter.user.id);
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
   const embed = await traduzirEmbed(paginaDoMembro(souAdmin), idioma, await motorDoGuild(inter.guildId));
   return inter.reply({
@@ -7701,7 +7819,7 @@ async function comandoAjuda(inter) {
 }
 
 async function comandoDeInteracao(inter) {
-  const idioma = await idiomaDoJogador(inter.user.id);
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const nome = inter.commandName;
 
   /* O painel onde a pessoa estiver.
@@ -7750,13 +7868,29 @@ async function comandoDeInteracao(inter) {
   }
 
   if (nome === "Translate") {
-    const texto = String(inter.targetMessage?.content || "").trim();
+    /* Pela mesma funcao da bandeira, e nao por `.content`.
+       Aviso automatico chega com o corpo vazio e a mensagem inteira dentro do
+       embed -- entao o Translate respondia "mensagem vazia" justamente nos
+       avisos, que sao o texto que mais gente precisa ler traduzido. */
+    const texto = textoDaMensagem(inter.targetMessage);
     await inter.deferReply({ flags: 64 });
     if (!texto) {
       return responder(inter, { title: "🤔 Mensagem vazia",
         description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma });
     }
     const t = await traduzirLongo(texto, idioma, await motorDoGuild(inter.guildId));
+    /* Traducao que volta igual ao original nao e' resposta: e' o texto de
+       novo. Quem pediu conclui que o bot nao fez nada -- ou, pior, que ele
+       disse que a mensagem ja estava na lingua dela. Dizer o que aconteceu, e
+       onde se troca de idioma, custa uma frase. */
+    if (t && t.trim() === texto.trim()) {
+      return responder(inter, {
+        title: `🌐 Já está em ${nomeDoIdioma(idioma)}`,
+        description: "Esta mensagem já está no idioma em que eu falo com você.\n\n" +
+          "Se você lê em outra língua, troque com **/mylanguage** — eu passo a " +
+          "traduzir tudo para ela.",
+      }, { idioma });
+    }
     return responder(inter, t
       ? { title: `🌐 ${nomeDoIdioma(idioma)}`, description: t.slice(0, 3800),
           footer: { text: "Quer mudar o idioma? Use /mylanguage" } }
@@ -8185,6 +8319,62 @@ function podeAvisarDoLimite(userId) {
   return true;
 }
 
+/* ---- por que a bandeira nao deu em nada ----
+
+   Uma jogadora alema pos a bandeira, nao aconteceu NADA, e ela passou uma hora
+   com outro jogador tentando adivinhar antes de desistir. O caminho da
+   bandeira tinha cinco saidas mudas -- servidor sem instalar, recurso
+   desligado pelo dono, mensagem sem texto -- e em nenhuma delas ela tinha como
+   saber o que havia de errado. Do lado de fora, bot que nao responde e' bot
+   quebrado.
+
+   Falar so' depois de a bandeira ser RECONHECIDA. 👍 e 😂 continuam nao
+   custando nada: a intencao ali nao e' pedir traducao, e responder a elas
+   seria transformar cada reacao do servidor numa mensagem minha.
+
+   Um aviso por pessoa a cada dez minutos, contando o motivo junto: quem
+   descobriu que o dono desligou o recurso nao precisa ouvir de novo a cada
+   bandeira, e quem esbarrar noutro motivo continua sendo avisado. */
+const avisoDaBandeira = new Map(); // `${userId}:${motivo}` -> quando
+const ESPERA_AVISO_BANDEIRA = 10 * 60 * 1000;
+
+const PORQUE_NAO = {
+  semServidor: {
+    titulo: "🌐 Eu ainda não fui instalado aqui",
+    texto: "A bandeira funciona nos servidores onde eu estou instalado. Alguém com " +
+      "**Gerenciar Servidor** pode me adicionar — é um clique, e eu me instalo sozinho.",
+    ingles: "_Flags work in servers where I'm installed. Anyone with **Manage Server** can add me._",
+  },
+  desligado: {
+    titulo: "🏳️ A tradução por bandeira está desligada neste servidor",
+    texto: "Quem administra este servidor desligou este recurso. Você ainda pode me " +
+      "mandar o texto **aqui no privado** que eu traduzo para você.",
+    ingles: "_An admin turned this off here. You can still send me the text in a DM and I'll translate it._",
+  },
+  semTexto: {
+    titulo: "🤔 Essa mensagem não tem texto",
+    texto: "Só imagem, anexo ou emoji — não há o que traduzir. Ponha a bandeira numa " +
+      "mensagem escrita.",
+    ingles: "_Image, attachment or emoji only — there's nothing to translate. Put the flag on a written message._",
+  },
+};
+
+async function bandeiraNaoDeu(quem, canal, motivo) {
+  const p = PORQUE_NAO[motivo];
+  if (!p) return;
+
+  const chave = `${quem.id}:${motivo}`;
+  if (Date.now() - (avisoDaBandeira.get(chave) || 0) < ESPERA_AVISO_BANDEIRA) return;
+  avisoDaBandeira.set(chave, Date.now());
+
+  /* Pela mesma entrega do sucesso, e nao por `quem.send` cru: a caixa de
+     privado fechada e' quase regra em servidor de jogo, e um aviso que morre
+     ali deixa a pessoa exatamente no silencio que ele existe pra quebrar. */
+  await entregarNoPrivado(quem, canal, {
+    embeds: [{ color: COR, title: p.titulo, description: `${p.texto}\n\n${p.ingles}` }],
+  });
+}
+
 client.on("messageReactionAdd", async (reacao, quem) => {
   try {
     if (!quem || quem.bot) return;
@@ -8206,29 +8396,35 @@ client.on("messageReactionAdd", async (reacao, quem) => {
     if (!msg?.guild) return;
 
     const servidor = await servidorDoGuild(msg.guild.id);
-    if (!servidor) return; // servidor sem /instalar
+    if (!servidor) return await bandeiraNaoDeu(quem, msg.channel, "semServidor");
     /* `!== false` e nao `=== true`: enquanto a coluna nao existir, a leitura
        devolve undefined e o recurso fica ligado. No dia em que ela existir, o
        dono desliga sem que uma linha daqui mude. */
-    if (servidor.tradutor_bandeira === false) return;
+    if (servidor.tradutor_bandeira === false) {
+      return await bandeiraNaoDeu(quem, msg.channel, "desligado");
+    }
 
     const texto = textoDaMensagem(msg);
-    if (!texto) return;
+    if (!texto) return await bandeiraNaoDeu(quem, msg.channel, "semTexto");
 
     if (!podeTraduzirAgora(quem.id)) {
       if (podeAvisarDoLimite(quem.id)) {
-        await quem.send({ embeds: [{ color: COR, title: "⏳ Calma aí / Slow down",
-          description: "Você pediu muitas traduções seguidas. Tente de novo em um minuto.\n\n" +
-            "_You asked for too many translations at once. Try again in a minute._" }] }).catch(() => {});
+        await entregarNoPrivado(quem, msg.channel, {
+          embeds: [{ color: COR, title: "⏳ Calma aí / Slow down",
+            description: "Você pediu muitas traduções seguidas. Tente de novo em um minuto.\n\n" +
+              "_You asked for too many translations at once. Try again in a minute._" }],
+        });
       }
       return;
     }
 
     const traduzido = await traduzirLongo(texto, idioma, motorDe(servidor));
     if (!traduzido) {
-      await quem.send({ embeds: [{ color: COR, title: "❌ Não deu / Failed",
-        description: "Não consegui traduzir agora. Tente de novo em instantes.\n\n" +
-          "_Could not translate right now. Try again shortly._" }] }).catch(() => {});
+      await entregarNoPrivado(quem, msg.channel, {
+        embeds: [{ color: COR, title: "❌ Não deu / Failed",
+          description: "Não consegui traduzir agora. Tente de novo em instantes.\n\n" +
+            "_Could not translate right now. Try again shortly._" }],
+      });
       return;
     }
 
@@ -9149,16 +9345,26 @@ client.once("clientReady", () => {
   recarregarAjustes().then(() => umaPassada());
   setInterval(umaPassada, INTERVALO_SINCRONIA);
 
-  /* Varre as falas velhas uma vez por dia.
+  /* Uma vez por dia, joga fora o que passou do prazo.
 
-     Responder e' coisa de conversa viva. Quem responde a uma fala de duas
-     semanas atras e' raro o bastante pra valer o cabecalho mudo, e sem esta
-     limpeza a tabela cresceria pra sempre por causa desse caso raro. */
-  const limparFalasVelhas = () => sbDel(
-    `discord_fala_espelhada?criado_em=lt.${new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString()}`)
-    .catch((e) => console.error("espelho: nao consegui limpar falas velhas:", e?.message || e));
-  limparFalasVelhas();
-  setInterval(limparFalasVelhas, 24 * 60 * 60 * 1000);
+     A limpeza das falas existia sozinha desde sempre. O texto das mensagens e
+     o cache de traducao nao tinham nenhuma: eu acumulava, sem prazo, o
+     conteudo de mensagens de gente que nem sabe que eu existo. Numa lista, uma
+     tabela nova sem prazo fica visivel; espalhada em setInterval, some.
+
+     Falhar aqui e' barulhento de proposito. Se a tabela nao tiver `criado_em`,
+     o PostgREST recusa e o erro nomeia a tabela: limpeza que nao limpa em
+     silencio e' pior que limpeza nenhuma, porque a pagina de privacidade
+     promete o prazo. */
+  const limparOVelho = async () => {
+    for (const [tabela, dias, oQue] of GUARDO_POR) {
+      const corte = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString();
+      await sbDel(`${tabela}?criado_em=lt.${corte}`).catch((e) => console.error(
+        `retencao: NAO consegui apagar ${oQue} com mais de ${dias} dias (${tabela}): ${e?.message || e}`));
+    }
+  };
+  limparOVelho();
+  setInterval(limparOVelho, 24 * 60 * 60 * 1000);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
     descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));

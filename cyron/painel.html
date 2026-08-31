@@ -84,6 +84,8 @@ main{padding:44px 0 80px}
 .carregando{color:var(--texto-fraco); text-align:center; padding:60px 0}
 
 footer{border-top:1px solid var(--borda); padding:26px 0; color:var(--texto-fraco); font-size:14px}
+footer .env{display:flex; gap:18px; flex-wrap:wrap; align-items:center}
+footer nav{margin-left:auto; display:flex; gap:18px; flex-wrap:wrap}
 [data-en]{display:none}
 html[lang="en"] [data-pt]{display:none}
 html[lang="en"] [data-en]{display:revert}
@@ -105,7 +107,13 @@ html[lang="en"] [data-en]{display:revert}
   <div id="tela"><div class="carregando"><span data-pt>Um instante…</span><span data-en>One moment…</span></div></div>
 </main>
 
-<footer><div class="env">CYRON</div></footer>
+<footer><div class="env">
+  <span>CYRON</span>
+  <nav>
+    <a href="./privacidade.html"><span data-pt>Privacidade</span><span data-en>Privacy</span></a>
+    <a href="./termos.html"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></a>
+  </nav>
+</div></footer>
 
 <script>
 var CLIENT_ID = "1498142929041096856";

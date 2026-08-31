@@ -1618,6 +1618,200 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("todo idioma do mapa de países existe no menu", forasteiros, []);
 }
 
+/* ============ a língua de quem nunca escolheu uma ============
+
+   Uma jogadora alemã pediu a tradução de uma mensagem em inglês e recebeu
+   INGLÊS de volta, porque quem nunca usou /mylanguage caía num "en" fixo. Ela
+   entendeu que o bot dizia que inglês já estava em inglês, e desistiu depois
+   de uma hora. O palpite passa a ser a língua em que a pessoa usa o Discord,
+   que vem em toda interação. */
+{
+  const { idiomaDoAplicativo, LINGUAS_MENU } = carregar(["LINGUAS_MENU", "idiomaDoAplicativo"]);
+
+  ok("alemão do cliente vira alemão", idiomaDoAplicativo("de"), "de");
+  ok("pt-BR vira pt", idiomaDoAplicativo("pt-BR"), "pt");
+  ok("en-US vira en", idiomaDoAplicativo("en-US"), "en");
+  ok("en-GB também", idiomaDoAplicativo("en-GB"), "en");
+  ok("es-419 vira es", idiomaDoAplicativo("es-419"), "es");
+  /* zh-CN é código do meu menu: tem que passar inteiro, e não virar "zh". */
+  ok("o chinês simplificado passa inteiro", idiomaDoAplicativo("zh-CN"), "zh-CN");
+  ok("o tradicional cai no simplificado, que é o que eu tenho",
+    idiomaDoAplicativo("zh-TW"), "zh-CN");
+
+  /* Língua que eu não falo não pode virar um código que eu não sei traduzir:
+     quem decide o padrão é quem chama, e ele usa "en". */
+  ok("dinamarquês, que eu não falo, não vira idioma", idiomaDoAplicativo("da"), "");
+  ok("sueco também não", idiomaDoAplicativo("sv-SE"), "");
+  ok("vazio não vira nada", idiomaDoAplicativo(""), "");
+  ok("nulo não quebra", idiomaDoAplicativo(null), "");
+  ok("lixo não vira idioma", idiomaDoAplicativo("¿?"), "");
+
+  /* Todo código do meu próprio menu tem que se reconhecer: se um dia entrar um
+     idioma com código composto, este teste é quem avisa. */
+  for (const [cod] of LINGUAS_MENU) {
+    ok(`o menu fala ${cod}, então ${cod} se reconhece`, idiomaDoAplicativo(cod), cod);
+  }
+}
+
+/* ---- "escolheu inglês" e "nunca escolheu" são coisas diferentes ----
+
+   Estavam colapsadas num "en", e isso matou a primeira tela inteira: a
+   conversa no privado abria com `idioma ? apresentação : perguntar`, e "en" é
+   verdadeiro, então ela nunca chegava a perguntar. A pergunta existia no
+   código e não existia na tela. */
+{
+  const { idiomaEscolhido, idiomaDoJogador } = carregar(["idiomaEscolhido", "idiomaDoJogador"]);
+
+  let pedido = "";
+  const responderBanco = (linhas) => { globalThis.sb = async (c) => { pedido = c; return linhas; }; };
+
+  responderBanco([{ idioma: "de" }]);
+  ok("quem escolheu alemão tem alemão escolhido", await idiomaEscolhido("u1"), "de");
+  verdade("a busca é pelo id de quem perguntou", pedido.includes("u1"));
+
+  responderBanco([]);
+  ok("quem nunca escolheu não tem nada", await idiomaEscolhido("u2"), "");
+  /* O ponto do conserto: vazio, e não "en". Se isto voltar a ser "en", a
+     pergunta do idioma some da conversa outra vez, sem nada quebrar. */
+  verdade("e vazio é falso, que é o que a primeira tela testa", !(await idiomaEscolhido("u2")));
+
+  responderBanco([{ idioma: "" }]);
+  ok("linha com idioma vazio também conta como nunca escolheu", await idiomaEscolhido("u3"), "");
+
+  globalThis.sb = async () => { throw new Error("banco fora"); };
+  ok("banco fora não inventa idioma", await idiomaEscolhido("u4"), "");
+
+  /* Já o de palpite sempre devolve alguma coisa -- é para escrever nela. */
+  responderBanco([]);
+  ok("sem escolha, vale a língua do cliente", await idiomaDoJogador("u5", "de"), "de");
+  ok("sem escolha e sem cliente, inglês", await idiomaDoJogador("u5", ""), "en");
+  ok("cliente numa língua que eu não falo cai em inglês",
+    await idiomaDoJogador("u5", "da"), "en");
+
+  responderBanco([{ idioma: "ar" }]);
+  ok("a escolha vence a língua do cliente", await idiomaDoJogador("u6", "de"), "ar");
+
+  globalThis.sb = async () => { throw new Error("banco fora"); };
+  ok("banco fora ainda respeita o cliente", await idiomaDoJogador("u7", "pt-BR"), "pt");
+}
+
+/* ============ o painel responde antes de ser lido ============
+
+   Ele tinha até doze campos misturando como está indo, o que está quebrado e
+   o que dá para comprar -- e um 🚨 aparecia depois das cotas. Quem abre o
+   painel quer saber uma coisa antes de tudo: preciso fazer algo agora? */
+{
+  const { vereditoDoPainel } = carregar(["vereditoDoPainel"]);
+
+  const limpo = vereditoDoPainel([], 2, 4);
+  verdade("sem problema, o sinal é verde", limpo.startsWith("**🟢"));
+  verdade("e diz o que está acontecendo, não só 'tudo certo'", /2 canais/.test(limpo));
+  verdade("com o número de idiomas junto", /4 idiomas/.test(limpo));
+
+  /* Singular escrito, e não "canal(is)": a barra e o parêntese são lixo que o
+     leitor de tela também lê em voz alta. */
+  const um = vereditoDoPainel([], 1, 1);
+  verdade("um canal é 'canal', não 'canais'", /1 canal\b/.test(um) && !/1 canais/.test(um));
+  verdade("um idioma é 'idioma'", /1 idioma\b/.test(um) && !/1 idiomas/.test(um));
+  for (const t of [limpo, um]) {
+    verdade("nenhum plural com barra ou parêntese", !/\(s\)|\bs\/|canal\(/.test(t));
+  }
+
+  /* Servidor recém-instalado não é "tudo funcionando": nada quebrou, mas nada
+     acontece, e quem lê "está tudo certo" fecha o painel achando que acabou. */
+  const vazio = vereditoDoPainel([], 0, 0);
+  verdade("sem canal apontado, o veredito diz o que fazer", /menu/i.test(vazio));
+  verdade("e não diz que está tudo funcionando", !/tudo funcionando/i.test(vazio));
+  verdade("mas também não acusa problema", !vazio.startsWith("**🔴"));
+
+  /* Com problema, o veredito conta QUANTOS -- "tem algo errado" não deixa
+     saber se acabou depois de consertar um. */
+  const um1 = vereditoDoPainel([{ name: "🚨 Ninguém está recebendo o cargo do idioma" }], 2, 4);
+  verdade("com problema, o sinal é vermelho", um1.startsWith("**🔴"));
+  verdade("um problema é 'uma coisa'", /Uma coisa precisa de você/.test(um1));
+  verdade("e o problema é nomeado", /Ninguém está recebendo o cargo/.test(um1));
+  verdade("sem o emoji repetido na lista", !/• 🚨/.test(um1));
+
+  const dois = vereditoDoPainel(
+    [{ name: "🚨 Um" }, { name: "⛔ Dois" }], 2, 4);
+  verdade("dois problemas são 'coisas'", /2 coisas precisam de você/.test(dois));
+
+  /* Mais de três não vira uma parede: os três primeiros e a contagem. */
+  const muitos = vereditoDoPainel(
+    [1, 2, 3, 4, 5].map((n) => ({ name: `⚠️ Problema ${n}` })), 2, 4);
+  verdade("cinco problemas contam cinco", /5 coisas precisam de você/.test(muitos));
+  ok("mas só três aparecem na lista", (muitos.match(/• Problema/g) || []).length, 3);
+  verdade("e o resto é contado", /e mais 2/.test(muitos));
+
+  for (const t of [limpo, um, vazio, um1, dois, muitos]) {
+    verdade("o veredito cabe na descrição do embed", t.length <= 4096);
+  }
+}
+
+/* ---- os botões dizem o que fazem ---- */
+{
+  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  /* Vive num `let` que só o carregamento dos ajustes preenche; aqui ele nunca
+     roda, então o botão de assinar entra pelo mesmo caminho de um servidor
+     sem link configurado. */
+  globalThis.LINK_PAGAMENTO_VIVO = "https://pague.exemplo/x";
+  const servidor = { id: "s1", plano: "gratis", tradutor_topico: true };
+  const linhas = componentesDoPainel(servidor, [], { fontes: 10, idiomas: 20 }, [], []);
+  const botoes = linhas.flatMap((l) => l.components).filter((c) => c.type === 2);
+  const rotulos = botoes.map((b) => String(b.label || ""));
+
+  /* Dois botões chamados "Tradutor" na mesma linha: um era o liga/desliga por
+     mensagem, o outro o motor. Nenhum rótulo pode ser prefixo de outro -- é
+     o que fazia os dois se confundirem. */
+  for (const a of rotulos) {
+    for (const b of rotulos) {
+      if (a === b) continue;
+      verdade(`"${a}" não é começo de "${b}"`, !b.startsWith(a));
+    }
+  }
+  ok("nenhum rótulo se repete", new Set(rotulos).size, rotulos.length);
+  for (const r of rotulos) verdade(`"${r}" cabe no botão`, r.length <= 80);
+}
+
+/* ---- a tradução por bandeira vem ligada, e sem precisar de nada ---- */
+{
+  const fonte = readFileSync(`${aqui}/index.js`, "utf8");
+  /* `=== false` e não `=== true`: enquanto a coluna não existir no banco, a
+     leitura devolve undefined, e undefined tem que LIGAR. Trocar por
+     `!== true` desligaria o recurso em todo servidor de uma vez, em silêncio,
+     e o painel continuaria dizendo "sempre ligada". */
+  verdade("a bandeira só desliga com um false explícito",
+    fonte.includes("servidor.tradutor_bandeira === false"));
+  verdade("e não há nenhuma leitura que exija um true",
+    !/tradutor_bandeira\s*===\s*true|!servidor\.tradutor_bandeira/.test(fonte));
+}
+
+/* ============ a bandeira que não deu em nada ============
+
+   Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem
+   texto. Do lado de fora, bot que não responde é bot quebrado -- e foi
+   exatamente uma hora perdida adivinhando. */
+{
+  const { PORQUE_NAO } = carregar(["PORQUE_NAO"]);
+
+  const motivos = Object.keys(PORQUE_NAO);
+  verdade("há motivo escrito para cada saída sem resultado", motivos.length >= 3);
+  for (const m of ["semServidor", "desligado", "semTexto"]) {
+    verdade(`o motivo "${m}" tem texto`, !!PORQUE_NAO[m]);
+  }
+
+  for (const [m, p] of Object.entries(PORQUE_NAO)) {
+    verdade(`${m}: o título cabe no embed`, p.titulo.length <= 256);
+    /* Bilíngue sempre: a bandeira é justamente de quem não lê português. */
+    verdade(`${m}: fala inglês também`, /[a-z]/.test(p.ingles) && p.ingles.includes("_"));
+    verdade(`${m}: cabe na descrição`, `${p.texto}\n\n${p.ingles}`.length <= 4096);
+    /* A armadilha da tradução automática que já me pegou: frase começada por
+       pronome indefinido vira nome próprio e inverte o sentido. */
+    verdade(`${m}: não começa com pronome indefinido`,
+      !/^(Nada|Ninguém|Nenhum|Tudo|Todos)\b/i.test(p.texto));
+  }
+}
+
 /* ================= de onde sai o texto de uma mensagem ================= */
 {
   const { textoDaMensagem } = carregar(["textoDaMensagem"]);
@@ -1637,6 +1831,66 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 
   ok("mensagem vazia não tem texto", textoDaMensagem({ content: "   " }), "");
   ok("mensagem nenhuma não quebra", textoDaMensagem(null), "");
+}
+
+/* ============ o que eu guardo, e o que a página promete ============
+
+   Os prazos existem em dois lugares: na lista GUARDO_POR, que manda na
+   varredura, e escritos na página de privacidade, que é o que o cliente lê.
+   Duas verdades sobre o mesmo assunto divergem no dia em que alguém mexer
+   numa -- e a que fica errada é sempre a página, porque ela não quebra nada
+   ao mentir. Este bloco é o que faz ela quebrar. */
+{
+  const { GUARDO_POR } = carregar(["GUARDO_POR"]);
+  const site = `${aqui}/../cyron`;
+  const privacidade = readFileSync(`${site}/privacidade.html`, "utf8");
+  const termos = readFileSync(`${site}/termos.html`, "utf8");
+  const inicio = readFileSync(`${site}/index.html`, "utf8");
+
+  verdade("tenho uma lista de prazos", Array.isArray(GUARDO_POR) && GUARDO_POR.length > 0);
+
+  for (const linha of GUARDO_POR) {
+    const [tabela, dias, oQue] = linha;
+    ok(`a linha de ${tabela} tem três partes`, linha.length, 3);
+    verdade(`${tabela}: o prazo é um número de dias`, Number.isInteger(dias) && dias > 0);
+    verdade(`${tabela}: tem uma descrição em português`, typeof oQue === "string" && oQue.length > 3);
+    /* O prazo tem que aparecer na página, nas duas línguas. Uma tabela nova
+       sem a linha correspondente é exatamente o caso que isto pega. */
+    verdade(`${tabela}: "${dias} dias" está na página de privacidade`,
+      privacidade.includes(`${dias} dias`));
+    verdade(`${tabela}: "${dias} days" está na versão inglesa`,
+      privacidade.includes(`${dias} days`));
+  }
+
+  /* O contrário também: prazo escrito na página que não existe no código
+     seria promessa que ninguém cumpre. Só conto os que estão na tabela do
+     quadro, com a classe que só ela usa. */
+  const naPagina = [...privacidade.matchAll(/class="prazo"[^]*?data-pt>(\d+) dias</g)].map((m) => Number(m[1]));
+  const noCodigo = GUARDO_POR.map(([, d]) => d);
+  for (const d of naPagina) {
+    verdade(`o prazo de ${d} dias na página existe no código`, noCodigo.includes(d));
+  }
+  ok("a página mostra um prazo por tabela guardada", naPagina.length, noCodigo.length);
+
+  /* As duas páginas precisam existir E estar alcançáveis: página legal que
+     ninguém acha não serve para verificação nenhuma. */
+  for (const [nome, texto] of [["privacidade", privacidade], ["termos", termos]]) {
+    verdade(`${nome}.html está ligada no rodapé do site`, inicio.includes(`./${nome}.html`));
+    verdade(`${nome}.html tem título próprio`, /<title>[^<]*CYRON[^<]+<\/title>/.test(texto));
+    /* Bilíngue de verdade: todo trecho em português precisa do par em inglês,
+       senão o visitante estrangeiro lê um buraco. */
+    const pt = (texto.match(/data-pt>/g) || []).length;
+    const en = (texto.match(/data-en>/g) || []).length;
+    ok(`${nome}.html tem um inglês para cada português`, en, pt);
+    verdade(`${nome}.html aponta para a outra`,
+      texto.includes(nome === "termos" ? "privacidade.html" : "termos.html"));
+  }
+
+  /* A frase que o bot já responde quando o texto sumiu passou a ser verdade
+     só agora -- antes nada expirava. Se a varredura do texto sair da lista, a
+     frase volta a ser mentira. */
+  verdade("o texto das mensagens tem prazo",
+    GUARDO_POR.some(([t]) => t === "discord_msg_traducao"));
 }
 
 /* ---- o resultado ---- */
