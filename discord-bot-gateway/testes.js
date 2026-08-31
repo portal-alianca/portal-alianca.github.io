@@ -18,7 +18,7 @@
  * publicar.sh recusa. E' o comportamento certo: teste que sumiu em silencio
  * quando a funcao mudou de nome e' pior do que nenhum.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
@@ -1482,8 +1482,8 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      número vem de fora, então ele é a superfície que precisa aguentar
      qualquer coisa: um id adulterado ou um passo removido no futuro dariam
      `undefined.titulo`, e a conversa morreria com "Esta interação falhou". */
-  const { PASSOS, passoValido, paginaDoPasso, botoesDoPasso, TEMA_INSTALAR, SITE_DO_CYRON: site } =
-    carregar(["SITE_DO_CYRON", "PASSOS", "passoValido", "paginaDoPasso", "botoesDoPasso", "TEMA_INSTALAR"]);
+  const { PASSOS, passoValido, paginaDoPasso, botoesDoPasso, fotoDoPasso, TEMA_INSTALAR, SITE_DO_CYRON: site } =
+    carregar(["SITE_DO_CYRON", "PASSOS", "passoValido", "paginaDoPasso", "botoesDoPasso", "fotoDoPasso", "TEMA_INSTALAR"]);
 
   ok("o primeiro passo é 1", passoValido(1), 1);
   ok("abaixo do primeiro volta para o primeiro", passoValido(0), 1);
@@ -1510,12 +1510,40 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("no último, Próximo está desabilitado", ultimo[1].disabled === true);
   verdade("e Anterior está vivo", !ultimo[0].disabled);
 
-  /* As fotos são as do site, pelo endereço público: trocar lá troca aqui. */
-  const comFoto = PASSOS.filter((p) => p.foto);
-  verdade("algum passo mostra foto", comFoto.length > 0);
-  for (const p of comFoto) {
-    verdade(`a foto de "${p.titulo}" vem do site`, p.foto.startsWith(site));
+  /* ---- os desenhos ----
+
+     "n tem nada la" foi sobre isto: passo a passo sem imagem nenhuma. Agora os
+     cinco têm, e o que quebraria em silêncio é um desenho apontado para um
+     arquivo que não existe -- o Discord simplesmente não desenha o cartão, sem
+     erro, sem log, e o passo volta a ser só texto.
+
+     Por isso o teste é no DISCO, e não na string: só assim ele acha o dia em
+     que alguém renomear um png e esquecer daqui. */
+  const IMG = new URL("../cyron/img/", import.meta.url);
+  ok("todo passo tem desenho", PASSOS.filter((p) => p.foto).length, PASSOS.length);
+
+  for (const p of PASSOS) {
+    for (const idioma of ["pt", "en", "ar"]) {
+      const url = fotoDoPasso(p.foto, idioma);
+      verdade(`o desenho de "${p.titulo}" (${idioma}) vem do site`, url.startsWith(site));
+      const arquivo = new URL(url.slice(site.length + "img/".length), IMG);
+      verdade(`e o arquivo existe: ${url.split("/").pop()}`, existsSync(arquivo));
+    }
   }
+
+  /* Português para quem fala português, inglês para todo o resto: o texto
+     dentro do desenho é pixel, e pixel não passa pelo tradutor. */
+  ok("em árabe eu mostro o desenho em inglês",
+    fotoDoPasso("passo-canais", "ar"), `${site}img/passo-canais-en.png`);
+  ok("em português, o português",
+    fotoDoPasso("passo-canais", "pt"), `${site}img/passo-canais.png`);
+  ok("passo sem desenho não inventa endereço", fotoDoPasso(null, "pt"), null);
+
+  /* O desenho entra no embed como imagem, e segue o idioma junto com o texto. */
+  verdade("o cartão do passo 1 em português traz o desenho português",
+    paginaDoPasso(1, "pt").image.url.endsWith("passo-autorizar.png"));
+  verdade("e em turco traz o inglês",
+    paginaDoPasso(1, "tr").image.url.endsWith("passo-autorizar-en.png"));
 
   verdade("o passo a passo tem entrada pelo menu de temas", !!TEMAS[TEMA_INSTALAR]);
 

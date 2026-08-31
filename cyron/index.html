@@ -171,7 +171,19 @@ section h2{font-size:clamp(26px,3.8vw,38px)}
    "onde você pode.". Bloco que encolhe até o conteúdo -- desce de linha e
    continua do tamanho do texto dele. */
 .passo-bt{display:flex; width:fit-content; margin-top:18px}
-.passo-foto{position:static; max-width:300px; margin:20px 0 0}
+/* O desenho de cada passo.
+
+   Toca para abrir em tamanho cheio: num telefone, 640px de desenho espremidos
+   em 290 deixam o texto com 6px. O link é o zoom -- e é o mesmo gesto que o
+   Discord dá na imagem do cartão, então quem veio de lá já sabe.
+
+   width/height no <img> reservam o espaço antes de a imagem chegar: sem eles a
+   página pula para baixo quando cada desenho carrega, e quem está lendo o
+   passo 2 perde a linha. */
+.passo-foto{margin:20px 0 0; max-width:640px}
+.passo-foto img{display:block; width:100%; height:auto; border-radius:12px; border:1px solid var(--borda)}
+.passo-foto figcaption{margin-top:9px; font-size:12.5px; color:var(--fraquinho)}
+.passo-foto a:hover img{border-color:var(--borda-viva)}
 @media (max-width:600px){
   .passos li{padding-left:52px}
   .passos li::before{width:34px; height:34px; font-size:15px}
@@ -362,8 +374,8 @@ html[lang="en"] [data-en]{display:revert}
       <span data-en>From install to first translation</span>
     </h2>
     <p class="intro">
-      <span data-pt>São cinco passos, e três deles acontecem sozinhos. O tempo total é o que você leva para clicar em “Autorizar”.</span>
-      <span data-en>Five steps, and three happen on their own. The total time is however long it takes you to click “Authorize”.</span>
+      <span data-pt>São cinco passos, e três deles acontecem sozinhos. O tempo total é o que você leva para clicar em “Autorizar”. Os desenhos são só isso — desenhos do que você vai ver em cada passo; as fotos de servidor de verdade estão logo acima.</span>
+      <span data-en>Five steps, and three happen on their own. The total time is however long it takes you to click “Authorize”. The pictures below are drawings of what you'll see at each step — the photos of a real server are just above.</span>
     </p>
 
     <ol class="passos">
@@ -372,6 +384,20 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Adicione o CYRON ao seu servidor</span><span data-en>Add CYRON to your server</span></b>
           <span data-pt>Um clique no botão, escolher o servidor, autorizar. Você precisa ser dono ou ter <strong>Gerenciar Servidor</strong> — o Discord só mostra na lista os servidores onde você pode.</span>
           <span data-en>One click, pick the server, authorize. You need to be the owner or have <strong>Manage Server</strong> — Discord only lists the servers where you can.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-autorizar.png" target="_blank" rel="noopener">
+              <img src="./img/passo-autorizar.png" width="1280" height="852" loading="lazy" decoding="async"
+                alt="Tela de autorização: escolher o servidor, e as quatro permissões que o CYRON pede, cada uma com o motivo.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-autorizar-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-autorizar-en.png" width="1280" height="852" loading="lazy" decoding="async"
+                alt="Authorize screen: pick the server, and the four permissions CYRON asks for, each with its reason.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
           <a class="bt bt-1 convite passo-bt" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
         </div>
       </li>
@@ -381,6 +407,20 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Ele se instala sozinho</span><span data-en>It installs itself</span></b>
           <span data-pt>Sem formulário e sem configuração. Ele cria o canal onde as pessoas escolhem o idioma e um canal de administração com um painel de botões — e já começa a funcionar. Se você nunca abrir o painel, ele continua funcionando.</span>
           <span data-en>No form, no setup. It creates the channel where people pick their language plus an admin channel with a button panel — and starts working right away. If you never open the panel, it keeps working.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-canais.png" target="_blank" rel="noopener">
+              <img src="./img/passo-canais.png" width="1280" height="1006" loading="lazy" decoding="async"
+                alt="Lista de canais do servidor logo depois de autorizar: os canais que já eram seus, e abaixo os três que o CYRON criou.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-canais-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-canais-en.png" width="1280" height="1006" loading="lazy" decoding="async"
+                alt="The server's channel list right after authorizing: the channels that were already yours, and below them the three CYRON created.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
         </div>
       </li>
 
@@ -389,6 +429,20 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Cada pessoa escolhe a língua dela</span><span data-en>Each person picks their language</span></b>
           <span data-pt>No canal de entrada, num menu com 20 idiomas. A partir daí o bot fala com ela nessa língua — e ela só enxerga a ala dela do servidor.</span>
           <span data-en>In the entry channel, from a menu of 20 languages. From then on the bot talks to them in it — and they only see their own wing of the server.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-idioma.png" target="_blank" rel="noopener">
+              <img src="./img/passo-idioma.png" width="1280" height="1152" loading="lazy" decoding="async"
+                alt="O canal de entrada com a mensagem fixada e o menu de idiomas aberto, mostrando português, inglês, espanhol e árabe.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-idioma-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-idioma-en.png" width="1280" height="1110" loading="lazy" decoding="async"
+                alt="The entry channel with its pinned message and the language menu open, showing Portuguese, English, Spanish and Arabic.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
         </div>
       </li>
 
@@ -397,6 +451,20 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Você aponta quais canais eu traduzo</span><span data-en>You point at the channels to translate</span></b>
           <span data-pt>No painel de administração, num menu de canais do próprio Discord. Cada canal que você marcar ganha uma cópia traduzida em cada idioma que alguém escolheu. <em>Este passo é do plano pago — no grátis não há nada a configurar.</em></span>
           <span data-en>In the admin panel, using Discord's own channel picker. Every channel you tick gets a translated copy in each language someone picked. <em>This step is on the paid plan — on Free there's nothing to configure.</em></span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-painel.png" target="_blank" rel="noopener">
+              <img src="./img/passo-painel.png" width="1280" height="1036" loading="lazy" decoding="async"
+                alt="O painel fixado no canal de administração: o estado do servidor, o menu de canais a traduzir e os botões de ajuste.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-painel-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-painel-en.png" width="1280" height="1036" loading="lazy" decoding="async"
+                alt="The panel pinned in the admin channel: the server's state, the picker for channels to translate, and the setting buttons.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
         </div>
       </li>
 
@@ -405,6 +473,20 @@ html[lang="en"] [data-en]{display:revert}
           <b><span data-pt>Pronto — o servidor passa a viver em todas as línguas</span><span data-en>Done — the server now lives in every language</span></b>
           <span data-pt>Você publica uma vez no canal de sempre, e chega traduzido em todas as alas. Quem escreve na sala da língua dele aparece na dos outros já traduzido, com o nome e a foto de quem falou.</span>
           <span data-en>You post once in the usual channel, and it lands translated in every wing. Whoever writes in their language's room shows up in the others already translated, with the speaker's name and avatar.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-alas.png" target="_blank" rel="noopener">
+              <img src="./img/passo-alas.png" width="1280" height="1152" loading="lazy" decoding="async"
+                alt="A mesma frase em três canais: o original em português, e as cópias em inglês e em árabe, com o nome e a foto de quem falou.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-alas-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-alas-en.png" width="1280" height="1154" loading="lazy" decoding="async"
+                alt="The same line in three channels: the Portuguese original, and the English and Arabic copies, carrying the speaker's name and avatar.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
           <a class="bt bt-2 passo-bt" href="#funciona"><span data-pt>Ver como fica</span><span data-en>See how it looks</span></a>
         </div>
       </li>
