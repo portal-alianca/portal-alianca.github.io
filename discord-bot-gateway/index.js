@@ -37,6 +37,10 @@ const client = new Client({
        dela, no privado. Nao e' intent privilegiada, entao nao depende de
        aprovacao de ninguem. */
     GatewayIntentBits.GuildMessageReactions,
+    /* Sem este, mensagem no privado nao chega aqui -- e quem abre uma conversa
+       comigo recebe silencio. E' o primeiro contato de quem achou o bot pela
+       lista de servidores ou pelo perfil, e ele estava caindo no vazio. */
+    GatewayIntentBits.DirectMessages,
   ],
   /* Reaction e User entram junto com a intent: sem eles, reagir a uma mensagem
      ANTERIOR ao ultimo religamento do bot chega como objeto pela metade e o
@@ -7123,6 +7127,104 @@ function paginaDoMembro(souAdmin) {
   };
 }
 
+/* ---------------- primeiro contato, no privado ----------------
+
+   Quem abre uma conversa comigo quase nunca e' quem ja usa o bot: e' alguem
+   que viu o nome num servidor, tocou no perfil e mandou um "oi". Ate agora
+   recebia silencio -- que e' indistinguivel de bot quebrado, e acontecia
+   justamente no momento em que a pessoa estava decidindo se instalava.
+
+   O cartao e' diferente do /cyron de proposito. Aquele fala com quem JA esta'
+   num servidor que me tem ("escolha seu idioma, suas salas aparecem"); este
+   fala com quem talvez nem tenha servidor, e precisa entender o que eu sou
+   antes de qualquer instrucao. */
+const SITE_DO_CYRON = "https://portal-alianca.github.io/cyron/";
+
+function paginaDeApresentacao() {
+  return {
+    title: "🌐 CYRON",
+    description: [
+      "**Eu faço um servidor do Discord funcionar em várias línguas ao mesmo tempo.**",
+      "",
+      "**Me mande um texto aqui** e eu traduzo para você, em 20 idiomas. " +
+      "Pode testar agora mesmo — escreva qualquer coisa nesta conversa.",
+      "",
+      "**Reaja com a sua bandeira** em qualquer mensagem, em qualquer servidor onde " +
+      "eu esteja, e ela chega traduzida aqui no privado. Vale a bandeira do seu país: " +
+      "🇲🇽, 🇵🇹, 🇦🇪 — não só as do menu.",
+      "",
+      "**No seu servidor**, cada língua ganha uma ala própria com os canais copiados. " +
+      "Você escreve na sala da sua língua, e quem escolheu outra recebe traduzido, " +
+      "com o seu nome e a sua foto.",
+      "",
+      "Escolha seu idioma no menu abaixo — a partir daí eu falo com você nele.",
+    ].join("\n"),
+  };
+}
+
+/* Botao de link nao tem custom_id e nao volta pra ca: o Discord abre e pronto.
+   Por isso eles ficam numa linha separada do menu de idioma, que e' o unico
+   componente daqui que gera interacao. */
+function botoesDaApresentacao() {
+  return {
+    type: 1,
+    components: [
+      { type: 2, style: 5, emoji: { name: "➕" }, label: "Adicionar ao meu servidor", url: linkDeConvite() },
+      { type: 2, style: 5, emoji: { name: "🌐" }, label: "Ver o site", url: SITE_DO_CYRON },
+    ],
+  };
+}
+
+/* Uma apresentacao por hora, por pessoa.
+
+   O cartao continua na tela da conversa -- reenviar a cada mensagem seria
+   empurrar pra cima o texto que a pessoa acabou de mandar traduzir, e
+   transformar ajuda em spam. Uma hora e' tempo de sobra pra ela ter rolado
+   pra longe. */
+const APRESENTEI = new Map(); // userId -> quando
+const ESPERA_APRESENTACAO = 60 * 60 * 1000;
+
+function devoApresentar(userId) {
+  const antes = APRESENTEI.get(userId) || 0;
+  if (Date.now() - antes < ESPERA_APRESENTACAO) return false;
+  APRESENTEI.set(userId, Date.now());
+  return true;
+}
+
+/* O privado vira um tradutor pessoal.
+
+   E' o mesmo motor do seletor que ja existe nos canais, e reaproveita as duas
+   funcoes que o alimentam. Aqui ele custa ainda menos: no privado nao ha
+   plateia, entao nao existe a pergunta de encher canal de ninguem. */
+async function atenderNoPrivado(msg) {
+  const texto = String(msg.content || "").trim();
+
+  if (devoApresentar(msg.author.id)) {
+    const idioma = await idiomaDoJogador(msg.author.id);
+    const embed = await traduzirEmbed(paginaDeApresentacao(), idioma, MOTOR_AUTO);
+    await msg.reply({
+      embeds: [{ color: COR, ...embed }],
+      components: [botoesDaApresentacao(), ...menuIdioma()],
+      allowedMentions: { parse: [] },
+    }).catch((e) => console.error("privado: nao consegui me apresentar:", e?.message || e));
+  }
+
+  /* Texto de verdade ganha o seletor de traducao. O limite por pessoa e' o
+     mesmo dos canais: sem ele, uma conversa no privado seria um jeito de
+     gastar a cota de tradutor sem passar por servidor nenhum. */
+  if (porQueNaoTraduzir(texto, TEXTO_MAXIMO) !== null) return;
+  if (!podeTraduzirAgora(msg.author.id)) return;
+
+  const id = await guardarPraTraduzir(texto, msg.url).catch(() => null);
+  if (!id) return;
+
+  await msg.reply({
+    content: "-# 🌐 Ler no seu idioma / Read in your language",
+    components: menuTraduzir(id),
+    allowedMentions: { parse: [] },
+  }).catch((e) => console.error("privado: nao consegui oferecer traducao:", e?.message || e));
+}
+
 async function comandoAjuda(inter) {
   const idioma = await idiomaDoJogador(inter.user.id);
   const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
@@ -7343,7 +7445,16 @@ client.on("interactionCreate", async (inter) => {
 
 client.on("messageCreate", async (msg) => {
   try {
-    if (!msg.guild) return;
+    /* Conversa no privado sai por aqui, e antes de qualquer coisa: dali pra
+       baixo tudo pressupoe servidor -- inquilino, plano, canais, cargos --, e
+       nada disso existe numa DM.
+
+       Bot nenhum entra: o meu proprio cartao voltaria como mensagem, e eu
+       responderia a mim mesmo para sempre. */
+    if (!msg.guild) {
+      if (!msg.author?.bot) await atenderNoPrivado(msg);
+      return;
+    }
 
     if (msg.webhookId) {
       const servidor = await servidorDoGuild(msg.guild.id);

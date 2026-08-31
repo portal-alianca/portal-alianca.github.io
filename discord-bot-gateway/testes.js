@@ -1334,6 +1334,49 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     limitesDo({ plano: "gratis", teste_ate: "2020-01-01T00:00:00Z" }).idiomas, 0);
 }
 
+/* ================= o primeiro contato no privado =================
+
+   Quem manda mensagem para o bot recebia silêncio, que é indistinguível de bot
+   quebrado -- e acontecia justamente no momento em que a pessoa está decidindo
+   se instala. O cartão que responde tem que caber nos limites do Discord: se
+   estourar, a resposta inteira é recusada e o silêncio volta, agora com um
+   erro no log que ninguém lê. */
+{
+  globalThis.client = { user: { id: "1498142929041096856" } };
+  const { paginaDeApresentacao, botoesDaApresentacao, devoApresentar, APRESENTEI } =
+    carregar(["PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite",
+      "paginaDeApresentacao", "botoesDaApresentacao", "APRESENTEI", "ESPERA_APRESENTACAO",
+      "devoApresentar"]);
+
+  const p = paginaDeApresentacao();
+  verdade("a apresentação cabe na descrição de um embed", p.description.length <= 4096);
+  verdade("e o título cabe no título", p.title.length <= 256);
+  verdade("ela convida a testar ali mesmo", /texto aqui/.test(p.description));
+
+  const linha = botoesDaApresentacao();
+  ok("os botões vêm numa linha de ação", linha.type, 1);
+  ok("são dois", linha.components.length, 2);
+
+  for (const b of linha.components) {
+    /* Botão de link é estilo 5, e é o único que aceita `url`. Com custom_id
+       junto, o Discord recusa a mensagem inteira. */
+    ok(`"${b.label}" é botão de link`, b.style, 5);
+    verdade(`"${b.label}" tem endereço`, /^https:\/\//.test(b.url || ""));
+    verdade(`"${b.label}" não tem custom_id`, b.custom_id === undefined);
+    verdade(`"${b.label}" cabe no rótulo`, b.label.length <= 80);
+  }
+
+  verdade("o convite carrega as permissões que eu preciso",
+    linha.components[0].url.includes("permissions=327223209040"));
+
+  /* Reenviar o cartão a cada mensagem empurraria para cima o texto que a
+     pessoa acabou de mandar traduzir -- ajuda virando spam. */
+  APRESENTEI.clear();
+  verdade("a primeira mensagem ganha apresentação", devoApresentar("u1"));
+  verdade("a segunda, não", !devoApresentar("u1"));
+  verdade("mas outra pessoa ganha a dela", devoApresentar("u2"));
+}
+
 /* ================= a tradução por bandeira =================
 
    O recurso é puxado: só custa quando alguém toca. O que pode dar errado é
