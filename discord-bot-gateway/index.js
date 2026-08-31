@@ -7254,16 +7254,29 @@ function paginaDeApresentacao() {
       "— — —",
       "",
       "**Você quer usar o CYRON no seu servidor?**",
+      "_Se preferir, veja antes o passo a passo da instalação._",
     ].join("\n"),
   };
 }
 
+/* O passo a passo tambem AQUI, na primeira tela.
+
+   Eu tinha posto as duas entradas dele atras de uma pergunta: "Sim, quero" ->
+   planos -> botao, ou "Ainda nao" -> menu -> tema. Quem mandou "oi" e olhou o
+   primeiro cartao nao via a expressao "passo a passo" em lugar nenhum, e
+   concluiu -- com razao -- que nao existia. Recurso a dois toques de distancia,
+   sem nada na superficie que o anuncie, e' recurso que ninguem acha.
+
+   Fica em terceiro, e nao em primeiro: quem ja decidiu instalar continua
+   caindo nos planos pelo caminho mais curto. O passo a passo e' para quem
+   ainda esta olhando. */
 function botoesDaPergunta() {
   return {
     type: 1,
     components: [
       { type: 2, style: 3, custom_id: PASSO.sim, emoji: { name: "✅" }, label: "Sim, quero" },
       { type: 2, style: 2, custom_id: PASSO.nao, emoji: { name: "💬" }, label: "Ainda não" },
+      { type: 2, style: 2, custom_id: `${PASSO.passo}:1`, emoji: { name: "📋" }, label: "Ver o passo a passo" },
     ],
   };
 }

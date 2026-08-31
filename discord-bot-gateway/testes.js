@@ -1441,6 +1441,19 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("o convite carrega as permissões que eu preciso",
     botoesDeConvite().components[0].url.includes("permissions=327223209040"));
 
+  /* ---- o passo a passo tem que estar na PRIMEIRA tela ----
+
+     Ele existia só atrás de "Sim, quero" e de um tema do menu de ajuda: quem
+     mandou "oi" e olhou o primeiro cartão não via a expressão em lugar nenhum
+     e concluiu que não existia. Estes três testes prendem a superfície, que é
+     onde o defeito estava -- o passo a passo em si já era testado inteiro. */
+  const naPergunta = botoesDaPergunta().components
+    .filter((c) => String(c.custom_id || "").startsWith(`${PASSO.passo}:`));
+  ok("a primeira tela abre o passo a passo, e num botão só", naPergunta.length, 1);
+  ok("e ele começa no passo 1", naPergunta[0].custom_id, `${PASSO.passo}:1`);
+  verdade("a pergunta anuncia o passo a passo no texto, não só no botão",
+    /passo a passo/i.test(paginaDeApresentacao().description));
+
   /* ---- a primeira tela é a do idioma, e ela é bilíngue ---- */
   const primeira = telaDoIdioma();
   verdade("a tela do idioma fala inglês também", /Pick your language/.test(primeira.embeds[0].description));
