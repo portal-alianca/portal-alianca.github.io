@@ -116,6 +116,38 @@ section h2{font-size:clamp(26px,3.8vw,38px)}
 .regras b{display:block; font-size:17px; margin-bottom:4px}
 .regras span{color:var(--fraco); font-size:15.5px}
 
+/* ---------- primeiros passos ----------
+
+   Linha vertical ligando os números, e não cinco cartões soltos: a instalação
+   é uma sequência, e o desenho tem que dizer isso antes do texto. A linha para
+   no último número (:last-child) -- descendo além dele, apontaria para um
+   sexto passo que não existe. */
+.passos{list-style:none; padding:0; margin:44px 0 0; counter-reset:p}
+.passos li{position:relative; padding:0 0 42px 62px; counter-increment:p}
+.passos li::before{
+  content:counter(p); position:absolute; left:0; top:0; width:40px; height:40px;
+  border-radius:50%; background:var(--painel-3); border:1px solid var(--borda-viva);
+  color:var(--ambar); display:flex; align-items:center; justify-content:center;
+  font-size:17px; font-weight:750; z-index:1;
+}
+.passos li::after{
+  content:""; position:absolute; left:19px; top:44px; bottom:0; width:1px;
+  background:linear-gradient(var(--borda-viva), transparent);
+}
+.passos li:last-child{padding-bottom:0}
+.passos li:last-child::after{display:none}
+.passo-texto b{display:block; font-size:19px; margin-bottom:7px; letter-spacing:-.01em}
+.passo-texto > span{color:var(--fraco); font-size:16px}
+.passo-texto strong{color:var(--texto); font-weight:600}
+.passo-texto em{color:var(--ambar); font-style:normal; font-size:15px}
+.passo-bt{margin-top:18px}
+.passo-foto{position:static; max-width:300px; margin:20px 0 0}
+@media (max-width:600px){
+  .passos li{padding-left:52px}
+  .passos li::before{width:34px; height:34px; font-size:15px}
+  .passos li::after{left:16px; top:38px}
+}
+
 /* ---------- duas formas ---------- */
 .formas{display:grid; gap:18px; grid-template-columns:1fr 1fr; margin-top:40px}
 @media (max-width:760px){ .formas{grid-template-columns:1fr} }
@@ -176,6 +208,7 @@ html[lang="en"] [data-en]{display:revert}
     <a class="marca" href="./">CY<b>RON</b></a>
     <nav>
       <a href="#funciona"><span data-pt>Como funciona</span><span data-en>How it works</span></a>
+      <a href="#passos"><span data-pt>Primeiros passos</span><span data-en>Get started</span></a>
       <a href="#planos"><span data-pt>Planos</span><span data-en>Pricing</span></a>
       <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
       <div class="idioma" role="group" aria-label="Idioma / Language">
@@ -286,6 +319,70 @@ html[lang="en"] [data-en]{display:revert}
           <span data-en>The announcement goes in the usual channel and lands translated in every wing. Nobody writes the same thing seven times.</span>
         </li>
       </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= PRIMEIROS PASSOS ======================= -->
+<section id="passos">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Primeiros passos</span><span data-en>Getting started</span></div>
+    <h2>
+      <span data-pt>Da instalação à primeira tradução</span>
+      <span data-en>From install to first translation</span>
+    </h2>
+    <p class="intro">
+      <span data-pt>São cinco passos, e três deles acontecem sozinhos. O tempo total é o que você leva para clicar em “Autorizar”.</span>
+      <span data-en>Five steps, and three happen on their own. The total time is however long it takes you to click “Authorize”.</span>
+    </p>
+
+    <ol class="passos">
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Adicione o CYRON ao seu servidor</span><span data-en>Add CYRON to your server</span></b>
+          <span data-pt>Um clique no botão, escolher o servidor, autorizar. Você precisa ser dono ou ter <strong>Gerenciar Servidor</strong> — o Discord só mostra na lista os servidores onde você pode.</span>
+          <span data-en>One click, pick the server, authorize. You need to be the owner or have <strong>Manage Server</strong> — Discord only lists the servers where you can.</span>
+          <a class="bt bt-1 convite passo-bt" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Ele se instala sozinho</span><span data-en>It installs itself</span></b>
+          <span data-pt>Sem formulário e sem configuração. Ele cria o canal onde as pessoas escolhem o idioma e um canal de administração com um painel de botões — e já começa a funcionar. Se você nunca abrir o painel, ele continua funcionando.</span>
+          <span data-en>No form, no setup. It creates the channel where people pick their language plus an admin channel with a button panel — and starts working right away. If you never open the panel, it keeps working.</span>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Cada pessoa escolhe a língua dela</span><span data-en>Each person picks their language</span></b>
+          <span data-pt>No canal de entrada, num menu com 20 idiomas. A partir daí o bot fala com ela nessa língua — e ela só enxerga a ala dela do servidor.</span>
+          <span data-en>In the entry channel, from a menu of 20 languages. From then on the bot talks to them in it — and they only see their own wing of the server.</span>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Você aponta quais canais eu traduzo</span><span data-en>You point at the channels to translate</span></b>
+          <span data-pt>No painel de administração, num menu de canais do próprio Discord. Cada canal que você marcar ganha uma cópia traduzida em cada idioma que alguém escolheu. <em>Este passo é do plano pago — no grátis não há nada a configurar.</em></span>
+          <span data-en>In the admin panel, using Discord's own channel picker. Every channel you tick gets a translated copy in each language someone picked. <em>This step is on the paid plan — on Free there's nothing to configure.</em></span>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Pronto — o servidor passa a viver em todas as línguas</span><span data-en>Done — the server now lives in every language</span></b>
+          <span data-pt>Você publica uma vez no canal de sempre, e chega traduzido em todas as alas. Quem escreve na sala da língua dele aparece na dos outros já traduzido, com o nome e a foto de quem falou.</span>
+          <span data-en>You post once in the usual channel, and it lands translated in every wing. Whoever writes in their language's room shows up in the others already translated, with the speaker's name and avatar.</span>
+          <a class="bt bt-2 passo-bt" href="#funciona"><span data-pt>Ver como fica</span><span data-en>See how it looks</span></a>
+        </div>
+      </li>
+    </ol>
+
+    <div class="nota">
+      <span data-pt><strong>E se der errado?</strong> O painel de administração diz o que está faltando — permissão que eu não tenho, cargo acima do meu, gente que escolheu um idioma que não coube no plano. Ele não fica em silêncio quando alguma coisa não funciona.</span>
+      <span data-en><strong>And if something goes wrong?</strong> The admin panel tells you what's missing — a permission I don't have, a role above mine, people who picked a language that didn't fit the plan. It doesn't stay quiet when something isn't working.</span>
     </div>
   </div>
 </section>
