@@ -1863,16 +1863,16 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    o que dá para comprar -- e um 🚨 aparecia depois das cotas. Quem abre o
    painel quer saber uma coisa antes de tudo: preciso fazer algo agora? */
 {
-  const { vereditoDoPainel } = carregar(["vereditoDoPainel"]);
+  const { vereditoDoPainel } = carregar(["porMolde", "falaDoPainel", "vereditoDoPainel"]);
 
-  const limpo = vereditoDoPainel([], 2, 4);
+  const limpo = await vereditoDoPainel([], 2, 4);
   verdade("sem problema, o sinal é verde", limpo.startsWith("**🟢"));
   verdade("e diz o que está acontecendo, não só 'tudo certo'", /2 canais/.test(limpo));
   verdade("com o número de idiomas junto", /4 idiomas/.test(limpo));
 
   /* Singular escrito, e não "canal(is)": a barra e o parêntese são lixo que o
      leitor de tela também lê em voz alta. */
-  const um = vereditoDoPainel([], 1, 1);
+  const um = await vereditoDoPainel([], 1, 1);
   verdade("um canal é 'canal', não 'canais'", /1 canal\b/.test(um) && !/1 canais/.test(um));
   verdade("um idioma é 'idioma'", /1 idioma\b/.test(um) && !/1 idiomas/.test(um));
   for (const t of [limpo, um]) {
@@ -1881,25 +1881,25 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 
   /* Servidor recém-instalado não é "tudo funcionando": nada quebrou, mas nada
      acontece, e quem lê "está tudo certo" fecha o painel achando que acabou. */
-  const vazio = vereditoDoPainel([], 0, 0);
+  const vazio = await vereditoDoPainel([], 0, 0);
   verdade("sem canal apontado, o veredito diz o que fazer", /menu/i.test(vazio));
   verdade("e não diz que está tudo funcionando", !/tudo funcionando/i.test(vazio));
   verdade("mas também não acusa problema", !vazio.startsWith("**🔴"));
 
   /* Com problema, o veredito conta QUANTOS -- "tem algo errado" não deixa
      saber se acabou depois de consertar um. */
-  const um1 = vereditoDoPainel([{ name: "🚨 Ninguém está recebendo o cargo do idioma" }], 2, 4);
+  const um1 = await vereditoDoPainel([{ name: "🚨 Ninguém está recebendo o cargo do idioma" }], 2, 4);
   verdade("com problema, o sinal é vermelho", um1.startsWith("**🔴"));
   verdade("um problema é 'uma coisa'", /Uma coisa precisa de você/.test(um1));
   verdade("e o problema é nomeado", /Ninguém está recebendo o cargo/.test(um1));
   verdade("sem o emoji repetido na lista", !/• 🚨/.test(um1));
 
-  const dois = vereditoDoPainel(
+  const dois = await vereditoDoPainel(
     [{ name: "🚨 Um" }, { name: "⛔ Dois" }], 2, 4);
   verdade("dois problemas são 'coisas'", /2 coisas precisam de você/.test(dois));
 
   /* Mais de três não vira uma parede: os três primeiros e a contagem. */
-  const muitos = vereditoDoPainel(
+  const muitos = await vereditoDoPainel(
     [1, 2, 3, 4, 5].map((n) => ({ name: `⚠️ Problema ${n}` })), 2, 4);
   verdade("cinco problemas contam cinco", /5 coisas precisam de você/.test(muitos));
   ok("mas só três aparecem na lista", (muitos.match(/• Problema/g) || []).length, 3);
@@ -1908,6 +1908,112 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   for (const t of [limpo, um, vazio, um1, dois, muitos]) {
     verdade("o veredito cabe na descrição do embed", t.length <= 4096);
   }
+}
+
+/* ============ o painel na língua de quem abriu ============
+
+   Este painel é quase todo "1 de 10", "0.5k de 40k", "3 pessoas". Traduzir a
+   frase JÁ MONTADA faria de cada valor uma chave de cache nova -- e o painel é
+   redesenhado a cada varredura, em todo servidor. Seria uma tradução paga por
+   varredura, para sempre, sem nada quebrar.
+
+   O molde resolve isso e mais uma coisa: nome de cargo, menção de canal e nome
+   de servidor viram marcador, então ficam fora do tradutor por construção em
+   vez de por lembrança. */
+{
+  const { porMolde, falaDoPainel } = carregar(["porMolde", "falaDoPainel"]);
+  globalThis.MOTOR_AUTO = { tipo: "teste" };
+
+  /* ---- a substituição ---- */
+  ok("o valor entra no lugar do marcador", porMolde("{0} de {1}", [1, 10]), "1 de 10");
+  ok("o mesmo marcador serve duas vezes", porMolde("{0} e {0}", ["ok"]), "ok e ok");
+  ok("zero não some", porMolde("{0} de {1}", [0, 40]), "0 de 40");
+  /* Marcador sem valor fica como está, e não vira "undefined" na tela. */
+  ok("marcador sem valor não vira undefined", porMolde("{0} e {1}", ["a"]), "a e {1}");
+  ok("texto sem marcador passa inteiro", porMolde("nada aqui", [7]), "nada aqui");
+
+  /* ---- português não paga para receber o mesmo texto ---- */
+  let pedidos = [];
+  globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
+
+  const emCasa = falaDoPainel("");
+  ok("sem idioma, nada vai ao tradutor",
+    [await emCasa("Canais — {0} de {1}", 2, 10), pedidos.length].join("|"), "Canais — 2 de 10|0");
+  pedidos = [];
+  await falaDoPainel("pt")("Canais — {0} de {1}", 2, 10);
+  ok("português também não", pedidos.length, 0);
+
+  /* ---- O TESTE QUE IMPORTA: o que sobe é o molde, não a frase montada ---- */
+  pedidos = [];
+  const T = falaDoPainel("de");
+  const dois = await T("Canais que eu traduzo — {0} de {1}", 2, 10);
+  const nove = await T("Canais que eu traduzo — {0} de {1}", 9, 10);
+  ok("o tradutor recebeu o molde, e não o texto com número",
+    pedidos, ["Canais que eu traduzo — {0} de {1}", "Canais que eu traduzo — {0} de {1}"]);
+  /* Tirando os marcadores, que têm dígito por definição: o que sobra é o texto
+     que vai ao tradutor, e ELE não pode carregar número nenhum. */
+  const semMarcador = (p) => p.replace(/\{\d+\}/g, "");
+  verdade("fora os marcadores, nenhuma chave carrega número",
+    pedidos.every((p) => !/\d/.test(semMarcador(p))));
+  verdade("e mesmo assim cada resposta traz o seu número",
+    /2 de 10/.test(dois) && /9 de 10/.test(nove));
+
+  /* Nome de cargo é de UM servidor: como marcador ele nunca vira chave de
+     cache, que é o que impediria o cache de servir a todos os outros. */
+  pedidos = [];
+  await T("Os cargos {0} estão acima do meu.", "**Admin**, **Mod da Aliança**");
+  ok("nome de cargo não chega ao tradutor", pedidos, ["Os cargos {0} estão acima do meu."]);
+
+  /* ---- marcador comido = frase volta ao original ----
+
+     Acontece com tradutor de verdade. Em português e certa é melhor que
+     traduzida e sem o número -- ou, pior, mostrando "{0}" na tela. */
+  pedidos = [];
+  globalThis.traduzirComCache = async () => "Kanäle die ich übersetze — von";  // comeu os dois
+  const perdido = await falaDoPainel("de")("Canais que eu traduzo — {0} de {1}", 2, 10);
+  ok("tradução que perdeu o marcador é descartada", perdido, "Canais que eu traduzo — 2 de 10");
+
+  globalThis.traduzirComCache = async (t) => `<${t}>`;
+  const meio = await falaDoPainel("de")("{0} de {1}", 2, 10);
+  verdade("e um marcador só também não passa", /2 de 10/.test(meio));
+
+  /* Texto sem letra nenhuma nem sai daqui -- mesma trava do traduzirEmbed. */
+  pedidos = [];
+  globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
+  ok("símbolo puro não vai ao tradutor", await falaDoPainel("de")("{0} / {1}", 3, 5), "3 / 5");
+  ok("e nem foi pedido", pedidos.length, 0);
+
+  /* ---- o guarda estrutural: nada montado pode chegar ao T ----
+
+     `await T(\`Canais — ${n}\`)` é a regressão natural deste desenho: continua
+     compilando, continua desenhando certo, e devolve a conta por varredura.
+     Molde é sempre string literal simples -- crase depois de T( é proibida. */
+  const fontePainel = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpoDe = (nome, ate) => {
+    const i = fontePainel.indexOf(nome);
+    verdade(`achei ${nome} para conferir`, i > 0);
+    return fontePainel.slice(i, fontePainel.indexOf(ate, i));
+  };
+  const painel = corpoDe("async function montarPainel", "async function cartaoDeConfig");
+  const veredito = corpoDe("async function vereditoDoPainel", "\n/* ---------------- o recibo");
+  for (const [onde, corpo] of [["o painel", painel], ["o veredito", veredito]]) {
+    verdade(`em ${onde}, nenhum molde é template literal`, !/\bT\(\s*`/.test(corpo));
+    verdade(`em ${onde}, nenhum molde carrega \${}`, !/\bT\([^)]*\$\{/.test(corpo));
+  }
+  /* O painel mostra idioma pelo nome próprio, como o placar e o menu. */
+  verdade("os idiomas aparecem na própria língua", painel.includes("nomeNaPropriaLingua"));
+  verdade("e não mais só em português", !/nomeDoIdioma\(i\.idioma\)/.test(painel));
+
+  /* ---- o cartão fixado continua em português, e tem que continuar ----
+
+     Ele é UMA mensagem para o servidor inteiro. Desenhá-lo na língua de quem
+     mexeu por último traduziria o cartão de todos para a língua dessa pessoa. */
+  const cartao = corpoDe("async function cartaoDeConfig", "\n/* Mudanca que deu certo");
+  verdade("o cartão fixado é montado sem idioma",
+    /montarPainel\(guild, servidor\)/.test(cartao));
+  const refresca = corpoDe("async function refrescarPainel", "\n/* O menu manda");
+  verdade("depois do clique, a língua sai da superfície e não de quem clicou",
+    /noFixado \? "" :/.test(refresca));
 }
 
 /* ---- os botões dizem o que fazem ---- */
