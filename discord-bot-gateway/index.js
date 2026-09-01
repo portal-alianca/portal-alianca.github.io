@@ -4384,6 +4384,18 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
   ];
   if (situacao.length) linhas.push({ type: 1, components: situacao });
 
+  /* Linha própria, e não junto dos de situação: aquela linha já chega a três
+     botões, e cinco é o teto do Discord -- passar disso não dá erro bonito,
+     o painel inteiro deixa de ser postado. Foi assim que ele parou de
+     atualizar uma vez. */
+  linhas.push({
+    type: 1,
+    components: [
+      { type: 2, custom_id: "cyron:anunciar", style: 2, emoji: { name: "📣" },
+        label: "Anunciar a Arena no servidor" },
+    ],
+  });
+
   return linhas;
 }
 
@@ -5236,6 +5248,135 @@ async function cliqueArena(inter) {
   });
 }
 
+/* O anúncio da Arena: escrito em inglês, lido em qualquer língua.
+
+   Ele é UMA mensagem para o servidor inteiro, como o placar -- então não pode
+   nascer na língua de cada leitor. A saída é o menu 🌐 pendurado nele: quem
+   clica recebe a versão dele, efêmera, e a sala continua com uma mensagem só.
+
+   POR QUE NÃO O MENU QUE JÁ EXISTE
+
+   O `traduzir-msg` guarda o texto em discord_msg_traducao, e essa tabela é
+   varrida em 7 dias -- prazo que a página de privacidade promete e que a
+   varredura cumpre. Num anúncio FIXADO isso é uma bomba-relógio: no oitavo
+   dia o botão passaria a responder "não encontrei mais essa mensagem", que do
+   lado de fora é o bot quebrado.
+
+   Aqui o texto mora no código. Não expira, não ocupa linha de banco nenhuma,
+   e some junto com o bot -- que é o único jeito honesto de um cartão
+   permanente ter botão permanente.
+
+   POR QUE EM BLOCOS CURTOS, E NÃO UM TEXTÃO
+
+   traduzirComCache só guarda até MAX_CACHE (400) caracteres; acima disso ele
+   traduz e joga fora. E traduzirLongo reparte em pedaços de PEDACO_TRADUCAO
+   (1500), que passam desse teto -- ou seja, o caminho "natural" para um texto
+   deste tamanho NUNCA acertaria o cache, e cada clique seria uma tradução
+   paga, para sempre.
+
+   Em blocos abaixo de 400, cada um vira uma chave de cache que se repete em
+   todo clique daquele idioma. Oito blocos por vinte línguas é o custo total,
+   uma vez. Há teste que prende o tamanho. */
+const ANUNCIO_ARENA = {
+  titulo: "⚔️ Language Arena",
+  blocos: [
+    "**The tournament where your team is your flag.**",
+
+    "You fight for the language you picked, and every win you score belongs " +
+    "to your whole team. The board is worldwide: every server CYRON lives in, " +
+    "one single ranking.",
+
+    "**⚖️ The rule that changes everything**\n" +
+    "Smaller teams hit harder — up to 2×. Four German speakers can beat " +
+    "fourteen Portuguese speakers. Which means bringing someone into the " +
+    "smaller team is worth more than clicking more.",
+
+    "**▶️ How to play**\n" +
+    "**1.** Pick your language with `/mylanguage`, or the flag menu.\n" +
+    "**2.** Open the arena channel and press **⚔️ Attack**.\n" +
+    "**3.** Spend the gold you win on **⬆️ Upgrade** to grow stronger.\n" +
+    "**🌐** `/arena` shows the board **in your language**, from any channel.",
+
+    "**📜 Rules**\n" +
+    "⚔️ `5` attacks a day, per person — no exceptions.\n" +
+    "🎲 Your odds are never 0% and never 100%: always between `10%` and `90%`.\n" +
+    "🪙 `+5` gold for a win, `+1` for a loss.\n" +
+    "⬆️ Upgrading costs `10 ×` your current power, so every level is dearer.\n" +
+    "📅 The season ends on **Sunday**.\n" +
+    "🏰 Nobody to fight? You face **The House**, the training dummy.",
+
+    "**🔎 Reading the board**\n🏆 wins · ⚔️ power · 💬 translations · ▲ smaller team",
+
+    "**🤝 Why this exists**\n" +
+    "CYRON translates this server every single day and nobody notices — that " +
+    "is exactly the point of it. The Arena is where the work becomes visible: " +
+    "the 💬 on the board are **real** translations from this week. No player " +
+    "here is invented.",
+
+    "**🔜 This is only season one**\n" +
+    "More is on the way, and anything new always shows up right here — nobody " +
+    "has to go looking for it.",
+  ],
+  rodape: "Only you see the result of your own click — nothing clutters the channel.",
+};
+
+/* Inglês é o original, então pedir inglês não gasta nada.
+
+   Mesmo motivo pelo qual traduzirEmbed pula o português: pagar para receber
+   de volta o texto que já se tem é a única tradução que nunca vale a pena. */
+async function anuncioTraduzido(idioma, motor = MOTOR_AUTO) {
+  const original = !idioma || idioma === "en";
+  const campo = async (t) => original ? t : ((await traduzirComCache(t, idioma, motor)) || t);
+
+  const blocos = [];
+  /* Um de cada vez, e não Promise.all: oito chamadas simultâneas por clique
+     é o tipo de rajada que faz o tradutor devolver 429 justamente quando
+     várias pessoas abrem o anúncio ao mesmo tempo. */
+  for (const b of ANUNCIO_ARENA.blocos) blocos.push(await campo(b));
+
+  return {
+    color: COR,
+    title: (await campo(ANUNCIO_ARENA.titulo)).slice(0, 256),
+    description: blocos.join("\n\n").slice(0, 4000),
+    footer: { text: (await campo(ANUNCIO_ARENA.rodape)).slice(0, 2048) },
+  };
+}
+
+/* O menu do anúncio não carrega id de mensagem: o texto é fixo, então a chave
+   é o próprio anúncio. É o que o faz sobreviver à varredura de 7 dias. */
+function menuDoAnuncio() {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("traduzir-fixo:arena")
+    .setPlaceholder("🌐 Read in your language / Ler no seu idioma")
+    .addOptions(LINGUAS_MENU.map(([value, label, emoji, proprio]) => ({
+      label: proprio && proprio !== label ? `${proprio} · ${label}` : label,
+      value,
+      emoji,
+    })));
+  return [new ActionRowBuilder().addComponents(select)];
+}
+
+async function cliqueTraduzirFixo(inter) {
+  const idioma = String(inter.values?.[0] || "");
+  if (!LINGUAS_MENU.some(([c]) => c === idioma)) {
+    return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
+  }
+
+  /* Clique vindo da própria resposta efêmera edita ela no lugar; vindo da
+     mensagem pública, cria uma nova -- igual ao menu das mensagens. */
+  const naEfemera = (Number(inter.message?.flags?.bitfield ?? 0) & 64) !== 0;
+  if (naEfemera) await inter.deferUpdate();
+  else await inter.deferReply({ flags: 64 });
+
+  /* Ler o anúncio em alemão é dizer que se lê alemão. Guardar aqui é o que
+     transforma a curiosidade em time: a pessoa acaba de entrar na arena sem
+     ter que descobrir o /mylanguage primeiro. */
+  salvarIdiomaJogador(inter.user.id, idioma).catch(() => {});
+
+  const embed = await anuncioTraduzido(idioma, await motorDoGuild(inter.guildId));
+  return inter.editReply({ embeds: [embed], components: menuDoAnuncio() });
+}
+
 function botoesDoRecibo() {
   return [{
     type: 1,
@@ -5810,6 +5951,44 @@ async function cliquePainel(inter) {
     return inter.editReply({
       content: foi ? `📣 Publicado em <#${canal.id}>.` : "Não consegui publicar ali — falta permissão de escrever nesse canal.",
     });
+  }
+
+  /* Anunciar a arena: mesmo caminho do recibo, mesmo canal.
+
+     Vai para a sala-fonte que o dono já apontou -- e não para a ⚔️-arena, que
+     existe para ter UM cartão e onde ninguém ainda passa. Anúncio precisa
+     nascer onde as pessoas já estão. */
+  if (acao === "anunciar") {
+    await inter.deferReply({ flags: 64 });
+
+    const fonte = (await sb(
+      `discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id&limit=1`).catch(() => null))?.[0];
+    const canal = fonte?.canal_id ? await inter.guild.channels.fetch(fonte.canal_id).catch(() => null) : null;
+    if (typeof canal?.send !== "function") {
+      return inter.editReply({
+        content: "Não tenho um canal para anunciar. Marque um canal no menu do painel e o botão passa a funcionar.",
+      });
+    }
+
+    const posta = await canal.send({
+      embeds: [await anuncioTraduzido("en")],
+      components: menuDoAnuncio(),
+      allowedMentions: { parse: [] },
+    }).catch((e) => {
+      console.error("anuncio: nao consegui publicar:", e?.message || e);
+      return null;
+    });
+    if (!posta) {
+      return inter.editReply({ content: "Não consegui publicar ali — falta permissão de escrever nesse canal." });
+    }
+
+    /* Fixar é o que faz um anúncio continuar existindo depois de vinte
+       mensagens de conversa. E o rastro do "fixou uma mensagem" sai, como
+       nos outros quatro lugares onde eu fixo. */
+    await posta.pin("anúncio da arena").catch(() => {});
+    await apagarAvisoDeFixado(canal, posta.id);
+
+    return inter.editReply({ content: `📣 Anunciado em <#${canal.id}> — e fixado.` });
   }
 
   /* showModal so' vale em interacao ainda nao respondida -- por isso vem
@@ -8959,6 +9138,7 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
+      if (inter.customId.startsWith("traduzir-fixo:")) return await cliqueTraduzirFixo(inter);
       return;
     }
     /* Autocompletar do nome do evento: sem isto o oficial teria que digitar

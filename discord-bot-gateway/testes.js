@@ -251,6 +251,96 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
       "as duas palavras: aborted due to timeout"), null);
 }
 
+/* ============ o anúncio da Arena, lido em qualquer língua ============
+
+   Ele é UMA mensagem para o servidor inteiro, escrita em inglês, com o menu 🌐
+   pendurado. O risco não é ele quebrar: é ele funcionar e cobrar por clique,
+   para sempre, sem nada quebrar. Os testes perseguem isso. */
+{
+  const { ANUNCIO_ARENA, anuncioTraduzido, menuDoAnuncio, MAX_CACHE, LINGUAS_MENU } =
+    carregar(["MAX_CACHE", "PEDACO_TRADUCAO", "LINGUAS_MENU", "ANUNCIO_ARENA",
+      "anuncioTraduzido", "menuDoAnuncio"]);
+
+  globalThis.COR = 0xF5A623;
+  globalThis.MOTOR_AUTO = { tipo: "teste" };
+  let pedidos = [];
+  globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
+
+  /* ---- O TESTE QUE IMPORTA: todo bloco cabe no cache ----
+
+     traduzirComCache só GUARDA até MAX_CACHE caracteres -- acima disso ele
+     traduz e joga a tradução fora. Um bloco que passe de 400 seria retraduzido
+     a cada clique de cada pessoa, para sempre, e nada quebraria: só a fatura.
+
+     É um erro fácil de cometer sem perceber, porque escrever mais uma frase
+     num bloco existente é a coisa mais natural do mundo. */
+  const tudo = [ANUNCIO_ARENA.titulo, ...ANUNCIO_ARENA.blocos, ANUNCIO_ARENA.rodape];
+  for (const b of tudo) {
+    verdade(`o bloco "${b.slice(0, 32)}…" (${b.length}) cabe no cache`, b.length <= MAX_CACHE);
+  }
+
+  /* ---- inglês é o original: pedir inglês não gasta nada ---- */
+  pedidos = [];
+  const emIngles = await anuncioTraduzido("en");
+  ok("ninguém paga para receber o texto que já tem", pedidos.length, 0);
+  verdade("e o cartão vem inteiro mesmo assim",
+    !!emIngles.title && !!emIngles.description && !!emIngles.footer.text);
+  verdade("o original diz Language Arena", /Language Arena/.test(emIngles.title));
+
+  /* ---- outra língua: tudo traduzido, e só o que é fixo ---- */
+  pedidos = [];
+  const emAlemao = await anuncioTraduzido("de");
+  ok("cada bloco é pedido uma vez", pedidos.length, tudo.length);
+  verdade("nenhum bloco escapou", tudo.every((b) => pedidos.includes(b)));
+  verdade("o título traduzido entra no cartão", emAlemao.title.startsWith("<"));
+  verdade("o rodapé também", emAlemao.footer.text.startsWith("<"));
+
+  /* A segunda pessoa a abrir em alemão pede exatamente as mesmas chaves --
+     que é o que faz o cache servir para alguma coisa. */
+  const primeira = [...pedidos];
+  pedidos = [];
+  await anuncioTraduzido("de");
+  ok("a segunda leitura pede as mesmas chaves", pedidos, primeira);
+
+  /* ---- os limites do Discord ---- */
+  verdade("o título cabe", emAlemao.title.length <= 256);
+  verdade("a descrição cabe", emAlemao.description.length <= 4096);
+  verdade("o rodapé cabe", emAlemao.footer.text.length <= 2048);
+
+  const opcoes = menuDoAnuncio()[0].components[0].options.map((o) => o.data ?? o);
+  ok("o menu tem todas as línguas", opcoes.length, LINGUAS_MENU.length);
+  verdade("e cabe no teto de 25 do Discord", opcoes.length <= 25);
+  for (const o of opcoes) {
+    verdade(`"${o.label}" cabe no menu`, o.label.length <= 100);
+    /* O nome próprio aqui pela mesma razão do menu de idiomas: é a tela que
+       serve exatamente a quem não lê a língua da casa. */
+    const [, emPortugues, , proprio] = LINGUAS_MENU.find(([c]) => c === o.value);
+    verdade(`"${o.label}" traz o nome próprio`, o.label.includes(proprio));
+    verdade(`"${o.label}" traz o nome em português`, o.label.includes(emPortugues));
+  }
+
+  /* ---- e o menu não pode carregar id de mensagem ----
+
+     Se ele voltar a ser `traduzir-msg:<id>`, o texto passa a sair de
+     discord_msg_traducao -- que a varredura apaga em 7 dias. No oitavo dia um
+     anúncio FIXADO responderia "não encontrei mais essa mensagem", que do lado
+     de fora é o bot quebrado. */
+  const cid = menuDoAnuncio()[0].components[0].data.custom_id;
+  ok("a chave do menu é o próprio anúncio, e não uma mensagem", cid, "traduzir-fixo:arena");
+
+  const fonteAnuncio = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpo = fonteAnuncio.slice(
+    fonteAnuncio.indexOf("async function anuncioTraduzido"),
+    fonteAnuncio.indexOf("function menuDoAnuncio"));
+  verdade("achei o anúncio para conferir", corpo.length > 100);
+  /* traduzirLongo reparte em pedaços de 1500, que passam de MAX_CACHE: usá-lo
+     aqui furaria o cache sem mudar uma linha visível. */
+  verdade("o anúncio não passa por traduzirLongo, que fura o cache",
+    !corpo.includes("traduzirLongo"));
+  verdade("e não lê a tabela que a varredura apaga",
+    !corpo.includes("discord_msg_traducao"));
+}
+
 /* ================= a lista de tradutores do painel ================= */
 {
   const { tradutoresDoPainel } = carregar(["FORMATOS", "tradutoresDoPainel"]);
