@@ -1786,6 +1786,299 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     !/tradutor_bandeira\s*===\s*true|!servidor\.tradutor_bandeira/.test(fonte));
 }
 
+/* ============ o recibo da semana ============
+
+   Ele existe porque quanto melhor eu funciono, mais invisível eu fico -- e
+   quem paga decide a renovação pelo que lembra. Nada aqui guarda contagem por
+   pessoa: as traduções vêm do uso diário que o painel já lê, e os leitores
+   são contados nos cargos, no Discord, na hora. */
+{
+  const { semanaDe, diaISO, semanasSeguidas, leitoresPorIdioma, botoesDoRecibo, reciboDaSemana,
+          LINGUAS_MENU } =
+    carregar(["LINGUAS_MENU", "SEMANA", "diaISO", "semanaDe", "traducoesEntre", "nomeDoIdioma", "bandeiraDoIdioma",
+      "leitoresPorIdioma", "semanasSeguidas", "reciboDaSemana", "botoesDoRecibo"]);
+
+  /* ---- a semana começa na segunda ---- */
+  /* 2026-09-02 é uma quarta. A semana dela começa na segunda, dia 31/08. */
+  ok("quarta cai na segunda anterior", semanaDe(Date.parse("2026-09-02T12:00:00Z")), "2026-08-31");
+  ok("a própria segunda é o começo dela", semanaDe(Date.parse("2026-08-31T00:00:00Z")), "2026-08-31");
+  /* Domingo é o FIM da semana, não o começo: recibo que chega no domingo
+     falaria de uma semana que ainda não acabou. */
+  ok("domingo ainda é da semana que passou", semanaDe(Date.parse("2026-09-06T23:59:00Z")), "2026-08-31");
+  ok("segunda seguinte já é outra semana", semanaDe(Date.parse("2026-09-07T00:01:00Z")), "2026-09-07");
+  verdade("a marca da semana é uma data e nada mais", /^\d{4}-\d{2}-\d{2}$/.test(semanaDe()));
+
+  ok("diaISO corta a hora fora", diaISO(Date.parse("2026-09-02T23:45:00Z")), "2026-09-02");
+
+  /* ---- o streak é do servidor, e para no primeiro buraco ---- */
+  ok("três semanas seguidas", semanasSeguidas([5, 9, 2, 0, 7]), 3);
+  ok("semana vazia agora zera", semanasSeguidas([0, 9, 2]), 0);
+  ok("tudo cheio conta tudo", semanasSeguidas([1, 1, 1]), 3);
+  ok("sem histórico, zero", semanasSeguidas([]), 0);
+  /* Um buraco no meio não pode ser pulado: seria um streak que a pessoa não
+     teve, e o número inteiro perderia o sentido. */
+  ok("buraco no meio corta ali", semanasSeguidas([4, 0, 8, 8, 8]), 1);
+
+  /* ---- os leitores vêm do cargo, não do banco ---- */
+  const guild = {
+    roles: { cache: new Map([
+      ["r-pt", { members: { size: 12 } }],
+      ["r-en", { members: { size: 9 } }],
+      ["r-ar", { members: { size: 30 } }],
+    ]) },
+  };
+  const salas = [
+    { idioma: "pt", role_id: "r-pt" },
+    { idioma: "en", role_id: "r-en" },
+    { idioma: "ar", role_id: "r-ar" },
+    /* Idioma cujo cargo foi apagado no Discord: some da conta, em vez de
+       aparecer com zero e parecer que ninguém escolheu. */
+    { idioma: "ja", role_id: "r-sumiu" },
+    { idioma: "de", role_id: null },
+  ];
+  const leitores = leitoresPorIdioma(guild, salas);
+  ok("só os idiomas com cargo vivo entram", leitores.length, 3);
+  ok("e vêm do maior para o menor", leitores[0].idioma, "ar");
+  ok("com a contagem do cargo", leitores[0].quantos, 30);
+  verdade("cargo apagado não vira linha", !leitores.some((l) => l.idioma === "ja"));
+
+  /* ---- o botão de publicar ---- */
+  const linhas = botoesDoRecibo();
+  ok("uma linha de botões", linhas.length, 1);
+  verdade("cabe nos 5 componentes da linha", linhas[0].components.length <= 5);
+  verdade("o rótulo cabe no botão", linhas[0].components[0].label.length <= 80);
+  ok("um botão só", linhas[0].components.length, 1);
+  verdade("e ele é de clique, não de link", linhas[0].components[0].custom_id === "cyron:publicar");
+
+  /* ---- o cartão inteiro ---- */
+  globalThis.client = { user: { id: "bot" } };
+  const semanaAtual = semanaDe();
+  /* Uma semana com 120 traduções, a anterior com 100, e as seis antes dela
+     com movimento também: 8 semanas seguidas. */
+  globalThis.sb = async (rota) => {
+    if (rota.startsWith("discord_chat_espelho")) return salas;
+    if (rota.startsWith("cyron_uso_diario")) {
+      const de = /dia=gte\.([0-9-]+)/.exec(rota)?.[1];
+      return [{ traducoes: de === diaISO(Date.parse(`${semanaAtual}T00:00:00Z`) - 7 * 864e5) ? 120 : 100 }];
+    }
+    return [];
+  };
+  const cartao = await reciboDaSemana(guild, { id: "s1" });
+
+  verdade("o cartão sai", !!cartao);
+  verdade("e diz quantas mensagens atravessaram", /120 mensagens atravessaram/.test(cartao.description));
+  verdade("e quantos idiomas", /3 idiomas/.test(cartao.description));
+  verdade("a variação aparece quando há com o que comparar", /\+20%/.test(cartao.description));
+  verdade("o streak aparece", /semanas seguidas/.test(cartao.description));
+  verdade("os leitores viram campo", /Quem lê em cada língua/.test(cartao.fields[0].name));
+  /* O total sai como número solto, sem a palavra "pessoas": o campo é
+     bilíngue e o número não tem língua. */
+  verdade("com o total de gente", /— 51$/.test(cartao.fields[0].name));
+
+  /* A bandeira sai UMA vez. nomeDoIdioma já devolve "🇧🇷 Português", e eu
+     tinha posto outra na frente: "🇧🇷 🇧🇷 Português". Nenhum teste de texto ou
+     de limite pegaria isso -- foi a prévia do cartão que mostrou, e este
+     teste existe para a próxima vez em que não houver prévia. */
+  for (const linha of cartao.fields[0].value.split("\n")) {
+    const bandeiras = [...linha].filter((c) => {
+      const n = c.codePointAt(0);
+      return n >= 0x1f1e6 && n <= 0x1f1ff;
+    }).length;
+    /* Cada bandeira são DOIS indicadores regionais, então uma bandeira = 2. */
+    verdade(`"${linha}" tem uma bandeira só`, bandeiras <= 2);
+  }
+  verdade("o fecho faz a conta na cabeça de quem lê", /Sem tradução/.test(cartao.footer.text));
+
+  /* ---- o recibo não gasta tradução, e mesmo assim serve a quem não lê
+         português ----
+
+     As duas regras andam juntas e uma quase quebrou a outra. Traduzir o
+     cartão gastaria caractere pago -- um recurso que existe para fazerem
+     lembrar de mim não pode se pagar com a conta que eu quero baixar. Mas só
+     português repetiria, no dono, exatamente o defeito que a NYX achou.
+     A saída é escrever pouco e escrever nas duas. */
+  const fonte = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpoDoRecibo = fonte.slice(
+    fonte.indexOf("async function reciboDaSemana"),
+    fonte.indexOf("function botoesDoRecibo"));
+  for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo", "anotarUso"]) {
+    verdade(`o recibo não chama ${proibido}`, !corpoDoRecibo.includes(proibido));
+  }
+
+  const tudoQueEleEscreve = [cartao.title, cartao.description, cartao.footer.text,
+    ...cartao.fields.map((f) => f.name)].join("\n");
+  verdade("o título fala inglês também", /Your week in languages/.test(cartao.title));
+  verdade("a contagem também", /messages crossed/.test(cartao.description));
+  verdade("o streak também", /weeks in a row/.test(tudoQueEleEscreve));
+  verdade("o campo dos leitores também", /Who reads what/.test(cartao.fields[0].name));
+  verdade("e o fecho também", /Without translation/.test(cartao.footer.text));
+
+  /* Separador de milhar mente para metade do público: "1.240" é mil duzentos
+     e quarenta em português e um vírgula dois e quatro em inglês. Num cartão
+     que os dois leem, o número vai sem separador. */
+  globalThis.sb = async (rota) =>
+    (rota.startsWith("discord_chat_espelho") ? salas : [{ traducoes: 12345 }]);
+  const grande = await reciboDaSemana(guild, { id: "s1" });
+  verdade("número grande sai sem ponto de milhar", /\b12345\b/.test(grande.description));
+  verdade("e sem vírgula de milhar", !/12,345|12\.345/.test(grande.description));
+
+  /* Os limites do Discord, medidos aqui porque o cartão é montado com números
+     que vêm de fora: um servidor com vinte idiomas não pode estourar o embed
+     e sumir com o recibo inteiro. */
+  verdade("o título cabe", cartao.title.length <= 256);
+  verdade("a descrição cabe", cartao.description.length <= 4096);
+  verdade("o rodapé cabe", cartao.footer.text.length <= 2048);
+  for (const f of cartao.fields) {
+    verdade(`o campo "${f.name}" cabe`, f.name.length <= 256 && f.value.length <= 1024);
+  }
+  const tudo = cartao.title.length + cartao.description.length + cartao.footer.text.length +
+    cartao.fields.reduce((a, f) => a + f.name.length + f.value.length, 0);
+  verdade("e o cartão inteiro cabe nos 6000", tudo <= 6000);
+
+  /* Vinte idiomas é o teto do plano pago: o campo dos leitores corta em dez
+     justamente para não estourar os 1024 com nome de idioma. */
+  const muitos = LINGUAS_MENU.map(([c], i) => ({ idioma: c, role_id: `r${i}` }));
+  const guildCheio = { roles: { cache: new Map(muitos.map((s, i) => [s.role_id, { members: { size: i + 1 } }])) } };
+  globalThis.sb = async (rota) => (rota.startsWith("discord_chat_espelho") ? muitos : [{ traducoes: 500 }]);
+  const cheio = await reciboDaSemana(guildCheio, { id: "s1" });
+  verdade("com 20 idiomas o campo continua cabendo", cheio.fields[0].value.length <= 1024);
+
+  /* Semana sem tradução nenhuma NÃO vira cartão: um recibo dizendo "zero"
+     toda segunda é o bot lembrando que não serviu para nada. */
+  globalThis.sb = async (rota) =>
+    (rota.startsWith("cyron_uso_diario") ? [{ traducoes: 0 }] : salas);
+  ok("semana vazia não vira cartão", await reciboDaSemana(guild, { id: "s1" }), null);
+
+  /* Primeira semana do servidor: sem semana anterior, não há porcentagem --
+     "+100%" a partir de zero é um número inventado. */
+  globalThis.sb = async (rota) => {
+    if (rota.startsWith("discord_chat_espelho")) return salas;
+    const de = /dia=gte\.([0-9-]+)/.exec(rota)?.[1];
+    const daSemana = diaISO(Date.parse(`${semanaAtual}T00:00:00Z`) - 7 * 864e5);
+    return [{ traducoes: de === daSemana ? 40 : 0 }];
+  };
+  const primeira = await reciboDaSemana(guild, { id: "s1" });
+  verdade("na primeira semana não há porcentagem", !/%/.test(primeira.description));
+  verdade("nem streak de uma semana só", !/semanas seguidas/.test(primeira.description));
+  verdade("mas o número aparece", /40 mensagens/.test(primeira.description));
+}
+
+/* ============ a Arena das Línguas ============
+
+   O time é o IDIOMA, e é isso que faz o jogo ser sobre o CYRON em vez de um
+   clicker pregado nele. A regra que sustenta tudo é o handicap: sem ela o
+   idioma com mais gente ganha sempre e os outros desistem na primeira semana. */
+{
+  const { custoDeEvoluir, handicapDoTime, chanceDeVitoria, timesDaArena,
+          placarDaArena, botoesDaArena, ARENA_ATAQUES_DIA } =
+    carregar(["CANAL_ARENA", "ARENA_ATAQUES_DIA", "MEDALHA", "nomeDoIdioma", "LINGUAS_MENU", "custoDeEvoluir", "handicapDoTime",
+      "chanceDeVitoria", "timesDaArena", "placarDaArena", "botoesDaArena"]);
+
+  /* ---- evoluir fica mais caro ---- */
+  ok("o primeiro nível custa 10", custoDeEvoluir(1), 10);
+  ok("o quinto custa 50", custoDeEvoluir(5), 50);
+  verdade("e nunca fica mais barato subindo",
+    [1, 2, 5, 10, 50].every((p, i, a) => i === 0 || custoDeEvoluir(p) > custoDeEvoluir(a[i - 1])));
+  /* Custo fixo faria o ouro virar só espera: quem clica mais sobe mais, para
+     sempre. Poder zero ou lixo não pode dar evolução de graça. */
+  verdade("poder zero ainda custa", custoDeEvoluir(0) >= 10);
+  verdade("poder inválido não zera o custo", custoDeEvoluir("abacaxi") >= 10);
+
+  /* ---- time pequeno bate mais forte ---- */
+  ok("o maior time não ganha handicap", handicapDoTime(14, 14), 1);
+  verdade("um time menor ganha", handicapDoTime(4, 14) > 1);
+  verdade("quanto menor, maior", handicapDoTime(2, 14) > handicapDoTime(7, 14));
+  /* Teto de 2x: sem ele, um time de uma pessoa venceria sempre e a vantagem
+     viraria o defeito novo. */
+  verdade("mas nunca passa de 2x", handicapDoTime(1, 100000) <= 2);
+  ok("time vazio conta como um", handicapDoTime(0, 10), handicapDoTime(1, 10));
+  verdade("lixo não quebra a conta", Number.isFinite(handicapDoTime(null, undefined)));
+
+  /* ---- a chance nunca é certeza ---- */
+  ok("forças iguais dão meio a meio", chanceDeVitoria(100, 100), 0.5);
+  verdade("mais forte tem mais chance", chanceDeVitoria(300, 100) > 0.5);
+  /* Certeza dos dois lados mata o jogo: o forte perde a graça e o fraco para
+     de tentar. */
+  ok("e o esmagador ainda pode perder", chanceDeVitoria(999999, 1), 0.9);
+  ok("o esmagado ainda pode ganhar", chanceDeVitoria(1, 999999), 0.1);
+  ok("dois zeros dão meio a meio", chanceDeVitoria(0, 0), 0.5);
+  verdade("negativo não vira chance maluca",
+    chanceDeVitoria(-5, 100) >= 0.1 && chanceDeVitoria(-5, 100) <= 0.9);
+
+  /* ---- os times ---- */
+  const jogadores = [
+    { idioma: "pt", poder: 10, vitorias: 3 },
+    { idioma: "pt", poder: 5, vitorias: 1 },
+    { idioma: "de", poder: 8, vitorias: 9 },
+  ];
+  const leitores = [{ idioma: "pt", quantos: 14 }, { idioma: "de", quantos: 4 }];
+  const times = timesDaArena(jogadores, leitores);
+
+  ok("dois times", times.length, 2);
+  ok("o placar é por vitórias da temporada", times[0].idioma, "de");
+  ok("o poder do time é a soma dos jogadores", times.find((t) => t.idioma === "pt").poder, 15);
+  ok("e conta quantos jogam", times.find((t) => t.idioma === "pt").jogadores, 2);
+  /* O tamanho do time é quanta GENTE lê naquele idioma, não quantos jogam --
+     senão o handicap premiaria o idioma que ninguém escolheu, que é o
+     contrário do que ele existe para fazer. */
+  ok("o tamanho vem dos leitores, não dos jogadores",
+    times.find((t) => t.idioma === "de").gente, 4);
+  verdade("e o time pequeno fica mais forte que o poder cru dele",
+    times.find((t) => t.idioma === "de").forca > 8);
+
+  ok("sem jogadores, sem times", timesDaArena([], leitores).length, 0);
+  /* Idioma sem leitor cadastrado não pode quebrar a conta. */
+  verdade("jogador de idioma sem leitores ainda entra",
+    timesDaArena([{ idioma: "ja", poder: 2, vitorias: 0 }], leitores).length === 1);
+
+  /* ---- o placar ---- */
+  const placar = placarDaArena(times, "2026-08-31");
+  verdade("o título fala as duas línguas", /Arena das Línguas · Language Arena/.test(placar.title));
+  verdade("mostra a temporada em dia/mês, não na data do banco",
+    /31\/08/.test(placar.description) && !/2026-08-31/.test(placar.description));
+  verdade("o time pequeno ganha a seta que convida", /▲/.test(placar.description));
+  verdade("o rodapé explica o handicap sem precisar de manual",
+    /bate mais forte/.test(placar.footer.text) && /smaller teams hit harder/i.test(placar.footer.text));
+
+  const vazio = placarDaArena([], "2026-08-31");
+  verdade("arena vazia convida em vez de mostrar tabela vazia", /primeiro/i.test(vazio.description));
+  verdade("e convida em inglês também", /you're the first/i.test(vazio.description));
+
+  /* Doze times é o teto do desenho; vinte idiomas não podem estourar o embed. */
+  const muitos = timesDaArena(
+    LINGUAS_MENU.map(([c], i) => ({ idioma: c, poder: 100 + i, vitorias: i })),
+    LINGUAS_MENU.map(([c], i) => ({ idioma: c, quantos: i + 1 })));
+  const cheio = placarDaArena(muitos, "2026-08-31");
+  verdade("com 20 idiomas a descrição cabe", cheio.description.length <= 4096);
+  verdade("e o rodapé cabe", cheio.footer.text.length <= 2048);
+
+  /* ---- os botões ---- */
+  const linhasArena = botoesDaArena();
+  ok("uma linha", linhasArena.length, 1);
+  ok("três botões", linhasArena[0].components.length, 3);
+  for (const b of linhasArena[0].components) {
+    verdade(`"${b.label}" cabe`, b.label.length <= 80);
+    verdade(`"${b.label}" é clique, não link`, b.style !== 5 && !!b.custom_id);
+    verdade(`"${b.label}" é da arena`, b.custom_id.startsWith("arena:"));
+  }
+
+  /* ---- o teto de ataques é rígido ---- */
+  verdade("há um teto de ataques por dia", Number.isInteger(ARENA_ATAQUES_DIA) && ARENA_ATAQUES_DIA > 0);
+  verdade("e ele é baixo o bastante para o custo não escapar", ARENA_ATAQUES_DIA <= 20);
+
+  /* ---- a arena não gasta tradução ----
+
+     A regra vale para todo recurso de engajamento: gamificar o recurso medido
+     é transformar diversão em conta a pagar. */
+  const fonteArena = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpo = fonteArena.slice(
+    fonteArena.indexOf("const CANAL_ARENA"),
+    fonteArena.indexOf("function botoesDoRecibo"));
+  for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo"]) {
+    verdade(`a arena não chama ${proibido}`, !corpo.includes(proibido));
+  }
+}
+
 /* ============ a bandeira que não deu em nada ============
 
    Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem
