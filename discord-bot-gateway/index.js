@@ -4393,6 +4393,12 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
     components: [
       { type: 2, custom_id: "cyron:anunciar", style: 2, emoji: { name: "📣" },
         label: "Anunciar a Arena no servidor" },
+      /* O cartão fixado é UMA mensagem para o servidor inteiro, então ele é
+         português para todos os administradores. Este botão devolve a cópia
+         de cada um, na língua dela -- mesma saída do 🌐 da arena, e a única
+         possível numa mensagem só. */
+      { type: 2, custom_id: "cyron:idioma", style: 2, emoji: { name: "🌐" },
+        label: "Na minha língua · My language" },
     ],
   });
 
@@ -4449,18 +4455,24 @@ async function canaisElegiveis(guild, servidor, fontes) {
    Tres estados, e o terceiro e' o que importa: motor do cliente FALHANDO. Sem
    ele, chave vencida vira "a qualidade piorou" -- eu caio no gratuito, a
    conversa continua, e ninguem liga uma coisa a outra por dias. */
-function comoEstaOMotor(servidor) {
+async function comoEstaOMotor(servidor, T = falaDoPainel()) {
   const tipo = servidor.tradutor_motor;
   if (!tipo || tipo === "auto" || !servidor.tradutor_chave) {
-    return "⚪ **Google grátis**\ncompartilhado — pode ficar lento em pico";
+    return await T("⚪ **Google grátis**\ncompartilhado — pode ficar lento em pico");
   }
+  /* O nome do motor é marca -- "DeepL", "Azure Translator" -- e marca não se
+     traduz. Como marcador, ele nem chega ao tradutor. */
   const nome = MOTORES[tipo]?.nome || tipo;
   const falha = falhaDoMotor.get(servidor.id);
   if (falha) {
+    /* A mensagem de erro do provedor vem em inglês e crua, e fica como está:
+       ela é o que se cola numa busca ou num chamado de suporte. Traduzir um
+       erro literal só o torna impossível de procurar. */
     const quando = quandoFoi(falha.quando, "f");
-    return `🔴 **${nome}** recusou\n\`${falha.porque.slice(0, 90)}\`\n_${quando} — estou traduzindo pelo grátis. Refaça a chave no botão 🌐._`;
+    return await T("🔴 **{0}** recusou\n`{1}`\n_{2} — estou traduzindo pelo grátis. " +
+      "Refaça a chave no botão 🌐._", nome, falha.porque.slice(0, 90), quando);
   }
-  return `🟢 **${nome}**\nchave deste servidor`;
+  return await T("🟢 **{0}**\nchave deste servidor", nome);
 }
 
 /* Desenha o painel sem escrever em lugar nenhum.
@@ -4469,6 +4481,43 @@ function comoEstaOMotor(servidor) {
    fixada no canal de configuracao e a copia efemera que o /cyron abre onde a
    pessoa estiver. Fossem duas montagens, elas iam divergir na primeira vez que
    eu mexesse numa e esquecesse da outra. */
+/* Traduzir frase com número dentro, sem que cada número vire uma chave nova.
+
+   Este painel é quase todo "1 de 10", "0.5k de 40k", "3 pessoas". Jogar a
+   frase JÁ MONTADA no tradutor faria de cada valor uma chave de cache
+   diferente -- e o painel é redesenhado a cada varredura, em todo servidor.
+   Seria uma tradução paga por varredura, para sempre, e nada quebraria.
+
+   Então o que sobe para o tradutor é o MOLDE, que nunca muda, e os valores
+   entram depois: "Canais que eu traduzo — {0} de {1}" é uma chave só, para
+   sempre, valha ela 1 de 10 ou 9 de 10.
+
+   O molde resolve também o que eu não posso traduzir de jeito nenhum: nome de
+   cargo, menção de canal, nome de servidor. Eles viram {0} -- ficam fora do
+   tradutor por construção, em vez de por lembrança.
+
+   E se o tradutor comer um marcador (acontece), a frase volta ao original em
+   vez de aparecer com "{0}" na tela ou sem o número. Em português e certa é
+   melhor que traduzida e quebrada. */
+function porMolde(molde, valores) {
+  return String(molde).replace(/\{(\d+)\}/g, (bruto, i) => {
+    const v = valores[Number(i)];
+    return v === undefined ? bruto : String(v);
+  });
+}
+
+function falaDoPainel(idioma, motor = MOTOR_AUTO) {
+  /* Português é a língua em que tudo isto está escrito: traduzir pt->pt seria
+     pagar para receber o mesmo texto. */
+  const nativo = !idioma || idioma === "pt";
+  return async (molde, ...valores) => {
+    if (nativo || !/\p{L}/u.test(molde)) return porMolde(molde, valores);
+    const t = await traduzirComCache(molde, idioma, motor);
+    const inteiro = t && valores.every((_, i) => t.includes(`{${i}}`));
+    return porMolde(inteiro ? t : molde, valores);
+  };
+}
+
 /* A primeira linha do painel responde "eu preciso fazer alguma coisa?".
 
    Sem ela, quem abre o painel precisa ler os doze campos para descobrir que
@@ -4479,28 +4528,45 @@ function comoEstaOMotor(servidor) {
    O plural e' escrito, e nao "problema(s)": a barra e o parenteses sao lixo
    que o leitor de tela tambem le, e este cartao e' o lugar onde a pessoa mais
    precisa entender de primeira. */
-function vereditoDoPainel(problemas, canais, idiomas) {
+async function vereditoDoPainel(problemas, canais, idiomas, T = falaDoPainel()) {
   const quantos = problemas.length;
   if (quantos) {
+    /* Os nomes dos problemas já vêm traduzidos daqui de baixo: eles são os
+       próprios `name` dos campos, e o veredito só os repete. */
     const nomes = problemas.map((p) => String(p.name || "").replace(/^\W+\s*/, "")).slice(0, 3);
-    return `**🔴 ${quantos === 1 ? "Uma coisa precisa de você" : `${quantos} coisas precisam de você`}.**\n` +
-      nomes.map((n) => `• ${n}`).join("\n") +
-      (quantos > nomes.length ? `\n• _…e mais ${quantos - nomes.length}_` : "") +
-      "\n\n_O conserto de cada uma está escrito logo abaixo._";
+    const cabeca = quantos === 1
+      ? await T("**🔴 Uma coisa precisa de você.**")
+      : await T("**🔴 {0} coisas precisam de você.**", quantos);
+    const sobra = quantos > nomes.length
+      ? "\n• _" + await T("…e mais {0}", quantos - nomes.length) + "_"
+      : "";
+    return `${cabeca}\n` + nomes.map((n) => `• ${n}`).join("\n") + sobra +
+      "\n\n_" + await T("O conserto de cada uma está escrito logo abaixo.") + "_";
   }
   /* Servidor recem-instalado nao esta "tudo funcionando": nada esta quebrado,
      mas nada esta acontecendo tambem, e a pessoa PRECISA fazer o proximo
      passo. Dizer que esta tudo certo ali seria verdade tecnica e mentira
      pratica -- ela fecharia o painel achando que acabou. */
   if (!canais) {
-    return "**👋 Falta um passo.** Ninguém apontou um canal para eu traduzir ainda — " +
-      "escolha no menu aqui embaixo e eu começo.";
+    return await T("**👋 Falta um passo.** Ninguém apontou um canal para eu traduzir ainda — " +
+      "escolha no menu aqui embaixo e eu começo.");
   }
   /* Com canal apontado, a linha diz o que esta acontecendo -- e nao "tudo
-     certo" sozinho, que nao deixa conferir se e' o que a pessoa esperava. */
-  return `**🟢 Está tudo funcionando.** Eu traduzo ` +
-    `**${canais} ${canais === 1 ? "canal" : "canais"}** ` +
-    `em **${idiomas} ${idiomas === 1 ? "idioma" : "idiomas"}**.`;
+     certo" sozinho, que nao deixa conferir se e' o que a pessoa esperava.
+
+     Os dois números saem da frase e viram marcador: sem isso, "traduzo 1 canal
+     em 6 idiomas" e "traduzo 2 canais em 6 idiomas" seriam duas traduções
+     diferentes, e o painel muda de número o tempo todo. O plural continua
+     escrito por extenso, e por isso são quatro moldes e não um -- quatro
+     chaves fixas custam menos que uma frase que nunca se repete. */
+  const canalOuCanais = canais === 1
+    ? await T("**{0} canal**", canais)
+    : await T("**{0} canais**", canais);
+  const idiomaOuIdiomas = idiomas === 1
+    ? await T("**{0} idioma**", idiomas)
+    : await T("**{0} idiomas**", idiomas);
+  return await T("**🟢 Está tudo funcionando.** Eu traduzo {0} em {1}.",
+    canalOuCanais, idiomaOuIdiomas);
 }
 
 /* ---------------- o recibo da semana ----------------
@@ -5387,7 +5453,17 @@ function botoesDoRecibo() {
   }];
 }
 
-async function montarPainel(guild, servidor) {
+/* O painel na língua de quem abriu -- quando dá para saber quem abriu.
+
+   O cartão FIXADO não recebe idioma, e não é esquecimento: ele é uma mensagem
+   só para o servidor inteiro, como o placar da arena, e não existe versão por
+   leitor de uma mensagem única. Ele fica em português e ganha o botão 🌐, que
+   devolve a cópia de cada um, efêmera.
+
+   O /cyron é outra coisa: nasce do clique de UMA pessoa, e aí a língua dela
+   manda. Mesmo desenho, mesmo estado, mesma função -- só o idioma muda. */
+async function montarPainel(guild, servidor, idioma = "") {
+  const T = falaDoPainel(idioma, await motorDoGuild(guild.id).catch(() => MOTOR_AUTO));
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
   const idiomas = await sb(
@@ -5400,10 +5476,10 @@ async function montarPainel(guild, servidor) {
   const emBeta = BETA || fimDoBeta;
   const pagoAte = venceEm(servidor.pago_ate);
   const testeAte = venceEm(servidor.teste_ate);
-  const prazo = fimDoBeta ? ` · beta até ${dia(fimDoBeta)}`
-    : emBeta ? " · liberado durante o beta"
-    : pagoAte ? ` · até ${dia(pagoAte)}`
-    : testeAte ? ` · teste até ${dia(testeAte)}`
+  const prazo = fimDoBeta ? " · " + await T("beta até {0}", dia(fimDoBeta))
+    : emBeta ? " · " + await T("liberado durante o beta")
+    : pagoAte ? " · " + await T("até {0}", dia(pagoAte))
+    : testeAte ? " · " + await T("teste até {0}", dia(testeAte))
     : "";
 
   /* Canal apagado nao entra no painel. O Discord desenha "#desconhecido" pra id
@@ -5432,49 +5508,63 @@ async function montarPainel(guild, servidor) {
   const campos = [
     espelhoIncluso
       ? {
-        name: `${marca(vivas.length, limite.fontes)} Canais que eu traduzo — ${vivas.length} de ${limite.fontes}`,
+        name: `${marca(vivas.length, limite.fontes)} ` +
+          await T("Canais que eu traduzo — {0} de {1}", vivas.length, limite.fontes),
+        /* Menção de canal é `<#id>`: número, e não texto. Nunca vai ao
+           tradutor, e é lida igual em qualquer língua. */
         value: vivas.length
           ? vivas.map((f) => `<#${f.canal_id}>`).join("\n")
           : elegiveis.length
-            ? "_nenhum ainda — escolha no menu aqui embaixo_"
-            : "_nenhum, e não sobrou canal para escolher: todos os canais de texto daqui já são meus. Crie um canal onde vocês escrevem e ele aparece no menu._",
+            ? "_" + await T("nenhum ainda — escolha no menu aqui embaixo") + "_"
+            : "_" + await T("nenhum, e não sobrou canal para escolher: todos os canais de texto daqui já são meus. Crie um canal onde vocês escrevem e ele aparece no menu.") + "_",
       }
       : {
-        name: "🔒 Salas por idioma — do plano pago",
-        value: "Aqui a conversa acontece traduzida para todo mundo ao mesmo tempo: cada " +
+        name: await T("🔒 Salas por idioma — do plano pago"),
+        value: await T("Aqui a conversa acontece traduzida para todo mundo ao mesmo tempo: cada " +
           "idioma ganha uma categoria com os seus canais, e quem escreve na sala dele " +
-          "aparece na dos outros já traduzido.\n\n" +
-          "_No plano grátis a tradução é **puxada**: a bandeira e o botão traduzem " +
-          "sem limite, quando alguém pede._",
+          "aparece na dos outros já traduzido.") + "\n\n_" +
+          await T("No plano grátis a tradução é **puxada**: a bandeira e o botão traduzem " +
+          "sem limite, quando alguém pede.") + "_",
       },
     espelhoIncluso
       ? {
-        name: `${marca(idiomas.length, limite.idiomas)} Idiomas — ${idiomas.length} de ${limite.idiomas}`,
-        value: idiomas.length ? idiomas.map((i) => nomeDoIdioma(i.idioma)).join("\n") : "_ninguém escolheu ainda_",
+        name: `${marca(idiomas.length, limite.idiomas)} ` +
+          await T("Idiomas — {0} de {1}", idiomas.length, limite.idiomas),
+        /* Na própria língua, como no placar da arena e no menu de escolha: o
+           alemão procura "Deutsch", não "Alemão". De graça, e sem tradutor. */
+        value: idiomas.length
+          ? idiomas.map((i) => nomeNaPropriaLingua(i.idioma)).join("\n")
+          : "_" + await T("ninguém escolheu ainda") + "_",
         inline: true,
       }
       : {
         /* Continua valendo escolher idioma no plano grátis, e por isso o
            número continua aqui: o bot fala com cada pessoa na língua dela.
            O que não existe é a sala. */
-        name: `🌐 Escolheram um idioma — ${idiomas.length}`,
+        name: await T("🌐 Escolheram um idioma — {0}", idiomas.length),
         value: idiomas.length
-          ? "eu falo com cada uma na língua dela"
-          : "_ninguém escolheu ainda_",
+          ? await T("eu falo com cada uma na língua dela")
+          : "_" + await T("ninguém escolheu ainda") + "_",
         inline: true,
       },
     {
-      name: "🌐 Motor de tradução",
+      name: await T("🌐 Motor de tradução"),
       value: motorUsado,
       inline: true,
     },
     {
-      name: "📊 Traduzido hoje",
+      name: await T("📊 Traduzido hoje"),
+      /* Sem separador de milhar, e não toLocaleString("pt-BR"): "1.240" é mil
+         duzentos e quarenta em português e um vírgula dois quatro em inglês.
+         Num painel que pode ser lido nas duas, o ponto mente para metade. */
       value: uso.traducoes || uso.cache
-        ? `**${uso.traducoes.toLocaleString("pt-BR")}** ${uso.traducoes === 1 ? "tradução" : "traduções"}` +
-          ` · ${(uso.caracteres / 1000).toFixed(1)}k caracteres` +
-          (uso.cache ? `\n_${uso.cache.toLocaleString("pt-BR")} repetidas, servidas do cache sem custo_` : "")
-        : "_nada ainda hoje_",
+        ? (uso.traducoes === 1
+            ? await T("**{0}** tradução · {1}k caracteres", uso.traducoes, (uso.caracteres / 1000).toFixed(1))
+            : await T("**{0}** traduções · {1}k caracteres", uso.traducoes, (uso.caracteres / 1000).toFixed(1))) +
+          (uso.cache
+            ? "\n_" + await T("{0} repetidas, servidas do cache sem custo", uso.cache) + "_"
+            : "")
+        : "_" + await T("nada ainda hoje") + "_",
       inline: true,
     },
     /* O teto do dia, dito ANTES de bater nele.
@@ -5484,20 +5574,21 @@ async function montarPainel(guild, servidor) {
        chave) fica invisível. Foi esse o defeito de ontem, e não vou repetir
        ele num lugar novo. */
     ...(servidor.tradutor_chave ? [] : [{
-      name: `${marca(gastoHoje, cotaHoje)} Cota do tradutor da casa — hoje`,
-      value: `${(gastoHoje / 1000).toFixed(1)}k de ${(cotaHoje / 1000).toFixed(0)}k caracteres` +
+      name: `${marca(gastoHoje, cotaHoje)} ` + await T("Cota do tradutor da casa — hoje"),
+      value: await T("{0}k de {1}k caracteres",
+        (gastoHoje / 1000).toFixed(1), (cotaHoje / 1000).toFixed(0)) +
         (gastoHoje >= cotaHoje
-          ? "\n\n🔴 **Bateu no teto de hoje.** Até amanhã eu traduzo por um caminho " +
+          ? "\n\n" + await T("🔴 **Bateu no teto de hoje.** Até amanhã eu traduzo por um caminho " +
             "gratuito, que é mais lento e às vezes recusa. Para não depender dele, " +
-            "ponha uma chave própria em **🔑 Tradutor** — aí não há teto."
-          : "\n_Este é o limite do tradutor que vem comigo. Com chave própria, não há teto._"),
+            "ponha uma chave própria em **🔑 Tradutor** — aí não há teto.")
+          : "\n_" + await T("Este é o limite do tradutor que vem comigo. Com chave própria, não há teto.") + "_"),
       inline: true,
     }]),
     {
-      name: "💬 Tradutor por mensagem",
+      name: await T("💬 Tradutor por mensagem"),
       value: servidor.tradutor_topico
-        ? "🟢 **ligado**\nbotão de tradução em cada mensagem"
-        : "⚪ **desligado**\nligue no botão abaixo",
+        ? await T("🟢 **ligado**\nbotão de tradução em cada mensagem")
+        : await T("⚪ **desligado**\nligue no botão abaixo"),
       inline: true,
     },
     /* Sem botao, e de proposito: nao ha o que desligar que valha um botao. A
@@ -5506,9 +5597,9 @@ async function montarPainel(guild, servidor) {
        existe, porque um recurso que ninguem conhece nao e' usado por
        ninguem. */
     {
-      name: "🏳️ Tradução por bandeira",
-      value: "🟢 **sempre ligada**\nquem reage com a bandeira do país dele " +
-        "recebe aquela mensagem traduzida, no privado",
+      name: await T("🏳️ Tradução por bandeira"),
+      value: await T("🟢 **sempre ligada**\nquem reage com a bandeira do país dele " +
+        "recebe aquela mensagem traduzida, no privado"),
       inline: true,
     },
   ];
@@ -5526,10 +5617,16 @@ async function montarPainel(guild, servidor) {
   const problemas = [];
 
   if (fila.length) {
+    const linhas = [];
+    for (const f of fila) {
+      linhas.push(`${nomeNaPropriaLingua(f.idioma)} — ` + (f.quantos === 1
+        ? await T("{0} pessoa", f.quantos)
+        : await T("{0} pessoas", f.quantos)));
+    }
     problemas.push({
-      name: "⚠️ Escolheram um idioma e não couberam",
-      value: fila.map((f) => `${nomeDoIdioma(f.idioma)} — ${f.quantos} ${f.quantos === 1 ? "pessoa" : "pessoas"}`).join("\n") +
-        "\n_Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum._",
+      name: await T("⚠️ Escolheram um idioma e não couberam"),
+      value: linhas.join("\n") + "\n_" +
+        await T("Para elas o bot parece não ter funcionado: escolheram e não receberam canal nenhum.") + "_",
     });
   }
 
@@ -5546,9 +5643,9 @@ async function montarPainel(guild, servidor) {
   const salas = idiomas.filter((i) => i.canal_id && guild.channels.cache.has(i.canal_id));
   if (salas.length) {
     campos.push({
-      name: `💬 Salas de conversa — ${salas.length}`,
-      value: salas.map((i) => `<#${i.canal_id}>`).join(" ") +
-        "\n_Uma por idioma. Não são cópias: é onde cada idioma conversa, e o que se escreve numa aparece traduzido nas outras._",
+      name: await T("💬 Salas de conversa — {0}", salas.length),
+      value: salas.map((i) => `<#${i.canal_id}>`).join(" ") + "\n_" +
+        await T("Uma por idioma. Não são cópias: é onde cada idioma conversa, e o que se escreve numa aparece traduzido nas outras.") + "_",
     });
   }
 
@@ -5561,21 +5658,22 @@ async function montarPainel(guild, servidor) {
     const g = PLANOS.gratis;
     campos.push({
       name: fimDoBeta
-        ? `🧪 CYRON em beta — até ${dia(fimDoBeta)}`
-        : "🧪 CYRON está em beta",
+        ? await T("🧪 CYRON em beta — até {0}", dia(fimDoBeta))
+        : await T("🧪 CYRON está em beta"),
       value: [
-        "Enquanto durar o beta, seu servidor usa o plano pago **sem pagar nada**: " +
-        `**${PLANOS.pago.idiomas} idiomas** e **${PLANOS.pago.fontes} canais traduzidos**.`,
+        await T("Enquanto durar o beta, seu servidor usa o plano pago **sem pagar nada**: " +
+          "**{0} idiomas** e **{1} canais traduzidos**.", PLANOS.pago.idiomas, PLANOS.pago.fontes),
         "",
         fimDoBeta
-          ? `O beta vai até **${dia(fimDoBeta)}**.`
-          : "**O beta vai acabar** — ainda não há data. Quando houver, o prazo aparece aqui " +
-            "neste painel com antecedência, antes de qualquer coisa mudar.",
+          ? await T("O beta vai até **{0}**.", dia(fimDoBeta))
+          : await T("**O beta vai acabar** — ainda não há data. Quando houver, o prazo aparece aqui " +
+            "neste painel com antecedência, antes de qualquer coisa mudar."),
         "",
-        "_Beta também quer dizer que ainda aparece defeito. Se algo estranho acontecer, é bug meu, não seu._",
+        "_" + await T("Beta também quer dizer que ainda aparece defeito. Se algo estranho acontecer, é bug meu, não seu.") + "_",
         "",
-        `Quando terminar, o servidor volta ao plano grátis (**${g.idiomas} idiomas**, **${g.fontes} canais**). ` +
-        "**Nada é apagado** — o que passar do limite apenas para de crescer, e você escolhe o que manter.",
+        await T("Quando terminar, o servidor volta ao plano grátis (**{0} idiomas**, **{1} canais**). " +
+          "**Nada é apagado** — o que passar do limite apenas para de crescer, e você escolhe o que manter.",
+          g.idiomas, g.fontes),
       ].join("\n"),
     });
   }
@@ -5583,48 +5681,54 @@ async function montarPainel(guild, servidor) {
   const trocados = cargoTrocado.get(servidor.id) || [];
   if (trocados.length && !cargoRuim) {
     campos.push({
-      name: "🧹 Cargos antigos que dá para apagar",
-      value: `${trocados.map((n) => `**${n}**`).join(", ")} ficaram acima do meu cargo, então criei novos no lugar ` +
+      name: await T("🧹 Cargos antigos que dá para apagar"),
+      /* Nome de cargo é do servidor, e vai como marcador: nunca chega ao
+         tradutor, e não vira chave de cache que só serve a um cliente. */
+      value: await T("{0} ficaram acima do meu cargo, então criei novos no lugar " +
         "e já religuei tudo — **está funcionando**.\n" +
         "Os antigos não mandam mais em nada e eu não consigo apagá-los (estão acima de mim). " +
         "Você pode apagar em Configurações do Servidor → Cargos.",
+        trocados.map((n) => `**${n}**`).join(", ")),
     });
   }
 
   if (cargoRuim) {
     problemas.push({
-      name: "🚨 Ninguém está recebendo o cargo do idioma",
+      name: await T("🚨 Ninguém está recebendo o cargo do idioma"),
       value: [
-        `Os cargos ${cargoRuim.nomes.slice(0, 6).map((n) => `**${n}**`).join(", ")} estão **acima** do meu na lista de cargos, ` +
-        "e o Discord não deixa um bot mexer em cargo que não esteja abaixo do dele. " +
-        "Daqui eu não tenho como resolver: mover um cargo acima do meu exige alcançá-lo.",
+        await T("Os cargos {0} estão **acima** do meu na lista de cargos, " +
+          "e o Discord não deixa um bot mexer em cargo que não esteja abaixo do dele. " +
+          "Daqui eu não tenho como resolver: mover um cargo acima do meu exige alcançá-lo.",
+          cargoRuim.nomes.slice(0, 6).map((n) => `**${n}**`).join(", ")),
         "",
-        "**Conserto (30 segundos):** Configurações do Servidor → Cargos → arraste **CYRON** para cima.",
+        await T("**Conserto (30 segundos):** Configurações do Servidor → Cargos → arraste **CYRON** para cima."),
         "",
-        "_Enquanto isso, quem escolhe um idioma não recebe cargo — e sem cargo não enxerga a categoria dele. " +
-        "De fora, parece que eu não funciono._",
+        "_" + await T("Enquanto isso, quem escolhe um idioma não recebe cargo — e sem cargo não enxerga a categoria dele. " +
+          "De fora, parece que eu não funciono.") + "_",
       ].join("\n"),
     });
   }
 
   if (inalcancaveis.length) {
     problemas.push({
-      name: `⛔ Não consigo dar o cargo de idioma a ${inalcancaveis.length} ${inalcancaveis.length === 1 ? "pessoa" : "pessoas"}`,
+      name: inalcancaveis.length === 1
+        ? await T("⛔ Não consigo dar o cargo de idioma a {0} pessoa", inalcancaveis.length)
+        : await T("⛔ Não consigo dar o cargo de idioma a {0} pessoas", inalcancaveis.length),
       value: inalcancaveis.slice(0, 10).map((id) => `<@${id}>`).join(" ") +
-        (inalcancaveis.length > 10 ? ` _…e mais ${inalcancaveis.length - 10}_` : "") +
-        "\n_O cargo delas está acima do meu, e o Discord não deixa um bot mexer em quem está acima — " +
-        "isso o Administrator não resolve._\n" +
-        "**Conserto:** Configurações do Servidor → Cargos, e arraste **CYRON** para cima delas.\n" +
-        "_Sem isso, elas escolhem o idioma e não recebem canal nenhum._",
+        (inalcancaveis.length > 10 ? " _" + await T("…e mais {0}", inalcancaveis.length - 10) + "_" : "") +
+        "\n_" + await T("O cargo delas está acima do meu, e o Discord não deixa um bot mexer em quem está acima — " +
+          "isso o Administrator não resolve.") + "_\n" +
+        await T("**Conserto:** Configurações do Servidor → Cargos, e arraste **CYRON** para cima delas.") +
+        "\n_" + await T("Sem isso, elas escolhem o idioma e não recebem canal nenhum.") + "_",
     });
   }
 
   if (orfas.length) {
     problemas.push({
-      name: `🗑️ Cópias sem origem — ${orfas.length}`,
+      name: await T("🗑️ Cópias sem origem — {0}", orfas.length),
       value: orfas.slice(0, 15).map((o) => `<#${o.canal_id}>`).join("\n") +
-        (orfas.length > 15 ? `\n_…e mais ${orfas.length - 15}_` : "") +
-        "\n_O canal que alimentava estas cópias saiu da lista. Elas não recebem mais nada._",
+        (orfas.length > 15 ? "\n_" + await T("…e mais {0}", orfas.length - 15) + "_" : "") +
+        "\n_" + await T("O canal que alimentava estas cópias saiu da lista. Elas não recebem mais nada.") + "_",
     });
   }
 
@@ -5636,11 +5740,23 @@ async function montarPainel(guild, servidor) {
      painel, empurrando o estado (que e' o que se olha todo dia) pra cima. */
   const embed = {
     title: "⚙️ CYRON",
-    description: vereditoDoPainel(problemas, vivas.length, idiomas.length),
+    description: await vereditoDoPainel(problemas, vivas.length, idiomas.length, T),
     color: corDoPainel(noTeto, fila.length > 0 || inalcancaveis.length > 0 || !!cargoRuim),
     /* Problemas primeiro, sempre. */
     fields: [...problemas, ...campos],
-    footer: { text: `Plano ${planoDe(servidor).toUpperCase()}${prazo}` },
+    /* Dois moldes inteiros, e não "Plano {0}" com o nome dentro.
+
+       Eu tinha posto o nome do plano como marcador, tratando-o como marca. A
+       prévia em alemão mostrou o resultado: "Tarif GRÁTIS". "DeepL" é marca e
+       não se traduz; "grátis" é palavra comum, e deixá-la de fora esconde
+       justamente a informação que a linha existe para dar.
+
+       Palavra solta também não serve: "PAGO" fora de contexto vira "eu pago"
+       em italiano. A frase inteira, com as duas versões escritas à mão, é uma
+       chave fixa cada e não tem como sair errada. */
+    footer: {
+      text: (planoDe(servidor) === "pago" ? await T("Plano pago") : await T("Plano grátis")) + prazo,
+    },
   };
 
   return { embed, componentes: componentesDoPainel(servidor, vivas, limite, orfas, elegiveis) };
@@ -5865,10 +5981,22 @@ async function comandoDeConfig(msg, servidor) {
    editado no lugar. */
 
 async function refrescarPainel(inter, servidor) {
-  const { embed, componentes } = await montarPainel(inter.guild, servidor);
+  /* A língua tem que combinar com a SUPERFÍCIE, e não com quem clicou.
+
+     Se o clique veio do cartão fixado, `editReply` edita o próprio fixado --
+     que é uma mensagem para o servidor inteiro. Redesenhar ele na língua de
+     quem apertou o botão traduziria o cartão de todo mundo para a língua da
+     última pessoa que mexeu nele. Ali é português, sempre.
+
+     Na cópia efêmera é o contrário: ela é dela, e continua dela depois do
+     clique. Perder a língua ao apertar um botão faria o painel "voltar para o
+     português sozinho", que parece defeito e é dos piores de explicar. */
+  const noFixado = inter.message?.id === servidor.msg_config;
+  const idioma = noFixado ? "" : await idiomaEscolhido(inter.user.id);
+  const { embed, componentes } = await montarPainel(inter.guild, servidor, idioma);
   await inter.editReply({ embeds: [embed], components: componentes }).catch(() => {});
   /* Se o clique veio da copia efemera do /cyron, o fixado ficou pra tras. */
-  if (inter.message?.id !== servidor.msg_config) {
+  if (!noFixado) {
     await cartaoDeConfig(inter.guild, servidor).catch(() => {});
   }
 }
@@ -5951,6 +6079,17 @@ async function cliquePainel(inter) {
     return inter.editReply({
       content: foi ? `📣 Publicado em <#${canal.id}>.` : "Não consegui publicar ali — falta permissão de escrever nesse canal.",
     });
+  }
+
+  /* A cópia do painel na língua de quem apertou.
+
+     Ela é NOVA e efêmera, e não uma edição do fixado: editar o fixado poria o
+     cartão do servidor inteiro na língua da última pessoa que clicou. */
+  if (acao === "idioma") {
+    await inter.deferReply({ flags: 64 });
+    const meu = (await idiomaEscolhido(inter.user.id)) || idiomaDoAplicativo(inter.locale);
+    const { embed, componentes } = await montarPainel(inter.guild, servidor, meu);
+    return inter.editReply({ embeds: [embed], components: componentes });
   }
 
   /* Anunciar a arena: mesmo caminho do recibo, mesmo canal.
@@ -8968,8 +9107,13 @@ async function comandoDeInteracao(inter) {
     if (!servidor) {
       return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui. Tente de novo em um minuto." });
     }
-    const { embed, componentes } = await montarPainel(inter.guild, servidor);
-    return inter.reply({ flags: 64, embeds: [embed], components: componentes });
+    /* Efêmero e de uma pessoa só: aqui dá para falar a língua dela.
+       O palpite do Discord entra como no resto -- quem nunca escolheu idioma
+       ainda assim lê o painel na língua do aparelho. */
+    await inter.deferReply({ flags: 64 });
+    const meu = (await idiomaEscolhido(inter.user.id)) || idiomaDoAplicativo(inter.locale);
+    const { embed, componentes } = await montarPainel(inter.guild, servidor, meu);
+    return inter.editReply({ embeds: [embed], components: componentes });
   }
 
   if (nome === "mylanguage") {
