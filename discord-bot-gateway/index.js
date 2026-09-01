@@ -4412,6 +4412,171 @@ function vereditoDoPainel(problemas, canais, idiomas) {
     `em **${idiomas} ${idiomas === 1 ? "idioma" : "idiomas"}**.`;
 }
 
+/* ---------------- o recibo da semana ----------------
+
+   O problema que ele resolve nao e' tecnico: quanto melhor eu funciono, mais
+   invisivel eu fico. Ninguem agradece o cano de agua. Mas quem PAGA por mim
+   decide a renovacao pelo que lembra, e quem usa nao lembra do que nunca viu.
+
+   A cura nao e' XP nem ranking de gente. Eu vivo em servidor de jogo, que ja
+   tem nivel e ranking proprios, e premiar quem me USA empurraria as pessoas a
+   pedir traducao de que nao precisam -- cada uma custa caractere pago, e eu
+   estaria gamificando exatamente a minha conta. O que falta nao e' um jogo: e'
+   tornar visivel o que ja acontece.
+
+   Tudo aqui sai de dado que ja existe. Nenhuma contagem por pessoa e' criada,
+   nenhuma linha nova e' guardada: as traducoes vem do uso diario que o painel
+   ja le, e o numero de leitores vem dos CARGOS, contados no Discord na hora.
+   Isso importa porque a pagina de privacidade acabou de prometer o que eu
+   guardo -- um recurso novo que exigisse contador por jogador me obrigaria a
+   reescrever a promessa uma semana depois de publicá-la. */
+
+const SEMANA = 7 * 24 * 3600 * 1000;
+
+function diaISO(quando) {
+  return new Date(quando).toISOString().slice(0, 10);
+}
+
+/* Qual semana e' esta, como texto comparavel.
+
+   Serve de marca de "ja mandei" no cyron_ajuste. Segunda-feira e' o comeco:
+   recibo que chega no domingo fala de uma semana que ainda nao acabou. */
+function semanaDe(quando = Date.now()) {
+  const d = new Date(quando);
+  const desdeSegunda = (d.getUTCDay() + 6) % 7; // domingo=6, segunda=0
+  return diaISO(d.getTime() - desdeSegunda * 24 * 3600 * 1000);
+}
+
+/* Quantas traducoes o servidor fez entre duas datas. */
+async function traducoesEntre(servidorId, de, ate) {
+  const linhas = await sb(
+    `cyron_uso_diario?servidor_id=eq.${servidorId}&dia=gte.${de}&dia=lt.${ate}&select=traducoes`,
+  ).catch(() => null) || [];
+  return linhas.reduce((a, l) => a + Number(l.traducoes || 0), 0);
+}
+
+/* Quem le em cada lingua, contado pelos cargos.
+
+   Pelo cargo, e nao pelo banco: discord_idioma_jogador nao sabe de que
+   servidor a pessoa e', entao contar por ela daria o total do mundo em todo
+   servidor -- um numero errado e lisonjeiro, que e' o pior tipo. O cargo e' a
+   verdade daquele servidor, e ele esta no Discord, de graca. */
+function leitoresPorIdioma(guild, salas) {
+  const fora = [];
+  for (const s of salas) {
+    const cargo = s.role_id ? guild.roles?.cache?.get(s.role_id) : null;
+    if (!cargo) continue;
+    fora.push({ idioma: s.idioma, quantos: cargo.members?.size ?? 0 });
+  }
+  return fora.sort((a, b) => b.quantos - a.quantos);
+}
+
+/* Quantas semanas seguidas este servidor traduziu alguma coisa.
+
+   O streak e' DO SERVIDOR, e nao de cada pessoa, e a diferenca e' a coisa
+   toda. O streak do Duolingo funciona porque a acao e' sua: voce pratica,
+   voce mantem. Aqui a graca e' que ninguem faz nada -- um streak pessoal
+   seria "dias em que por acaso apareceu um estrangeiro", que se perde sem
+   culpa e se defende forcando traducao inutil. Coletivo, ninguem falha
+   sozinho e ninguem consegue farmar. */
+function semanasSeguidas(porSemana) {
+  let n = 0;
+  for (const q of porSemana) {
+    if (!q) break;
+    n++;
+  }
+  return n;
+}
+
+async function reciboDaSemana(guild, servidor) {
+  const fimISO = semanaDe();                       // segunda desta semana
+  const fim = new Date(`${fimISO}T00:00:00Z`).getTime();
+  const inicioISO = diaISO(fim - SEMANA);          // segunda passada
+
+  const [agora, antes] = await Promise.all([
+    traducoesEntre(servidor.id, inicioISO, fimISO),
+    traducoesEntre(servidor.id, diaISO(fim - 2 * SEMANA), inicioISO),
+  ]);
+
+  /* Semana sem nenhuma traducao nao vira cartao. Um recibo dizendo "zero"
+     toda segunda e' o bot lembrando que nao serviu pra nada -- o contrario
+     exato do que ele existe pra fazer. */
+  if (!agora) return null;
+
+  const salas = await sb(
+    `discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,role_id`).catch(() => null) || [];
+  const leitores = leitoresPorIdioma(guild, salas);
+  const gente = leitores.reduce((a, l) => a + l.quantos, 0);
+
+  /* As oito ultimas semanas, pra contar o streak sem guardar historico. */
+  const oito = [];
+  for (let i = 0; i < 8; i++) {
+    const a = diaISO(fim - (i + 1) * SEMANA);
+    const b = diaISO(fim - i * SEMANA);
+    oito.push(await traducoesEntre(servidor.id, a, b));
+  }
+  const seguidas = semanasSeguidas(oito);
+
+  const linhas = [
+    `**${agora.toLocaleString("pt-BR")} ${agora === 1 ? "mensagem atravessou" : "mensagens atravessaram"}** ` +
+    `**${leitores.length || salas.length} ${(leitores.length || salas.length) === 1 ? "idioma" : "idiomas"}** esta semana.`,
+  ];
+
+  /* A comparacao so' aparece quando ha' com o que comparar: "↑ 100%" na
+     primeira semana e' um numero inventado a partir de zero. */
+  if (antes > 0) {
+    const variacao = Math.round(((agora - antes) / antes) * 100);
+    if (variacao !== 0) {
+      linhas.push(`${variacao > 0 ? "📈" : "📉"} ${variacao > 0 ? "+" : ""}${variacao}% em relação à semana passada.`);
+    }
+  }
+
+  if (seguidas >= 2) {
+    linhas.push(`🔥 **${seguidas} semanas seguidas** sem ninguém ficar sem entender.`);
+  }
+
+  const campos = [];
+  if (leitores.length) {
+    campos.push({
+      name: `🗣️ Quem lê em cada língua — ${gente} ${gente === 1 ? "pessoa" : "pessoas"}`,
+      /* Sem bandeira na frente: nomeDoIdioma JA' devolve "🇧🇷 Português".
+         Acrescentar outra dava "🇧🇷 🇧🇷 Português" -- e nenhum teste pegaria,
+         porque o texto continua certo e o limite continua cabendo. Foi a
+         prévia do cartão que mostrou. */
+      value: leitores.slice(0, 10)
+        .map((l) => `${nomeDoIdioma(l.idioma)} — **${l.quantos}**`)
+        .join("\n"),
+    });
+  }
+
+  return {
+    color: COR,
+    title: "📊 A semana de vocês, em línguas",
+    description: linhas.join("\n"),
+    fields: campos,
+    /* O fecho e' o que faz a conta na cabeca de quem le: sem tradutor, essa
+       gente teria lido a propria lingua e mais nada. */
+    footer: {
+      text: gente
+        ? `Sem tradução, cada uma dessas ${gente} pessoas teria lido só o que foi escrito na língua dela.`
+        : "Cada uma dessas mensagens chegou legível para quem não fala a língua de quem escreveu.",
+    },
+  };
+}
+
+/* Um botão só, e o destino já é conhecido: o canal-fonte é o canal que o
+   próprio servidor apontou para mim. Pedir para escolher o canal seria uma
+   tela a mais entre a vontade de mostrar e o mostrar. */
+function botoesDoRecibo() {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: "cyron:publicar", style: 3, emoji: { name: "📣" },
+        label: "Publicar para o servidor" },
+    ],
+  }];
+}
+
 async function montarPainel(guild, servidor) {
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
@@ -4950,6 +5115,31 @@ async function cliquePainel(inter) {
      e' no clique, nao na visibilidade do canal. */
   if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
+  }
+
+  /* Publicar o recibo para o servidor.
+
+     Antes do deferUpdate porque a resposta e' uma mensagem nova, e nao a
+     edicao do cartao: o recibo fica onde esta, com o botao, e quem clicou
+     recebe a confirmacao so' pra si. Editar o cartao apagaria o proprio
+     recibo que ele acabou de publicar. */
+  if (acao === "publicar") {
+    await inter.deferReply({ flags: 64 });
+    const embed = inter.message?.embeds?.[0]?.toJSON?.() || inter.message?.embeds?.[0];
+    if (!embed) return inter.editReply({ content: "Não achei o cartão para publicar." });
+
+    const fonte = (await sb(
+      `discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id&limit=1`).catch(() => null))?.[0];
+    const canal = fonte?.canal_id ? await inter.guild.channels.fetch(fonte.canal_id).catch(() => null) : null;
+    if (typeof canal?.send !== "function") {
+      return inter.editReply({
+        content: "Não tenho um canal para publicar. Marque um canal no menu do painel e o botão passa a funcionar.",
+      });
+    }
+    const foi = await canal.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => null);
+    return inter.editReply({
+      content: foi ? `📣 Publicado em <#${canal.id}>.` : "Não consegui publicar ali — falta permissão de escrever nesse canal.",
+    });
   }
 
   /* showModal so' vale em interacao ainda nao respondida -- por isso vem
@@ -9365,6 +9555,47 @@ client.once("clientReady", () => {
   };
   limparOVelho();
   setInterval(limparOVelho, 24 * 60 * 60 * 1000);
+
+  /* O recibo da semana, uma vez por semana, por servidor.
+
+     A marca de "ja mandei" vive no cyron_ajuste, que ja e' uma tabela de
+     chave/valor -- assim isto nao pede coluna nova nem migracao, e um servidor
+     que nunca recebeu simplesmente nao tem chave.
+
+     Vai pra sala da administracao, e nao pro canal de todo mundo. Postar
+     sozinho, toda semana, num canal da comunidade de um cliente e' o jeito
+     mais rapido de um bot ser expulso -- e o cartao publicado pelo dono vale
+     mais que o cartao publicado por mim, porque vem dele. O botao esta ali
+     do lado. */
+  const mandarRecibos = async () => {
+    const semana = semanaDe();
+    const servidores = await sb("cyron_servidor?select=id,guild_id,canal_config").catch(() => null) || [];
+    for (const s of servidores) {
+      try {
+        if ((await ajustes())[`recibo:${s.id}`] === semana) continue;
+        const guild = client.guilds.cache.get(s.guild_id);
+        if (!guild) continue;
+        const canal = s.canal_config ? await guild.channels.fetch(s.canal_config).catch(() => null) : null;
+        if (typeof canal?.send !== "function") continue;
+
+        const embed = await reciboDaSemana(guild, s);
+        /* Semana sem traducao nao vira cartao -- mas vira marca, senao eu
+           tentaria montar o recibo de novo a cada volta do relogio. */
+        if (embed) await canal.send({ embeds: [embed], components: botoesDoRecibo() });
+        await porAjuste(`recibo:${s.id}`, semana);
+      } catch (e) {
+        console.error(`recibo: falhei no servidor ${s.id}:`, e?.message || e);
+      }
+    }
+  };
+  /* De hora em hora, e nao uma vez por dia: o bot reinicia a cada deploy, e um
+     relogio diario perderia a semana inteira se o reinicio caisse na hora
+     errada. A marca no banco e' quem garante que sai uma vez so'. */
+  setTimeout(() => {
+    mandarRecibos().catch((e) => console.error("recibo: falhei:", e?.message || e));
+    setInterval(() => mandarRecibos().catch((e) => console.error("recibo: falhei:", e?.message || e)),
+      60 * 60 * 1000);
+  }, 60 * 1000);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
     descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));

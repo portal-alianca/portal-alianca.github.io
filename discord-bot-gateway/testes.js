@@ -1786,6 +1786,148 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     !/tradutor_bandeira\s*===\s*true|!servidor\.tradutor_bandeira/.test(fonte));
 }
 
+/* ============ o recibo da semana ============
+
+   Ele existe porque quanto melhor eu funciono, mais invisível eu fico -- e
+   quem paga decide a renovação pelo que lembra. Nada aqui guarda contagem por
+   pessoa: as traduções vêm do uso diário que o painel já lê, e os leitores
+   são contados nos cargos, no Discord, na hora. */
+{
+  const { semanaDe, diaISO, semanasSeguidas, leitoresPorIdioma, botoesDoRecibo, reciboDaSemana,
+          LINGUAS_MENU } =
+    carregar(["LINGUAS_MENU", "SEMANA", "diaISO", "semanaDe", "traducoesEntre", "nomeDoIdioma", "bandeiraDoIdioma",
+      "leitoresPorIdioma", "semanasSeguidas", "reciboDaSemana", "botoesDoRecibo"]);
+
+  /* ---- a semana começa na segunda ---- */
+  /* 2026-09-02 é uma quarta. A semana dela começa na segunda, dia 31/08. */
+  ok("quarta cai na segunda anterior", semanaDe(Date.parse("2026-09-02T12:00:00Z")), "2026-08-31");
+  ok("a própria segunda é o começo dela", semanaDe(Date.parse("2026-08-31T00:00:00Z")), "2026-08-31");
+  /* Domingo é o FIM da semana, não o começo: recibo que chega no domingo
+     falaria de uma semana que ainda não acabou. */
+  ok("domingo ainda é da semana que passou", semanaDe(Date.parse("2026-09-06T23:59:00Z")), "2026-08-31");
+  ok("segunda seguinte já é outra semana", semanaDe(Date.parse("2026-09-07T00:01:00Z")), "2026-09-07");
+  verdade("a marca da semana é uma data e nada mais", /^\d{4}-\d{2}-\d{2}$/.test(semanaDe()));
+
+  ok("diaISO corta a hora fora", diaISO(Date.parse("2026-09-02T23:45:00Z")), "2026-09-02");
+
+  /* ---- o streak é do servidor, e para no primeiro buraco ---- */
+  ok("três semanas seguidas", semanasSeguidas([5, 9, 2, 0, 7]), 3);
+  ok("semana vazia agora zera", semanasSeguidas([0, 9, 2]), 0);
+  ok("tudo cheio conta tudo", semanasSeguidas([1, 1, 1]), 3);
+  ok("sem histórico, zero", semanasSeguidas([]), 0);
+  /* Um buraco no meio não pode ser pulado: seria um streak que a pessoa não
+     teve, e o número inteiro perderia o sentido. */
+  ok("buraco no meio corta ali", semanasSeguidas([4, 0, 8, 8, 8]), 1);
+
+  /* ---- os leitores vêm do cargo, não do banco ---- */
+  const guild = {
+    roles: { cache: new Map([
+      ["r-pt", { members: { size: 12 } }],
+      ["r-en", { members: { size: 9 } }],
+      ["r-ar", { members: { size: 30 } }],
+    ]) },
+  };
+  const salas = [
+    { idioma: "pt", role_id: "r-pt" },
+    { idioma: "en", role_id: "r-en" },
+    { idioma: "ar", role_id: "r-ar" },
+    /* Idioma cujo cargo foi apagado no Discord: some da conta, em vez de
+       aparecer com zero e parecer que ninguém escolheu. */
+    { idioma: "ja", role_id: "r-sumiu" },
+    { idioma: "de", role_id: null },
+  ];
+  const leitores = leitoresPorIdioma(guild, salas);
+  ok("só os idiomas com cargo vivo entram", leitores.length, 3);
+  ok("e vêm do maior para o menor", leitores[0].idioma, "ar");
+  ok("com a contagem do cargo", leitores[0].quantos, 30);
+  verdade("cargo apagado não vira linha", !leitores.some((l) => l.idioma === "ja"));
+
+  /* ---- o botão de publicar ---- */
+  const linhas = botoesDoRecibo();
+  ok("uma linha de botões", linhas.length, 1);
+  verdade("cabe nos 5 componentes da linha", linhas[0].components.length <= 5);
+  verdade("o rótulo cabe no botão", linhas[0].components[0].label.length <= 80);
+  ok("um botão só", linhas[0].components.length, 1);
+  verdade("e ele é de clique, não de link", linhas[0].components[0].custom_id === "cyron:publicar");
+
+  /* ---- o cartão inteiro ---- */
+  globalThis.client = { user: { id: "bot" } };
+  const semanaAtual = semanaDe();
+  /* Uma semana com 120 traduções, a anterior com 100, e as seis antes dela
+     com movimento também: 8 semanas seguidas. */
+  globalThis.sb = async (rota) => {
+    if (rota.startsWith("discord_chat_espelho")) return salas;
+    if (rota.startsWith("cyron_uso_diario")) {
+      const de = /dia=gte\.([0-9-]+)/.exec(rota)?.[1];
+      return [{ traducoes: de === diaISO(Date.parse(`${semanaAtual}T00:00:00Z`) - 7 * 864e5) ? 120 : 100 }];
+    }
+    return [];
+  };
+  const cartao = await reciboDaSemana(guild, { id: "s1" });
+
+  verdade("o cartão sai", !!cartao);
+  verdade("e diz quantas mensagens atravessaram", /120 mensagens atravessaram/.test(cartao.description));
+  verdade("e quantos idiomas", /3 idiomas/.test(cartao.description));
+  verdade("a variação aparece quando há com o que comparar", /\+20%/.test(cartao.description));
+  verdade("o streak aparece", /semanas seguidas/.test(cartao.description));
+  verdade("os leitores viram campo", /Quem lê em cada língua/.test(cartao.fields[0].name));
+  verdade("com o total de gente", /51 pessoas/.test(cartao.fields[0].name));
+
+  /* A bandeira sai UMA vez. nomeDoIdioma já devolve "🇧🇷 Português", e eu
+     tinha posto outra na frente: "🇧🇷 🇧🇷 Português". Nenhum teste de texto ou
+     de limite pegaria isso -- foi a prévia do cartão que mostrou, e este
+     teste existe para a próxima vez em que não houver prévia. */
+  for (const linha of cartao.fields[0].value.split("\n")) {
+    const bandeiras = [...linha].filter((c) => {
+      const n = c.codePointAt(0);
+      return n >= 0x1f1e6 && n <= 0x1f1ff;
+    }).length;
+    /* Cada bandeira são DOIS indicadores regionais, então uma bandeira = 2. */
+    verdade(`"${linha}" tem uma bandeira só`, bandeiras <= 2);
+  }
+  verdade("o fecho faz a conta na cabeça de quem lê", /Sem tradução/.test(cartao.footer.text));
+
+  /* Os limites do Discord, medidos aqui porque o cartão é montado com números
+     que vêm de fora: um servidor com vinte idiomas não pode estourar o embed
+     e sumir com o recibo inteiro. */
+  verdade("o título cabe", cartao.title.length <= 256);
+  verdade("a descrição cabe", cartao.description.length <= 4096);
+  verdade("o rodapé cabe", cartao.footer.text.length <= 2048);
+  for (const f of cartao.fields) {
+    verdade(`o campo "${f.name}" cabe`, f.name.length <= 256 && f.value.length <= 1024);
+  }
+  const tudo = cartao.title.length + cartao.description.length + cartao.footer.text.length +
+    cartao.fields.reduce((a, f) => a + f.name.length + f.value.length, 0);
+  verdade("e o cartão inteiro cabe nos 6000", tudo <= 6000);
+
+  /* Vinte idiomas é o teto do plano pago: o campo dos leitores corta em dez
+     justamente para não estourar os 1024 com nome de idioma. */
+  const muitos = LINGUAS_MENU.map(([c], i) => ({ idioma: c, role_id: `r${i}` }));
+  const guildCheio = { roles: { cache: new Map(muitos.map((s, i) => [s.role_id, { members: { size: i + 1 } }])) } };
+  globalThis.sb = async (rota) => (rota.startsWith("discord_chat_espelho") ? muitos : [{ traducoes: 500 }]);
+  const cheio = await reciboDaSemana(guildCheio, { id: "s1" });
+  verdade("com 20 idiomas o campo continua cabendo", cheio.fields[0].value.length <= 1024);
+
+  /* Semana sem tradução nenhuma NÃO vira cartão: um recibo dizendo "zero"
+     toda segunda é o bot lembrando que não serviu para nada. */
+  globalThis.sb = async (rota) =>
+    (rota.startsWith("cyron_uso_diario") ? [{ traducoes: 0 }] : salas);
+  ok("semana vazia não vira cartão", await reciboDaSemana(guild, { id: "s1" }), null);
+
+  /* Primeira semana do servidor: sem semana anterior, não há porcentagem --
+     "+100%" a partir de zero é um número inventado. */
+  globalThis.sb = async (rota) => {
+    if (rota.startsWith("discord_chat_espelho")) return salas;
+    const de = /dia=gte\.([0-9-]+)/.exec(rota)?.[1];
+    const daSemana = diaISO(Date.parse(`${semanaAtual}T00:00:00Z`) - 7 * 864e5);
+    return [{ traducoes: de === daSemana ? 40 : 0 }];
+  };
+  const primeira = await reciboDaSemana(guild, { id: "s1" });
+  verdade("na primeira semana não há porcentagem", !/%/.test(primeira.description));
+  verdade("nem streak de uma semana só", !/semanas seguidas/.test(primeira.description));
+  verdade("mas o número aparece", /40 mensagens/.test(primeira.description));
+}
+
 /* ============ a bandeira que não deu em nada ============
 
    Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem
