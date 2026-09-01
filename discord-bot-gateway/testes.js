@@ -2096,6 +2096,24 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("atualizarArenas está dentro da varredura, e viva",
     /^\s*await atualizarArenas\(\)/m.test(passada));
 
+  /* ---- fixar não pode deixar rastro na sala ----
+
+     O Discord anuncia cada fixada com uma mensagem de sistema no próprio
+     canal. Numa sala que existe para ter UM cartão, esse aviso é a segunda
+     mensagem -- e como o cartão é re-fixado sempre que é reposto, a sala vai
+     juntando avisos.
+
+     O teste é sobre a superfície de novo: todo lugar que fixa tem que limpar
+     atrás de si, e é fácil acrescentar um `pin` novo no futuro e esquecer. */
+  const fontePin = readFileSync(`${aqui}/index.js`, "utf8");
+  const fixadas = [...fontePin.matchAll(/\.pin\(/g)].length;
+  const limpezas = [...fontePin.matchAll(/apagarAvisoDeFixado\(/g)].length;
+  /* Uma a mais que as fixadas: a definição da própria função. */
+  ok("todo lugar que fixa também apaga o aviso", limpezas, fixadas + 1);
+  verdade("e o aviso é identificado pelo tipo do Discord, não pelo texto",
+    /MessageType\.ChannelPinnedMessage/.test(fontePin));
+  verdade("MessageType está importado", /MessageType[,\s}].*from "discord\.js"/.test(fontePin));
+
   /* ---- a arena não gasta tradução ----
 
      A regra vale para todo recurso de engajamento: gamificar o recurso medido
