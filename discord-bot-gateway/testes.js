@@ -1863,7 +1863,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    o que dá para comprar -- e um 🚨 aparecia depois das cotas. Quem abre o
    painel quer saber uma coisa antes de tudo: preciso fazer algo agora? */
 {
-  const { vereditoDoPainel } = carregar(["porMolde", "falaDoPainel", "vereditoDoPainel"]);
+  const { vereditoDoPainel } = carregar(["porMolde", "falaFixa", "vereditoDoPainel"]);
 
   const limpo = await vereditoDoPainel([], 2, 4);
   verdade("sem problema, o sinal é verde", limpo.startsWith("**🟢"));
@@ -1921,7 +1921,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
    de servidor viram marcador, então ficam fora do tradutor por construção em
    vez de por lembrança. */
 {
-  const { porMolde, falaDoPainel } = carregar(["porMolde", "falaDoPainel"]);
+  const { porMolde, falaFixa } = carregar(["porMolde", "falaFixa"]);
   globalThis.MOTOR_AUTO = { tipo: "teste" };
 
   /* ---- a substituição ---- */
@@ -1936,16 +1936,16 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   let pedidos = [];
   globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
 
-  const emCasa = falaDoPainel("");
+  const emCasa = falaFixa("");
   ok("sem idioma, nada vai ao tradutor",
     [await emCasa("Canais — {0} de {1}", 2, 10), pedidos.length].join("|"), "Canais — 2 de 10|0");
   pedidos = [];
-  await falaDoPainel("pt")("Canais — {0} de {1}", 2, 10);
+  await falaFixa("pt")("Canais — {0} de {1}", 2, 10);
   ok("português também não", pedidos.length, 0);
 
   /* ---- O TESTE QUE IMPORTA: o que sobe é o molde, não a frase montada ---- */
   pedidos = [];
-  const T = falaDoPainel("de");
+  const T = falaFixa("de");
   const dois = await T("Canais que eu traduzo — {0} de {1}", 2, 10);
   const nove = await T("Canais que eu traduzo — {0} de {1}", 9, 10);
   ok("o tradutor recebeu o molde, e não o texto com número",
@@ -1970,17 +1970,17 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      traduzida e sem o número -- ou, pior, mostrando "{0}" na tela. */
   pedidos = [];
   globalThis.traduzirComCache = async () => "Kanäle die ich übersetze — von";  // comeu os dois
-  const perdido = await falaDoPainel("de")("Canais que eu traduzo — {0} de {1}", 2, 10);
+  const perdido = await falaFixa("de")("Canais que eu traduzo — {0} de {1}", 2, 10);
   ok("tradução que perdeu o marcador é descartada", perdido, "Canais que eu traduzo — 2 de 10");
 
   globalThis.traduzirComCache = async (t) => `<${t}>`;
-  const meio = await falaDoPainel("de")("{0} de {1}", 2, 10);
+  const meio = await falaFixa("de")("{0} de {1}", 2, 10);
   verdade("e um marcador só também não passa", /2 de 10/.test(meio));
 
   /* Texto sem letra nenhuma nem sai daqui -- mesma trava do traduzirEmbed. */
   pedidos = [];
   globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
-  ok("símbolo puro não vai ao tradutor", await falaDoPainel("de")("{0} / {1}", 3, 5), "3 / 5");
+  ok("símbolo puro não vai ao tradutor", await falaFixa("de")("{0} / {1}", 3, 5), "3 / 5");
   ok("e nem foi pedido", pedidos.length, 0);
 
   /* ---- o guarda estrutural: nada montado pode chegar ao T ----
@@ -2243,7 +2243,7 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   const { custoDeEvoluir, handicapDoTime, chanceDeVitoria, timesDaArena,
           placarDaArena, botoesDaArena, ARENA_ATAQUES_DIA } =
     carregar(["CANAL_ARENA", "ARENA_ATAQUES_DIA", "MEDALHA", "nomeDoIdioma", "LINGUAS_MENU", "custoDeEvoluir", "handicapDoTime",
-      "chanceDeVitoria", "timesDaArena", "setaDoTime", "nomeNaPropriaLingua", "linhasDoPlacar", "LEGENDA_ARENA", "LEGENDA_ARENA_EN",
+      "chanceDeVitoria", "timesDaArena", "setaDoTime", "nomeNaPropriaLingua", "linhasDoPlacar", "LEGENDA_ARENA",
       "ARENA_VAZIA", "placarDaArena", "botoesDaArena"]);
 
   /* ---- evoluir fica mais caro ---- */
@@ -2316,37 +2316,50 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 
   /* ---- o placar ---- */
   const placar = placarDaArena(times, "2026-08-31");
-  verdade("o título fala as duas línguas", /Arena das Línguas · Language Arena/.test(placar.title));
+  /* Uma língua só. Bilíngue por construção dobrava título, temporada, "seu
+     servidor", legenda e os quatro rótulos de botão -- metade do cartão era a
+     mesma frase escrita de novo. O 🌐 serve os vinte idiomas; o bilíngue
+     servia dois. */
+  verdade("o título é só inglês", /^⚔️ Language Arena$/.test(placar.title));
+  verdade("e nada no cartão vem dobrado com ·  português",
+    !/Arena das Línguas|Temporada|Seu servidor|vitórias/.test(
+      placar.title + placar.description + placar.footer.text));
   verdade("mostra a temporada em dia/mês, não na data do banco",
     /31\/08/.test(placar.description) && !/2026-08-31/.test(placar.description));
   verdade("o time pequeno ganha a seta que convida", /▲/.test(placar.description));
   verdade("o rodapé explica o handicap sem precisar de manual",
-    /bate mais forte/.test(placar.footer.text) && /smaller teams hit harder/i.test(placar.footer.text));
+    /smaller teams hit harder/i.test(placar.footer.text));
+  verdade("e a legenda não é repetida em outra língua",
+    (placar.footer.text.match(/smaller teams/gi) || []).length === 1 &&
+    !/bate mais forte/.test(placar.footer.text));
+  verdade("o rodapé aponta o 🌐 uma vez só",
+    (placar.footer.text.match(/🌐/g) || []).length === 1);
 
   const vazio = placarDaArena([], "2026-08-31");
   verdade("arena sem nada explica que ela abre com a primeira tradução",
-    /primeira mensagem for traduzida/i.test(vazio.description));
-  verdade("e explica em inglês também", /first message gets translated/i.test(vazio.description));
+    /first message gets translated/i.test(vazio.description));
+  verdade("e sem a segunda cópia em português",
+    !/primeira mensagem for traduzida/i.test(vazio.description));
 
   /* ---- mundial, e sem entregar a lista de clientes ---- */
-  verdade("o placar se diz mundial", /mundial/i.test(placar.description));
+  verdade("o placar se diz mundial", /worldwide/i.test(placar.description));
   /* Nome de servidor nunca aparece: ranking com nome de cliente entrega a
      lista de clientes para qualquer um que entre num servidor. */
   const comContribuicao = placarDaArena(times, "2026-08-31", 12);
-  verdade("a contribuição do servidor aparece", /Seu servidor/.test(comContribuicao.description));
-  verdade("com 12 servidores, o número aparece", /12 servidores/.test(comContribuicao.description));
+  verdade("a contribuição do servidor aparece", /Your server/.test(comContribuicao.description));
+  verdade("com 12 servidores, o número aparece", /12 servers/.test(comContribuicao.description));
 
   /* "1 de 1" anuncia fraqueza justamente para o visitante que se quer
      impressionar. Só a partir de cinco. */
   const sozinho = placarDaArena(times, "2026-08-31", 1);
-  verdade("com um servidor só, o número não aparece", !/servidores na arena/.test(sozinho.description));
+  verdade("com um servidor só, o número não aparece", !/servers in the arena/.test(sozinho.description));
   const quatro = placarDaArena(times, "2026-08-31", 4);
-  verdade("nem com quatro", !/servidores na arena/.test(quatro.description));
+  verdade("nem com quatro", !/servers in the arena/.test(quatro.description));
 
   /* Servidor que não contribuiu com nada não vê "0 vitórias" toda semana. */
   const semContribuir = placarDaArena(
     times.map((t) => ({ ...t, meuServidor: 0 })), "2026-08-31", 12);
-  verdade("sem contribuição, a linha some", !/Seu servidor/.test(semContribuir.description));
+  verdade("sem contribuição, a linha some", !/Your server/.test(semContribuir.description));
 
   /* Doze times é o teto do desenho; vinte idiomas não podem estourar o embed. */
   const muitos = timesDaArena(
@@ -2652,10 +2665,14 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      para sempre, e nada quebraria: só a fatura no fim do mês. */
   const pessoal = corpoDe("async function placarPessoal");
   verdade("o placar pessoal traduz o molde", pessoal.includes("traduzirEmbed"));
-  verdade("e a tabela entra depois da tradução, não antes",
-    pessoal.indexOf("traduzirEmbed") < pessoal.indexOf("pronto.description = linhasDoPlacar"));
   verdade("a tabela do placar pessoal é a mesma do fixado",
-    /pronto\.description = linhasDoPlacar\(times, /.test(pessoal));
+    /description: times\.length\s*\n\s*\? linhasDoPlacar\(times, /.test(pessoal));
+  /* A tabela nunca pode virar argumento do tradutor. `await T(linhasDoPlacar(...))`
+     compila, desenha certo, e devolve a conta a cada vitória nova. */
+  verdade("e ela não passa por dentro do T", !/T\(\s*linhasDoPlacar/.test(pessoal));
+  /* Origem inglês: sem isto o brasileiro aperta 🌐 e recebe inglês de volta. */
+  verdade("o placar pessoal traduz A PARTIR do inglês",
+    /falaFixa\(idioma, MOTOR_AUTO, "en"\)/.test(pessoal));
 }
 
 /* ============ o placar de cada um, na língua de cada um ============
@@ -2764,13 +2781,26 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   pedidos = [];
   const vazia = await placarPessoal({ times: [], temporada: "2026-08-31", servidores: 0 }, "de", null, true);
   verdade("a frase de arena vazia foi traduzida", vazia.description.startsWith("<"));
-  verdade("e é a frase certa", /primeira mensagem for traduzida/.test(vazia.description));
+  verdade("e é a frase certa", /first message gets translated/.test(vazia.description));
 
-  /* ---- em português não se paga para receber o mesmo texto ---- */
+  /* ---- quem não paga agora é o INGLÊS, e o português passou a pagar ----
+
+     Esta prova virou do avesso quando o cartão passou a ser escrito em inglês,
+     e é a mais importante do bloco: o português é a maioria de hoje. Se o
+     molde continuasse saindo pelo traduzirEmbed -- que pula "pt" porque o
+     resto do bot está escrito em português --, o brasileiro apertaria 🌐 e
+     receberia o mesmo inglês de volta. É o defeito da NYX de cabeça para
+     baixo, na maior parte dos usuários. */
   pedidos = [];
-  const emCasa = await placarPessoal(estado, "pt", eu, true);
-  ok("nada é traduzido para português", pedidos.length, 0);
+  const emCasa = await placarPessoal(estado, "en", eu, true);
+  ok("inglês é o original, e não custa nada", pedidos.length, 0);
   verdade("e o cartão continua inteiro", !!emCasa.title && !!emCasa.description);
+  verdade("em inglês o título vem cru", emCasa.title === "⚔️ Language Arena");
+
+  pedidos = [];
+  const emPortugues = await placarPessoal(estado, "pt", eu, true);
+  verdade("português É traduzido, porque o original é inglês", pedidos.length > 0);
+  verdade("e o título dele não volta em inglês", emPortugues.title.startsWith("<"));
 
   /* ---- os limites do Discord ---- */
   const todos = timesDaArena(

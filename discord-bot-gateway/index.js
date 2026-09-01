@@ -4455,7 +4455,7 @@ async function canaisElegiveis(guild, servidor, fontes) {
    Tres estados, e o terceiro e' o que importa: motor do cliente FALHANDO. Sem
    ele, chave vencida vira "a qualidade piorou" -- eu caio no gratuito, a
    conversa continua, e ninguem liga uma coisa a outra por dias. */
-async function comoEstaOMotor(servidor, T = falaDoPainel()) {
+async function comoEstaOMotor(servidor, T = falaFixa()) {
   const tipo = servidor.tradutor_motor;
   if (!tipo || tipo === "auto" || !servidor.tradutor_chave) {
     return await T("⚪ **Google grátis**\ncompartilhado — pode ficar lento em pico");
@@ -4506,10 +4506,16 @@ function porMolde(molde, valores) {
   });
 }
 
-function falaDoPainel(idioma, motor = MOTOR_AUTO) {
-  /* Português é a língua em que tudo isto está escrito: traduzir pt->pt seria
-     pagar para receber o mesmo texto. */
-  const nativo = !idioma || idioma === "pt";
+/* A língua em que a tela está ESCRITA entra como parâmetro, e isso não é
+   detalhe.
+
+   O painel é escrito em português; a arena, em inglês. Quem lê na língua de
+   origem não precisa de tradução nenhuma -- e quem lê em qualquer outra
+   precisa, inclusive o português quando o original é inglês. Com "pt" fixo
+   aqui dentro, a arena em inglês chegaria em inglês para o brasileiro, que é
+   justamente a maioria de hoje. */
+function falaFixa(idioma, motor = MOTOR_AUTO, origem = "pt") {
+  const nativo = !idioma || idioma === origem;
   return async (molde, ...valores) => {
     if (nativo || !/\p{L}/u.test(molde)) return porMolde(molde, valores);
     const t = await traduzirComCache(molde, idioma, motor);
@@ -4528,7 +4534,7 @@ function falaDoPainel(idioma, motor = MOTOR_AUTO) {
    O plural e' escrito, e nao "problema(s)": a barra e o parenteses sao lixo
    que o leitor de tela tambem le, e este cartao e' o lugar onde a pessoa mais
    precisa entender de primeira. */
-async function vereditoDoPainel(problemas, canais, idiomas, T = falaDoPainel()) {
+async function vereditoDoPainel(problemas, canais, idiomas, T = falaFixa()) {
   const quantos = problemas.length;
   if (quantos) {
     /* Os nomes dos problemas já vêm traduzidos daqui de baixo: eles são os
@@ -4906,21 +4912,32 @@ function linhasDoPlacar(times, destaque = "") {
   }).join("\n");
 }
 
-const LEGENDA_ARENA = "🏆 vitórias · ⚔️ força · 💬 traduções · ▲ time pequeno bate mais forte";
-const LEGENDA_ARENA_EN = "🏆 wins · ⚔️ power · 💬 translations · ▲ smaller teams hit harder";
-const ARENA_VAZIA = "A arena abre quando a primeira mensagem for traduzida.";
+/* O cartão fixado passa a ser escrito só em INGLÊS, e isso é o contrário do
+   que eu tinha feito.
+
+   Bilíngue por construção parecia a saída honesta para uma mensagem que é uma
+   só para o servidor inteiro. Na tela, virou outra coisa: título dobrado,
+   temporada dobrada, "seu servidor" dobrado, a legenda dos símbolos duas
+   vezes, o convite do 🌐 duas vezes, e os quatro botões com dois rótulos cada.
+   Metade do cartão era a mesma frase escrita de novo, e o que se lê primeiro
+   é o tamanho.
+
+   Uma língua só, e o 🌐 do lado, cabe numa tela e serve mais gente: em
+   bilíngue eu atendia dois idiomas dos vinte; pelo botão, todos. Inglês como
+   base porque é a língua que mais gente lê em servidor de jogo -- e porque a
+   tabela já é bandeira e número, que não têm língua nenhuma. */
+const LEGENDA_ARENA = "🏆 wins · ⚔️ power · 💬 translations · ▲ smaller teams hit harder";
+const ARENA_VAZIA = "The arena opens when the first message gets translated.";
 
 function placarDaArena(times, temporada, servidores = 0) {
-  const linhas = times.length
-    ? linhasDoPlacar(times)
-    : `_${ARENA_VAZIA}_\n_The arena opens when the first message gets translated._`;
+  const linhas = times.length ? linhasDoPlacar(times) : `_${ARENA_VAZIA}_`;
 
   const meu = times.reduce((a, t) => a + (t.meuServidor || 0), 0);
   const partes = [
     /* Dia e mês, e não a data do banco: "2026-08-31" é como eu guardo a
        semana, não como alguém a lê. */
-    `**Temporada de ${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)}**` +
-    " · mundial / _worldwide_ · termina domingo / _ends Sunday_",
+    `**Season ${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)}**` +
+    " · worldwide · ends Sunday",
     "",
     linhas,
   ];
@@ -4928,7 +4945,7 @@ function placarDaArena(times, temporada, servidores = 0) {
   /* A contribuicao do servidor so' aparece quando ha' o que contribuir.
      "0 vitorias" toda semana e' o bot lembrando que ninguem jogou. */
   if (meu > 0) {
-    partes.push("", `🏠 **Seu servidor:** ${meu} ${meu === 1 ? "vitória" : "vitórias"} · _your server_`);
+    partes.push("", `🏠 **Your server:** ${meu} ${meu === 1 ? "win" : "wins"}`);
   }
 
   /* E o numero de servidores so' a partir de cinco. Hoje seria "1 de 1", que
@@ -4936,17 +4953,14 @@ function placarDaArena(times, temporada, servidores = 0) {
      e nome de servidor nunca aparece, porque ranking com nome de cliente
      entrega a lista de clientes pra qualquer um que entre aqui. */
   if (servidores >= 5) {
-    partes.push(`_${servidores} servidores na arena / servers in the arena_`);
+    partes.push(`_${servidores} servers in the arena_`);
   }
 
   return {
     color: COR,
-    title: "⚔️ Arena das Línguas · Language Arena",
+    title: "⚔️ Language Arena",
     description: partes.join("\n"),
-    footer: {
-      text: `${LEGENDA_ARENA}\n${LEGENDA_ARENA_EN}\n` +
-        `Aperte 🌐 para ver isto na sua língua · press 🌐 to read this in your language`,
-    },
+    footer: { text: `${LEGENDA_ARENA}\n🌐 read this in your language` },
   };
 }
 
@@ -4958,15 +4972,18 @@ function botoesDaArena() {
   return [{
     type: 1,
     components: [
-      { type: 2, custom_id: "arena:atacar", style: 1, emoji: { name: "⚔️" }, label: "Atacar · Attack" },
-      { type: 2, custom_id: "arena:evoluir", style: 2, emoji: { name: "⬆️" }, label: "Evoluir · Upgrade" },
-      { type: 2, custom_id: "arena:perfil", style: 2, emoji: { name: "🏆" }, label: "Meu perfil · My profile" },
+      /* Um rótulo só, em inglês. "Atacar · Attack" em quatro botões era metade
+         da altura do cartão gasta repetindo a mesma palavra -- e o emoji já
+         diz o que o botão faz para quem não lê nenhuma das duas. */
+      { type: 2, custom_id: "arena:atacar", style: 1, emoji: { name: "⚔️" }, label: "Attack" },
+      { type: 2, custom_id: "arena:evoluir", style: 2, emoji: { name: "⬆️" }, label: "Upgrade" },
+      { type: 2, custom_id: "arena:perfil", style: 2, emoji: { name: "🏆" }, label: "My profile" },
       /* O botao que resolve o placar em portugues.
          A mensagem fixada e' uma so' e nunca vai falar cinco linguas ao mesmo
          tempo. Isto da' a cada pessoa a copia dela, efemera e no idioma dela --
          e e' o mesmo desenho do /arena, pra quem esta olhando o cartao e nao
          quer sair dele pra digitar um comando. */
-      { type: 2, custom_id: "arena:placar", style: 2, emoji: { name: "🌐" }, label: "Na minha língua · My language" },
+      { type: 2, custom_id: "arena:placar", style: 2, emoji: { name: "🌐" }, label: "My language" },
     ],
   }];
 }
@@ -5111,6 +5128,14 @@ async function respostaDaArena(inter, idioma, embed) {
    de cache que nunca mais se repete, e um placar que muda o dia todo viraria
    traducao paga por clique, sem teto. */
 async function placarPessoal(estado, idioma, eu, escolheu = true) {
+  /* Origem INGLÊS, e é a linha que mais importa aqui.
+
+     O cartão fixado passou a ser escrito em inglês. Se este molde continuasse
+     saindo pelo traduzirEmbed, que pula o português por ser a língua em que o
+     resto do bot está escrito, o brasileiro apertaria 🌐 e receberia o mesmo
+     inglês de volta -- exatamente o defeito que a NYX encontrou, de cabeça
+     para baixo, e na maioria de hoje. */
+  const T = falaFixa(idioma, MOTOR_AUTO, "en");
   const { times, temporada, servidores } = estado;
   /* O palpite do Discord diz em que lingua FALAR com a pessoa. Ele nao diz
      por que time ela luta -- isso so' a escolha dela diz.
@@ -5123,54 +5148,53 @@ async function placarPessoal(estado, idioma, eu, escolheu = true) {
   const campos = [{
     /* Dia e mes, e nao a data do banco: "2026-08-31" e' como eu guardo a
        semana, nao como alguem a le. */
-    name: "Temporada",
+    name: await T("Season"),
     value: `${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)} 🌍`,
     inline: true,
   }];
 
   if (meuTime) {
     campos.push({
-      name: "Seu time",
+      name: await T("Your team"),
       value: `${bandeiraDoIdioma(idioma) || "🌐"} 🏆 ${meuTime.vitorias} · ⚔️ ${meuTime.forca}${setaDoTime(meuTime)}`,
       inline: true,
     });
   }
   if (doServidor > 0) {
-    campos.push({ name: "Seu servidor", value: `🏆 ${doServidor}`, inline: true });
+    campos.push({ name: await T("Your server"), value: `🏆 ${doServidor}`, inline: true });
   }
   if (eu) {
     const hoje = eu.dia === diaISO(Date.now()) ? eu.ataques_dia : 0;
-    campos.push({ name: "Você", value: `⚔️ ${eu.poder ?? 1} · 🪙 ${eu.ouro ?? 0} · 🏆 ${eu.vitorias ?? 0}`, inline: true });
-    campos.push({ name: "Ataques hoje", value: `${hoje} / ${ARENA_ATAQUES_DIA}`, inline: true });
+    campos.push({ name: await T("You"), value: `⚔️ ${eu.poder ?? 1} · 🪙 ${eu.ouro ?? 0} · 🏆 ${eu.vitorias ?? 0}`, inline: true });
+    campos.push({ name: await T("Attacks today"), value: `${hoje} / ${ARENA_ATAQUES_DIA}`, inline: true });
   }
   /* Igual ao fixado: numero de servidores so' a partir de cinco, e nome de
      servidor nunca -- ranking com nome de cliente entrega a lista de clientes. */
   if (servidores >= 5) {
-    campos.push({ name: "Servidores", value: `${servidores}`, inline: true });
+    campos.push({ name: await T("Servers"), value: `${servidores}`, inline: true });
   }
   /* Quem nunca escolheu lingua VE o placar -- so' nao joga ainda. Barrar a
      leitura seria fechar a porta na cara de quem chegou pelo cartao; o convite
      vai no fim, ja na lingua do aparelho dela. */
   if (!escolheu) {
     campos.push({
-      name: "🌐 Escolha sua língua para entrar",
-      value: "Você luta pela bandeira que escolheu. Use **/mylanguage**, " +
-        "ou passe no canal de idiomas.",
+      name: await T("🌐 Pick your language to join"),
+      value: await T("You fight for the flag you picked. Use **/mylanguage**, " +
+        "or drop by the language channel."),
     });
   }
 
-  const molde = {
-    title: "⚔️ Arena das Línguas",
+  return {
+    color: COR,
+    title: await T("⚔️ Language Arena"),
+    /* A tabela continua fora do tradutor: bandeira, número e o nome de cada
+       língua escrito nela mesma. */
+    description: times.length
+      ? linhasDoPlacar(times, escolheu ? idioma : "")
+      : await T(ARENA_VAZIA),
     fields: campos,
-    footer: { text: LEGENDA_ARENA },
+    footer: { text: await T(LEGENDA_ARENA) },
   };
-  /* Sem times nao ha' tabela, e a frase que explica isso PRECISA ser traduzida
-     -- entao ela entra no molde, e nao na descricao montada depois. */
-  if (!times.length) molde.description = ARENA_VAZIA;
-
-  const pronto = await traduzirEmbed(molde, idioma, MOTOR_AUTO);
-  if (times.length) pronto.description = linhasDoPlacar(times, escolheu ? idioma : "");
-  return { color: COR, ...pronto };
 }
 
 /* Manda o placar pessoal de volta, com os botoes junto.
@@ -5463,7 +5487,7 @@ function botoesDoRecibo() {
    O /cyron é outra coisa: nasce do clique de UMA pessoa, e aí a língua dela
    manda. Mesmo desenho, mesmo estado, mesma função -- só o idioma muda. */
 async function montarPainel(guild, servidor, idioma = "") {
-  const T = falaDoPainel(idioma, await motorDoGuild(guild.id).catch(() => MOTOR_AUTO));
+  const T = falaFixa(idioma, await motorDoGuild(guild.id).catch(() => MOTOR_AUTO));
   const fontes = await sb(
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id,tipo&order=criado_em.asc`) || [];
   const idiomas = await sb(
