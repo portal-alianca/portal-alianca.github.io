@@ -118,3 +118,36 @@ begin
   return query select false, coalesce(l.poder, 1), coalesce(l.ouro, 0);
 end;
 $$;
+
+-- ============ arena mundial ============
+-- Rodar no SQL Editor. Idempotente.
+
+-- O placar somado por IDIOMA no mundo inteiro.
+-- No banco e não no bot: por servidor dava para ler as linhas e somar em
+-- JavaScript; mundial, isso vira ler todas as linhas do mundo a cada desenho
+-- de placar -- e o placar é redesenhado a cada varredura, em todo servidor.
+create or replace function cyron_arena_placar(p_temporada date, p_servidor uuid)
+returns table (idioma text, vitorias bigint, poder bigint, jogadores bigint, meu_servidor bigint)
+language sql stable as $$
+  select a.idioma,
+    coalesce(sum(case when a.temporada = p_temporada then a.vitorias else 0 end), 0),
+    coalesce(sum(a.poder), 0),
+    count(*),
+    coalesce(sum(case when a.temporada = p_temporada and a.servidor_id = p_servidor
+                      then a.vitorias else 0 end), 0)
+  from cyron_arena a group by a.idioma;
+$$;
+
+create or replace function cyron_arena_servidores() returns bigint
+language sql stable as $$ select count(distinct servidor_id) from cyron_arena; $$;
+
+-- Quantas traduções cada idioma recebeu desde uma data.
+-- Conta tradução NOVA (o cache guarda quando erra, não quando acerta), então
+-- é um piso e não um total -- e piso verdadeiro vale mais que total inventado.
+-- Serve para o placar não nascer vazio sem inventar jogador nenhum.
+create or replace function cyron_traducoes_por_idioma(p_desde timestamptz)
+returns table (idioma text, quantas bigint)
+language sql stable as $$
+  select c.idioma, count(*) from discord_traducao_cache c
+   where c.criado_em >= p_desde group by c.idioma;
+$$;

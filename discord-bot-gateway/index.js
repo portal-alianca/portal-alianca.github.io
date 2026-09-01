@@ -4699,55 +4699,112 @@ function chanceDeVitoria(minha, alvo) {
 }
 
 /* Junta os jogadores por idioma e calcula a forca de cada time. */
-function timesDaArena(jogadores, leitores) {
-  const porIdioma = new Map();
-  for (const j of jogadores || []) {
-    const t = porIdioma.get(j.idioma) || { idioma: j.idioma, poder: 0, vitorias: 0, jogadores: 0 };
-    t.poder += Number(j.poder || 0);
-    t.vitorias += Number(j.vitorias || 0);
-    t.jogadores += 1;
-    porIdioma.set(j.idioma, t);
-  }
+/* A arena e' MUNDIAL: o time e' o idioma no mundo inteiro, e nao no servidor.
 
-  /* O tamanho do time e' quanta GENTE le naquele idioma no servidor -- e nao
-     quantos jogam. Senao o handicap premiaria o idioma que ninguem escolheu,
-     que e' o contrario do que ele existe pra fazer. */
+   Por servidor ela nascia morta. Com um servidor so', "so' a sua lingua entrou
+   na arena" e' a resposta pra sempre -- um recurso esperando clientes que
+   ainda nao existem. Mundial, ela funciona hoje, com tres pessoas online.
+
+   E o tema ja e' mundial: portugues contra arabe e' ideia de escala
+   planetaria, nao de sala. De quebra vira conversa que sai do servidor --
+   "a gente ta em terceiro no mundo" faz outra alianca perguntar que bot e'
+   esse, que e' distribuicao de graca.
+
+   `linhas` ja vem somado por idioma pelo banco (cyron_arena_placar). Somar em
+   JavaScript funcionava por servidor; mundial, seria ler todas as linhas do
+   mundo a cada desenho -- e o placar e' redesenhado a cada varredura, em todo
+   servidor.
+
+   `traduzidas` e' o numero REAL de traducoes da semana, por idioma. Ele existe
+   pra que o placar nunca nasca vazio SEM inventar jogador nenhum: no dia um ja
+   ha times, numeros e ordem, todos verdadeiros. E o efeito e' o oposto do
+   jogador falso -- em vez de esconder que o produto e' novo, mostra que ele
+   esta funcionando. */
+function timesDaArena(linhas, leitores, traduzidas) {
   const quantos = new Map((leitores || []).map((l) => [l.idioma, l.quantos]));
-  const maior = Math.max(1, ...[...porIdioma.keys()].map((i) => quantos.get(i) || 1));
+  const traduz = new Map(Object.entries(traduzidas || {}));
 
-  const times = [...porIdioma.values()].map((t) => {
-    const gente = quantos.get(t.idioma) || 1;
+  /* Idioma que ainda nao tem jogador, mas TEM traducao, entra no placar
+     mesmo assim -- e' dele que vem a vida do primeiro dia. */
+  const idiomas = new Set([
+    ...(linhas || []).map((l) => l.idioma),
+    ...traduz.keys(),
+  ]);
+
+  const maior = Math.max(1, ...[...idiomas].map((i) => quantos.get(i) || 1));
+  const porIdioma = new Map((linhas || []).map((l) => [l.idioma, l]));
+
+  const times = [...idiomas].map((idioma) => {
+    const l = porIdioma.get(idioma) || {};
+    const gente = quantos.get(idioma) || 1;
     const handicap = handicapDoTime(gente, maior);
-    return { ...t, gente, handicap, forca: Math.round(t.poder * handicap) };
+    const poder = Number(l.poder || 0);
+    return {
+      idioma,
+      poder,
+      vitorias: Number(l.vitorias || 0),
+      jogadores: Number(l.jogadores || 0),
+      meuServidor: Number(l.meu_servidor || 0),
+      traducoes: Number(traduz.get(idioma) || 0),
+      gente,
+      handicap,
+      forca: Math.round(poder * handicap),
+    };
   });
-  return times.sort((a, b) => b.vitorias - a.vitorias || b.forca - a.forca);
+
+  /* Vitorias mandam; empate desempata pela forca, e depois pelas traducoes --
+     que e' o unico criterio que existe antes de alguem atacar. */
+  return times.sort((a, b) =>
+    b.vitorias - a.vitorias || b.forca - a.forca || b.traducoes - a.traducoes);
 }
 
 const MEDALHA = ["🥇", "🥈", "🥉"];
 
-function placarDaArena(times, temporada) {
+function placarDaArena(times, temporada, servidores = 0) {
   const linhas = times.length
     ? times.slice(0, 12).map((t, i) => {
         /* Duas setas quando o handicap e' grande: e' o convite pra entrar
            no time pequeno, e ele precisa ser visivel sem explicacao. */
         const seta = t.handicap >= 1.5 ? " ▲▲" : t.handicap >= 1.2 ? " ▲" : "";
-        return `${MEDALHA[i] || "　"} ${nomeDoIdioma(t.idioma)} — **${t.vitorias}**` +
-          ` · força ${t.forca}${seta}`;
+        /* Antes de alguem atacar, o que ha' para mostrar sao as traducoes --
+           e elas sao verdadeiras. Depois, a forca manda e a traducao vira
+           coadjuvante. */
+        const direita = t.poder
+          ? `força ${t.forca}${seta}`
+          : `${t.traducoes} traduções${seta}`;
+        return `${MEDALHA[i] || "　"} ${nomeDoIdioma(t.idioma)} — **${t.vitorias}** · ${direita}`;
       }).join("\n")
-    : "_Ninguém entrou na arena ainda. Toque em ⚔️ e você é o primeiro._\n" +
-      "_Nobody has entered yet. Tap ⚔️ and you're the first._";
+    : "_A arena abre quando a primeira mensagem for traduzida._\n" +
+      "_The arena opens when the first message gets translated._";
+
+  const meu = times.reduce((a, t) => a + (t.meuServidor || 0), 0);
+  const partes = [
+    /* Dia e mês, e não a data do banco: "2026-08-31" é como eu guardo a
+       semana, não como alguém a lê. */
+    `**Temporada de ${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)}**` +
+    " · mundial / _worldwide_ · termina domingo / _ends Sunday_",
+    "",
+    linhas,
+  ];
+
+  /* A contribuicao do servidor so' aparece quando ha' o que contribuir.
+     "0 vitorias" toda semana e' o bot lembrando que ninguem jogou. */
+  if (meu > 0) {
+    partes.push("", `🏠 **Seu servidor:** ${meu} ${meu === 1 ? "vitória" : "vitórias"} · _your server_`);
+  }
+
+  /* E o numero de servidores so' a partir de cinco. Hoje seria "1 de 1", que
+     anuncia fraqueza justamente pro visitante que a gente quer impressionar --
+     e nome de servidor nunca aparece, porque ranking com nome de cliente
+     entrega a lista de clientes pra qualquer um que entre aqui. */
+  if (servidores >= 5) {
+    partes.push(`_${servidores} servidores na arena / servers in the arena_`);
+  }
 
   return {
     color: COR,
     title: "⚔️ Arena das Línguas · Language Arena",
-    description: [
-      /* Dia e mês, e não a data do banco: "2026-08-31" é como eu guardo a
-         semana, não como alguém a lê. */
-      `**Temporada de ${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)}**` +
-      " · termina domingo / _ends Sunday_",
-      "",
-      linhas,
-    ].join("\n"),
+    description: partes.join("\n"),
     footer: {
       text: `Você luta pela bandeira que escolheu. Time pequeno bate mais forte (▲).\n` +
         `${ARENA_ATAQUES_DIA} ataques por dia · You fight for the flag you picked; ` +
@@ -4776,19 +4833,26 @@ async function jogadoresDaArena(servidorId) {
 }
 
 async function estadoDaArena(guild, servidor) {
-  const [jogadores, salas] = await Promise.all([
-    jogadoresDaArena(servidor.id),
-    sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,role_id`).catch(() => null),
-  ]);
   const temporada = semanaDe();
-  /* Vitoria de temporada passada nao conta no placar de hoje. A linha so' e'
-     zerada quando a pessoa joga de novo -- ate' la', ignorar aqui e' o que
-     mantem o placar honesto sem escrever no banco pra ninguem. */
-  const desta = jogadores.map((j) => (j.temporada === temporada ? j : { ...j, vitorias: 0 }));
+  const desde = new Date(Date.now() - SEMANA).toISOString();
+
+  /* Tudo de uma vez, e tudo tolerante: funcao que ainda nao exista no banco
+     devolve vazio e o placar perde uma coluna, em vez de a arena inteira
+     sumir. O bot continua traduzindo de qualquer jeito. */
+  const [linhas, salas, traducoes, servidores] = await Promise.all([
+    rpc("cyron_arena_placar", { p_temporada: temporada, p_servidor: servidor.id }).catch(() => null),
+    sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,role_id`).catch(() => null),
+    rpc("cyron_traducoes_por_idioma", { p_desde: desde }).catch(() => null),
+    rpc("cyron_arena_servidores", {}).catch(() => null),
+  ]);
+
+  const porIdioma = Object.fromEntries(
+    (traducoes || []).map((t) => [t.idioma, Number(t.quantas || 0)]));
+
   return {
     temporada,
-    jogadores: desta,
-    times: timesDaArena(desta, leitoresPorIdioma(guild, salas || [])),
+    servidores: Number(servidores) || 0,
+    times: timesDaArena(linhas || [], leitoresPorIdioma(guild, salas || []), porIdioma),
   };
 }
 
@@ -4801,8 +4865,11 @@ async function desenharArena(guild, servidor) {
     (c) => c.type === ChannelType.GuildText && c.name === CANAL_ARENA);
   if (!canal) return;
 
-  const { times, temporada } = await estadoDaArena(guild, servidor);
-  const carga = { embeds: [placarDaArena(times, temporada)], components: botoesDaArena() };
+  const { times, temporada, servidores } = await estadoDaArena(guild, servidor);
+  const carga = {
+    embeds: [placarDaArena(times, temporada, servidores)],
+    components: botoesDaArena(),
+  };
 
   const fixadas = await canal.messages.fetchPinned().catch(() => null);
   const minha = fixadas?.find((m) => m.author?.id === client.user.id);
@@ -4877,14 +4944,23 @@ async function cliqueArena(inter) {
   /* Atacar: o alvo e' o time mais forte que nao seja o seu. Escolher o alvo
      seria mais uma tela entre a vontade e o clique -- e o mais forte e' o
      alvo que a pessoa escolheria de qualquer jeito. */
-  const alvo = times.find((t) => t.idioma !== idioma);
-  if (!alvo) {
-    return inter.editReply({
-      embeds: [{ color: COR, title: "🕊️ Ninguém para enfrentar ainda",
-        description: "Só a sua língua entrou na arena. Chame gente de outro idioma.\n\n" +
-          "_Yours is the only language here yet. Bring someone from another._" }],
-    });
-  }
+  /* Quem esta sozinho bate n'A CASA, e nao no vazio.
+
+     A alternativa que eu recusei foi criar jogadores falsos pra encher o
+     placar: um adversario inventado com cara de gente e' registro fabricado
+     apresentado como verdadeiro, e quem descobre que o placar e' invencao
+     passa a duvidar da traducao junto -- e a traducao e' o que se vende.
+
+     A Casa e' o contrario disso: ela se anuncia. Ninguem confunde "🏰 A Casa"
+     com uma pessoa, e todo jogo tem boneco de treino. E' honesto porque nao
+     finge ser ninguem.
+
+     A forca dela acompanha a de quem bate, entao ela nao e' presa facil nem
+     muro: da' pra ganhar e da' pra perder, que e' o unico jeito de valer
+     alguma coisa. */
+  const aCasa = { idioma: null, forca: Math.max(2, Math.round((meu?.forca ?? 1) * 0.9)) };
+  const alvo = times.find((t) => t.idioma !== idioma && t.poder > 0) || aCasa;
+  const nomeDoAlvo = alvo.idioma ? nomeDoIdioma(alvo.idioma) : "🏰 A Casa / The House";
 
   const chance = chanceDeVitoria(meu?.forca ?? 1, alvo.forca);
   const venceu = Math.random() < chance;
@@ -4910,7 +4986,7 @@ async function cliqueArena(inter) {
       color: COR,
       title: venceu ? "⚔️ Vitória!" : "🛡️ Derrota",
       description: [
-        `${nomeDoIdioma(idioma)} × ${nomeDoIdioma(alvo.idioma)}`,
+        `${nomeDoIdioma(idioma)} × ${nomeDoAlvo}`,
         `Chance: **${Math.round(chance * 100)}%**`,
         "",
         `🪙 **+${venceu ? 5 : 1}** · total **${r.ouro}** · 🏆 **${r.vitorias}**`,

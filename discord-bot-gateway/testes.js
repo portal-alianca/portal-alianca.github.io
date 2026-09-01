@@ -2006,18 +2006,20 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     chanceDeVitoria(-5, 100) >= 0.1 && chanceDeVitoria(-5, 100) <= 0.9);
 
   /* ---- os times ---- */
-  const jogadores = [
-    { idioma: "pt", poder: 10, vitorias: 3 },
-    { idioma: "pt", poder: 5, vitorias: 1 },
-    { idioma: "de", poder: 8, vitorias: 9 },
+  /* Já somado pelo banco (cyron_arena_placar): mundial, somar em JavaScript
+     seria ler todas as linhas do mundo a cada desenho de placar. */
+  const linhasDoBanco = [
+    { idioma: "pt", poder: 15, vitorias: 4, jogadores: 2, meu_servidor: 4 },
+    { idioma: "de", poder: 8, vitorias: 9, jogadores: 1, meu_servidor: 0 },
   ];
   const leitores = [{ idioma: "pt", quantos: 14 }, { idioma: "de", quantos: 4 }];
-  const times = timesDaArena(jogadores, leitores);
+  const times = timesDaArena(linhasDoBanco, leitores, {});
 
   ok("dois times", times.length, 2);
   ok("o placar é por vitórias da temporada", times[0].idioma, "de");
-  ok("o poder do time é a soma dos jogadores", times.find((t) => t.idioma === "pt").poder, 15);
-  ok("e conta quantos jogam", times.find((t) => t.idioma === "pt").jogadores, 2);
+  ok("o poder vem somado do banco", times.find((t) => t.idioma === "pt").poder, 15);
+  ok("e quantos jogam também", times.find((t) => t.idioma === "pt").jogadores, 2);
+  ok("a contribuição do servidor vem junto", times.find((t) => t.idioma === "pt").meuServidor, 4);
   /* O tamanho do time é quanta GENTE lê naquele idioma, não quantos jogam --
      senão o handicap premiaria o idioma que ninguém escolheu, que é o
      contrário do que ele existe para fazer. */
@@ -2026,10 +2028,19 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("e o time pequeno fica mais forte que o poder cru dele",
     times.find((t) => t.idioma === "de").forca > 8);
 
-  ok("sem jogadores, sem times", timesDaArena([], leitores).length, 0);
+  ok("sem jogadores e sem traduções, sem times", timesDaArena([], leitores, {}).length, 0);
+
+  /* O placar não nasce vazio SEM inventar jogador: idioma que ainda não tem
+     ninguém jogando, mas TEM tradução de verdade, entra assim mesmo. É daí
+     que vem a vida do primeiro dia, e o número é real. */
+  const soTraducao = timesDaArena([], leitores, { pt: 620, ar: 180 });
+  ok("idioma com tradução e sem jogador entra no placar", soTraducao.length, 2);
+  ok("e o primeiro é quem mais traduziu", soTraducao[0].idioma, "pt");
+  ok("com poder zero, porque ninguém jogou", soTraducao[0].poder, 0);
+  ok("e as traduções contadas", soTraducao[0].traducoes, 620);
   /* Idioma sem leitor cadastrado não pode quebrar a conta. */
   verdade("jogador de idioma sem leitores ainda entra",
-    timesDaArena([{ idioma: "ja", poder: 2, vitorias: 0 }], leitores).length === 1);
+    timesDaArena([{ idioma: "ja", poder: 2, vitorias: 0 }], leitores, {}).length === 1);
 
   /* ---- o placar ---- */
   const placar = placarDaArena(times, "2026-08-31");
@@ -2041,8 +2052,29 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     /bate mais forte/.test(placar.footer.text) && /smaller teams hit harder/i.test(placar.footer.text));
 
   const vazio = placarDaArena([], "2026-08-31");
-  verdade("arena vazia convida em vez de mostrar tabela vazia", /primeiro/i.test(vazio.description));
-  verdade("e convida em inglês também", /you're the first/i.test(vazio.description));
+  verdade("arena sem nada explica que ela abre com a primeira tradução",
+    /primeira mensagem for traduzida/i.test(vazio.description));
+  verdade("e explica em inglês também", /first message gets translated/i.test(vazio.description));
+
+  /* ---- mundial, e sem entregar a lista de clientes ---- */
+  verdade("o placar se diz mundial", /mundial/i.test(placar.description));
+  /* Nome de servidor nunca aparece: ranking com nome de cliente entrega a
+     lista de clientes para qualquer um que entre num servidor. */
+  const comContribuicao = placarDaArena(times, "2026-08-31", 12);
+  verdade("a contribuição do servidor aparece", /Seu servidor/.test(comContribuicao.description));
+  verdade("com 12 servidores, o número aparece", /12 servidores/.test(comContribuicao.description));
+
+  /* "1 de 1" anuncia fraqueza justamente para o visitante que se quer
+     impressionar. Só a partir de cinco. */
+  const sozinho = placarDaArena(times, "2026-08-31", 1);
+  verdade("com um servidor só, o número não aparece", !/servidores na arena/.test(sozinho.description));
+  const quatro = placarDaArena(times, "2026-08-31", 4);
+  verdade("nem com quatro", !/servidores na arena/.test(quatro.description));
+
+  /* Servidor que não contribuiu com nada não vê "0 vitórias" toda semana. */
+  const semContribuir = placarDaArena(
+    times.map((t) => ({ ...t, meuServidor: 0 })), "2026-08-31", 12);
+  verdade("sem contribuição, a linha some", !/Seu servidor/.test(semContribuir.description));
 
   /* Doze times é o teto do desenho; vinte idiomas não podem estourar o embed. */
   const muitos = timesDaArena(
@@ -2095,6 +2127,23 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     fonteDoBot.indexOf("async function deHoraEmHora"));
   verdade("atualizarArenas está dentro da varredura, e viva",
     /^\s*await atualizarArenas\(\)/m.test(passada));
+
+  /* ---- A Casa se anuncia, e não finge ser gente ----
+
+     A alternativa recusada foi criar jogadores falsos para encher o placar.
+     Adversário inventado com cara de pessoa é registro fabricado apresentado
+     como verdadeiro -- e quem descobre que o placar é invenção passa a duvidar
+     da tradução junto, que é o que se vende.
+
+     O teste prende a diferença: o nome d'A Casa tem que se anunciar, e não
+     pode existir nenhum jogador semeado no banco. */
+  const fonteCasa = readFileSync(`${aqui}/index.js`, "utf8");
+  verdade("A Casa se identifica no próprio nome", /A Casa \/ The House/.test(fonteCasa));
+  verdade("e ela não tem idioma, então não entra no placar como time",
+    /idioma: null, forca:/.test(fonteCasa));
+  /* Nenhum insert de jogador que não venha de um ataque real de alguém. */
+  const inserts = [...fonteCasa.matchAll(/sbPost\("cyron_arena"/g)].length;
+  ok("o bot nunca insere jogador direto na arena", inserts, 0);
 
   /* ---- fixar não pode deixar rastro na sala ----
 
