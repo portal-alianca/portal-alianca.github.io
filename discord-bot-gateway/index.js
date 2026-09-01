@@ -11,7 +11,7 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType, MessageType } from "discord.js";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -3800,6 +3800,32 @@ async function fecharPortao(canal) {
   console.log(`portaria: #${canal.name} fechado pra escrita`);
 }
 
+/* Fixar deixa um rastro, e o rastro fica na sala.
+
+   O Discord anuncia cada fixada com uma mensagem de sistema no proprio canal
+   -- "CYRON fixou uma mensagem". Num canal que existe pra ter UM cartao, esse
+   aviso e' a segunda mensagem; e como eu re-fixo sempre que o cartao e'
+   reposto, a sala vai juntando avisos com o tempo.
+
+   Duas tentativas porque o aviso costuma chegar DEPOIS do retorno do pin: uma
+   olhada imediata muitas vezes nao acha nada, e desistir na primeira deixaria
+   o rastro justamente nas vezes em que a rede esta lenta.
+
+   Precisa de "Gerenciar mensagens". Onde nao houver, o aviso fica -- feio, e
+   nada mais: nunca vale derrubar o que funciona por causa de enfeite. */
+async function apagarAvisoDeFixado(canal, depoisDe) {
+  for (const espera of [500, 2000]) {
+    await new Promise((r) => setTimeout(r, espera));
+    const recentes = await canal.messages
+      .fetch({ limit: 5, after: depoisDe }).catch(() => null);
+    const aviso = recentes?.find((m) => m.type === MessageType.ChannelPinnedMessage);
+    if (aviso) {
+      await aviso.delete().catch(() => {});
+      return;
+    }
+  }
+}
+
 async function garantirConvites() {
   for (const [, guild] of client.guilds.cache) {
     try {
@@ -3855,6 +3881,7 @@ async function garantirConvites() {
           });
           await posta.pin("convite de idioma").catch((e) =>
             console.error("portaria: nao consegui fixar em", canal.name, e?.message || e));
+          await apagarAvisoDeFixado(canal, posta.id);
 
           await sbPatch(
             `discord_convite_idioma?servidor_id=eq.${servidorId}&canal_id=eq.${encodeURIComponent(porta.canal_id)}`,
@@ -4782,7 +4809,10 @@ async function desenharArena(guild, servidor) {
   if (minha) return void await minha.edit(carga).catch(() => {});
 
   const nova = await canal.send(carga).catch(() => null);
-  if (nova) await nova.pin("placar da arena").catch(() => {});
+  if (nova) {
+    await nova.pin("placar da arena").catch(() => {});
+    await apagarAvisoDeFixado(canal, nova.id);
+  }
 }
 
 async function cliqueArena(inter) {
@@ -5180,6 +5210,7 @@ async function cartaoDeConfig(guild, servidor) {
 
   const nova = await canal.send({ embeds: [embed], components: componentes, allowedMentions: { parse: [] } });
   await nova.pin("painel do CYRON").catch(() => {});
+  await apagarAvisoDeFixado(canal, nova.id);
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_config: nova.id });
   servidor.msg_config = nova.id;
 }
@@ -6298,6 +6329,7 @@ async function cartaoDoCliente(guild, servidor) {
   if (canal.archived) await canal.setArchived(false, "primeira ficha").catch(() => {});
   const nova = await canal.send({ embeds: [embed], components: botoesDaFicha(servidor) });
   await nova.pin("ficha do cliente").catch(() => {});
+  await apagarAvisoDeFixado(canal, nova.id);
   await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { msg_admin: nova.id });
   servidor.msg_admin = nova.id;
 }
