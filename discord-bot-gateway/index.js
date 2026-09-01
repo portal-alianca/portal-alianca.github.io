@@ -4923,11 +4923,22 @@ async function cliqueArena(inter) {
 
   if (acao === "evoluir") {
     const custo = custoDeEvoluir(eu?.poder ?? 1);
+    /* O erro do banco vai pro log, e nao pro lixo.
+
+       Esta linha era `.catch(() => null)`. Ela engoliu, por horas, uma
+       mensagem exata e acionavel -- "column reference ouro is ambiguous" --
+       e mostrou "a arena nao respondeu agora" no lugar. Eu passei a noite sem
+       conseguir dizer se o jogo funcionava, com a resposta escrita e jogada
+       fora a cada clique. Silencio nao e' robustez; e' o defeito de amanha
+       sem pista. */
     const r = (await rpc("cyron_arena_evoluir", {
       p_servidor: servidor.id, p_user: inter.user.id, p_custo: custo,
-    }).catch(() => null))?.[0];
+    }).catch((e) => {
+      console.error("arena: evoluir falhou:", e?.message || e);
+      return null;
+    }))?.[0];
 
-    if (!r?.ok) {
+    if (!r?.r_ok) {
       return inter.editReply({
         embeds: [{ color: COR, title: "🪙 Falta ouro",
           description: `Evoluir custa **${custo}** 🪙 e você tem **${r?.ouro ?? 0}**.\n` +
@@ -4937,7 +4948,7 @@ async function cliqueArena(inter) {
     await desenharArena(inter.guild, servidor);
     return inter.editReply({
       embeds: [{ color: COR, title: "⬆️ Evoluiu",
-        description: `⚔️ Poder **${r.poder}** · 🪙 Ouro **${r.ouro}**` }],
+        description: `⚔️ Poder **${r.r_poder}** · 🪙 Ouro **${r.r_ouro}**` }],
     });
   }
 
@@ -4968,12 +4979,15 @@ async function cliqueArena(inter) {
     p_servidor: servidor.id, p_user: inter.user.id, p_idioma: idioma,
     p_max_dia: ARENA_ATAQUES_DIA, p_venceu: venceu,
     p_hoje: diaISO(Date.now()), p_temporada: temporada,
-  }).catch(() => null))?.[0];
+  }).catch((e) => {
+    console.error("arena: atacar falhou:", e?.message || e);
+    return null;
+  }))?.[0];
 
   if (!r) {
     return inter.editReply({ content: "A arena não respondeu agora. Tente de novo em instantes." });
   }
-  if (!r.ok) {
+  if (!r.r_ok) {
     return inter.editReply({
       embeds: [{ color: COR, title: "😴 Acabaram seus ataques de hoje",
         description: `Volta amanhã com mais ${ARENA_ATAQUES_DIA}.\n\n_Out of attacks — back tomorrow._` }],
@@ -4989,8 +5003,8 @@ async function cliqueArena(inter) {
         `${nomeDoIdioma(idioma)} × ${nomeDoAlvo}`,
         `Chance: **${Math.round(chance * 100)}%**`,
         "",
-        `🪙 **+${venceu ? 5 : 1}** · total **${r.ouro}** · 🏆 **${r.vitorias}**`,
-        `Ataques hoje: **${r.ataques_dia}** de ${ARENA_ATAQUES_DIA}`,
+        `🪙 **+${venceu ? 5 : 1}** · total **${r.r_ouro}** · 🏆 **${r.r_vitorias}**`,
+        `Ataques hoje: **${r.r_ataques}** de ${ARENA_ATAQUES_DIA}`,
       ].join("\n"),
     }],
   });

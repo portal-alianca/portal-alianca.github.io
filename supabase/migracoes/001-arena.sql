@@ -41,7 +41,7 @@ create or replace function cyron_arena_atacar(
   p_venceu    boolean,
   p_hoje      date,
   p_temporada date
-) returns table (ok boolean, motivo text, poder int, ouro int, vitorias int, ataques_dia int)
+) returns table (r_ok boolean, r_motivo text, r_poder int, r_ouro int, r_vitorias int, r_ataques int)
 language plpgsql
 as $$
 declare
@@ -81,7 +81,7 @@ begin
          dia           = p_hoje,
          temporada     = p_temporada,
          vitorias      = l.vitorias + case when p_venceu then 1 else 0 end,
-         ouro          = ouro + case when p_venceu then 5 else 1 end,
+         ouro          = l.ouro + case when p_venceu then 5 else 1 end,
          idioma        = p_idioma,
          atualizado_em = now()
    where servidor_id = p_servidor and discord_user_id = p_user
@@ -97,16 +97,16 @@ create or replace function cyron_arena_evoluir(
   p_servidor uuid,
   p_user     text,
   p_custo    integer
-) returns table (ok boolean, poder int, ouro int)
+) returns table (r_ok boolean, r_poder int, r_ouro int)
 language plpgsql
 as $$
 declare
   l cyron_arena;
 begin
-  update cyron_arena
-     set poder = poder + 1, ouro = ouro - p_custo, atualizado_em = now()
-   where servidor_id = p_servidor and discord_user_id = p_user and ouro >= p_custo
-   returning * into l;
+  update cyron_arena a
+     set poder = a.poder + 1, ouro = a.ouro - p_custo, atualizado_em = now()
+   where a.servidor_id = p_servidor and a.discord_user_id = p_user and a.ouro >= p_custo
+   returning a.* into l;
 
   if found then
     return query select true, l.poder, l.ouro;
