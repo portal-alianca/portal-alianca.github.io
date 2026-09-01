@@ -6261,6 +6261,28 @@ const ESPERA_AVISO = 60 * 60 * 1000;
    aparece cru e assumido como tal, em vez de fingir que e' grave. */
 const EXPLICA_ERRO = [
   {
+    /* ANTES da regra do banco, e por causa dela.
+
+       "fetch failed", "ECONNRESET" e afins sao os mesmos sintomas de rede
+       venham de onde vierem -- e a regra do banco os reivindicava todos. Uma
+       traducao que nao voltou aparecia como "O banco de dados piscou", que
+       manda olhar o status.supabase.com por um problema que nao e' de la'.
+       Explicacao errada e' pior que nenhuma: ela custa o tempo de quem foi
+       procurar no lugar indicado.
+
+       Por isso a palavra "tradutor" tem que estar perto do sintoma: e' o
+       proprio comeco da linha de log, e e' ela que diz de quem e' a falha. */
+    quando: /tradutor.{0,60}(aborted due to timeout|TimeoutError|ETIMEDOUT|fetch failed|ECONNRESET|socket hang up|EAI_AGAIN)/i,
+    titulo: "O tradutor demorou demais e eu desisti de esperar",
+    precisaDeVoce: false,
+    oque: "Pedi uma tradução e o serviço não respondeu em 8 segundos, então cortei a espera. " +
+      "Quase sempre é a rede no meio do caminho, e não a chave: ela continua válida.\n\n" +
+      "Deixo esse motor de molho por 2 minutos e a fala sai pelos tradutores grátis. " +
+      "Ninguém fica sem tradução — no máximo ela chega um pouco pior nesses dois minutos.",
+    fazer: "Nada. Só vale olhar se aparecer muitas vezes no mesmo dia, e sempre com o mesmo " +
+      "motor: aí é o serviço, e não a rede.",
+  },
+  {
     quando: /supabase 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network|EAI_AGAIN/i,
     titulo: "O banco de dados piscou",
     precisaDeVoce: false,

@@ -217,6 +217,38 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   ok("429 dentro de um número não vira alarme", titulo("idioma", "canal 1429384 sumiu"), null);
   ok("clique vencido é calmo", explicarErro("interacao", "falhou: Unknown interaction").precisaDeVoce, false);
   ok("erro que eu não conheço aparece cru", titulo("zzz", "coisa que nunca vi"), null);
+
+  /* ---- a linha que o cartão "não sei explicar" trouxe ----
+
+     Foi assim que ela chegou, palavra por palavra. `explicarErro` recebe o
+     que vem ANTES do primeiro ":" como `onde` e todo o resto como `porque`,
+     que é como o embrulho do console.error parte a linha. */
+  const timeout = explicarErro("tradutor",
+    "chave azure do dono falhou: The operation was aborted due to timeout");
+  verdade("o tempo esgotado do tradutor tem explicação agora", !!timeout);
+  ok("e ele não precisa de você", timeout.precisaDeVoce, false);
+  verdade("a explicação diz que a chave continua boa", /chave/i.test(timeout.oque));
+  verdade("e que a fala sai pelos grátis mesmo assim", /grátis/i.test(timeout.oque));
+
+  /* ---- e não pode voltar a ser reclassificado como banco ----
+
+     A regra do banco reivindica "fetch failed", "ECONNRESET" e afins, e ela
+     vem primeiro no arquivo desde sempre. Uma tradução que não voltou
+     aparecia como "O banco de dados piscou" e mandava conferir o
+     status.supabase.com por um problema que não é de lá. Explicação errada
+     custa o tempo de quem foi procurar no lugar indicado. */
+  for (const sintoma of ["fetch failed", "ECONNRESET", "socket hang up", "ETIMEDOUT"]) {
+    ok(`"${sintoma}" vindo do tradutor não vira problema de banco`,
+      titulo("tradutor", `chave azure do dono falhou: ${sintoma}`),
+      timeout.titulo);
+  }
+  /* Mas o banco continua dono dos sintomas dele: a regra nova exige a palavra
+     "tradutor" perto, senão ela roubaria os erros de todo o resto do bot. */
+  ok("o mesmo sintoma vindo do banco continua sendo do banco",
+    titulo("espelho", "passada curta falhou: fetch failed"), "O banco de dados piscou");
+  ok("e um tempo esgotado longe do tradutor não é adivinhado",
+    titulo("herois", "algo muito, muito longo aqui no meio de uma frase enorme que separa " +
+      "as duas palavras: aborted due to timeout"), null);
 }
 
 /* ================= a lista de tradutores do painel ================= */
