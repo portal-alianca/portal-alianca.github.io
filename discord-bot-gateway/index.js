@@ -4065,7 +4065,14 @@ async function instalarServidor(guild) {
      continua traduzindo, que e' o que ele veio fazer. */
   await canalPorNomeOuCria(guild, CANAL_ARENA,
     "Lute pela bandeira que você escolheu. Time pequeno bate mais forte.")
-    .then((canal) => console.log(`instalar: arena em #${canal.name}`))
+    .then(async (canal) => {
+      console.log(`instalar: arena em #${canal.name}`);
+      /* O placar vai JUNTO com o canal.
+         Criar a sala e deixar para desenhar depois foi o defeito: os botoes
+         moram dentro do placar, entao sem ele nao ha' o que clicar, e o jogo
+         inteiro fica atras de uma porta que nao existe. */
+      await desenharArena(guild, servidor);
+    })
     .catch((e) => console.error("instalar: nao consegui criar a arena:", e?.message || e));
 
   cacheServidor.delete(guild.id); // a proxima mensagem ja enxerga o servidor novo
@@ -7164,6 +7171,29 @@ async function atualizarCartoes() {
   }
 }
 
+/* O placar da arena, mantido de pe pela varredura.
+
+   Eu criava o CANAL na instalacao e nunca desenhava o placar: a unica coisa
+   que chamava `desenharArena` era o clique num botao que so' existe DENTRO do
+   placar. Circulo fechado -- precisa do placar pra clicar, precisa do clique
+   pra ter placar. A sala nascia vazia e o jogo inteiro ficava inalcancavel.
+
+   E' a quarta vez nesta semana que o defeito nao esta na coisa e sim em onde
+   ela aparece. O conserto e' o mesmo padrao do cartao de config aqui em cima:
+   quem mantem de pe e' a varredura, nao o evento. Assim tambem se conserta
+   sozinho se alguem apagar o placar. */
+async function atualizarArenas() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor) continue;
+      await desenharArena(guild, servidor);
+    } catch (e) {
+      console.error("arena: nao consegui desenhar em", guild.name, e?.message || e);
+    }
+  }
+}
+
 /* Sair tambem e' informacao.
 
    Sem isto, cliente que desiste some sem deixar rastro: a linha fica no banco
@@ -9814,6 +9844,7 @@ async function umaPassada() {
   await sincronizarSalas().catch((e) => console.error("espelho: sincronia falhou:", e?.message || e));
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
+  await atualizarArenas().catch((e) => console.error("arena: passada falhou:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
   await rodarComandosAgendados().catch((e) => console.error("agendado: passada falhou:", e?.message || e));
   await deHoraEmHora().catch((e) => console.error("hora: passada falhou:", e?.message || e));

@@ -2066,6 +2066,36 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("há um teto de ataques por dia", Number.isInteger(ARENA_ATAQUES_DIA) && ARENA_ATAQUES_DIA > 0);
   verdade("e ele é baixo o bastante para o custo não escapar", ARENA_ATAQUES_DIA <= 20);
 
+  /* ---- o placar existe SEM ninguém ter clicado ----
+
+     Este é o defeito que a sala vazia mostrou: eu criava o canal na instalação
+     e a única coisa que desenhava o placar era o clique num botão que só
+     existe DENTRO do placar. Círculo fechado -- precisa do placar para clicar,
+     precisa do clique para ter placar.
+
+     É a quarta vez nesta semana que o defeito não está na coisa e sim em onde
+     ela aparece, então o teste é sobre a superfície, não sobre o jogo: quem
+     desenha tem que ser algo que roda sozinho. */
+  const fonteDoBot = readFileSync(`${aqui}/index.js`, "utf8");
+  const chamadas = [...fonteDoBot.matchAll(/desenharArena\s*\(/g)].length;
+  verdade("desenharArena é chamado de mais de um lugar", chamadas >= 3); // definição + cliques + upkeep
+  /* Ancorado no começo da linha, e não em qualquer lugar do texto: a primeira
+     versão deste teste procurava a chamada solta, e uma linha COMENTADA
+     continuava passando -- provei comentando-a e vendo os testes verdes.
+     Guarda que aceita código morto é pior que guarda nenhum, porque dá
+     confiança. */
+  verdade("a varredura desenha a arena sozinha",
+    /^\s*await atualizarArenas\(\)/m.test(fonteDoBot));
+  verdade("e a instalação já deixa o placar de pé",
+    /instalar: arena em[\s\S]{0,400}desenharArena/.test(fonteDoBot));
+  /* Se atualizarArenas sair de umaPassada, o placar volta a depender de
+     clique -- e a sala volta a nascer vazia, em silêncio. */
+  const passada = fonteDoBot.slice(
+    fonteDoBot.indexOf("async function umaPassada"),
+    fonteDoBot.indexOf("async function deHoraEmHora"));
+  verdade("atualizarArenas está dentro da varredura, e viva",
+    /^\s*await atualizarArenas\(\)/m.test(passada));
+
   /* ---- a arena não gasta tradução ----
 
      A regra vale para todo recurso de engajamento: gamificar o recurso medido
