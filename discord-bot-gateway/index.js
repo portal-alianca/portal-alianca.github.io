@@ -4871,15 +4871,54 @@ async function desenharArena(guild, servidor) {
     components: botoesDaArena(),
   };
 
-  const fixadas = await canal.messages.fetchPinned().catch(() => null);
-  const minha = fixadas?.find((m) => m.author?.id === client.user.id);
-  if (minha) return void await minha.edit(carga).catch(() => {});
+  /* O ID e' o registro; o pin e' enfeite.
 
-  const nova = await canal.send(carga).catch(() => null);
-  if (nova) {
-    await nova.pin("placar da arena").catch(() => {});
-    await apagarAvisoDeFixado(canal, nova.id);
+     Eu achava o cartao pelos FIXADOS, e isso encheu a sala de placares. O
+     fetchPinned da discord.js 14.27 fala com a rota NOVA de pins e trata a
+     resposta como lista -- mas ela vem em { items: [...] }, que nao e'
+     iteravel. A chamada estoura SEMPRE, o catch engolia, o bot concluia que
+     nao havia placar, e postava outro a cada varredura.
+
+     O painel nunca teve esse problema porque guarda msg_config. Mesma
+     solucao, e sem migracao: o cyron_ajuste ja e' chave/valor. */
+  const chave = `arena_msg:${servidor.id}`;
+  const guardado = (await ajustes())[chave];
+  if (guardado) {
+    const antiga = await canal.messages.fetch(guardado).catch(() => null);
+    if (antiga) {
+      await antiga.edit(carga).catch((e) =>
+        console.error("arena: nao consegui editar o placar:", e?.message || e));
+      return;
+    }
   }
+
+  /* Antes de postar, recolhe o que o defeito anterior deixou na sala. */
+  await limparPlacaresVelhos(canal);
+
+  const nova = await canal.send(carga).catch((e) => {
+    console.error("arena: nao consegui postar o placar:", e?.message || e);
+    return null;
+  });
+  if (!nova) return;
+
+  await porAjuste(chave, nova.id);
+  await nova.pin("placar da arena").catch(() => {});
+  await apagarAvisoDeFixado(canal, nova.id);
+}
+
+/* Recolhe placares antigos meus da sala.
+
+   So' os MEUS, e so' os que sao placar: o titulo e' a assinatura. Apagar por
+   autor sozinho levaria junto qualquer outra coisa que eu tivesse postado
+   ali -- a sala e' minha, mas as mensagens nao sao todas. */
+async function limparPlacaresVelhos(canal) {
+  const recentes = await canal.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recentes) return;
+  const meus = [...recentes.values()].filter((m) =>
+    m.author?.id === client.user.id &&
+    String(m.embeds?.[0]?.title || "").startsWith("⚔️ Arena das Línguas"));
+  for (const m of meus) await m.delete().catch(() => {});
+  if (meus.length) console.log(`arena: recolhi ${meus.length} placar(es) antigo(s)`);
 }
 
 async function cliqueArena(inter) {

@@ -2175,6 +2175,37 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("o erro de atacar vai para o log", /arena: atacar falhou/.test(fonteRpc));
   verdade("o erro de evoluir também", /arena: evoluir falhou/.test(fonteRpc));
 
+  /* ---- o placar é achado pelo ID, e não pelos fixados ----
+
+     Achar pelo pin encheu a sala: o fetchPinned da discord.js 14.27 fala com a
+     rota nova de pins e trata a resposta como lista, mas ela vem em
+     { items: [...] } -- não é iterável, a chamada estoura sempre, e o bot
+     conclui que não há placar e posta outro a cada varredura.
+
+     Foi um `.catch` meu que escondeu isso pela segunda vez na mesma noite.
+     Este teste prende as duas coisas: nada de fetchPinned, e o id guardado. */
+  const fonteArena2 = readFileSync(`${aqui}/index.js`, "utf8");
+  verdade("nenhuma chamada a fetchPinned, que está quebrada nesta versão",
+    !/\.fetchPinned\s*\(/.test(fonteArena2));
+  /* A chave sozinha não prova nada: ela continua escrita mesmo se a busca for
+     destruída -- provei quebrando a linha e vendo os 900 verdes. O que prende
+     é a LEITURA do ajuste e o fetch pelo id guardado. */
+  verdade("o placar é guardado por id no cyron_ajuste",
+    /arena_msg:\$\{servidor\.id\}/.test(fonteArena2));
+  verdade("e o id guardado é realmente lido",
+    /const guardado = \(await ajustes\(\)\)\[chave\]/.test(fonteArena2));
+  verdade("e usado para buscar a mensagem",
+    /canal\.messages\.fetch\(guardado\)/.test(fonteArena2));
+  verdade("e gravado depois de postar", /porAjuste\(chave, nova\.id\)/.test(fonteArena2));
+  verdade("e o erro de editar o placar vai para o log",
+    /nao consegui editar o placar/.test(fonteArena2));
+  verdade("o de postar também", /nao consegui postar o placar/.test(fonteArena2));
+  /* Recolher placar velho tem que olhar autor E título: só o autor levaria
+     junto qualquer outra coisa que o bot tenha postado na sala. */
+  verdade("a limpeza confere o autor", /m\.author\?\.id === client\.user\.id/.test(fonteArena2));
+  verdade("e o título, para não apagar o que não é placar",
+    /startsWith\("⚔️ Arena das Línguas"\)/.test(fonteArena2));
+
   /* ---- A Casa se anuncia, e não finge ser gente ----
 
      A alternativa recusada foi criar jogadores falsos para encher o placar.
