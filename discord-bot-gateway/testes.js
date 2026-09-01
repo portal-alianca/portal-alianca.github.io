@@ -1963,6 +1963,122 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("mas o número aparece", /40 mensagens/.test(primeira.description));
 }
 
+/* ============ a Arena das Línguas ============
+
+   O time é o IDIOMA, e é isso que faz o jogo ser sobre o CYRON em vez de um
+   clicker pregado nele. A regra que sustenta tudo é o handicap: sem ela o
+   idioma com mais gente ganha sempre e os outros desistem na primeira semana. */
+{
+  const { custoDeEvoluir, handicapDoTime, chanceDeVitoria, timesDaArena,
+          placarDaArena, botoesDaArena, ARENA_ATAQUES_DIA } =
+    carregar(["CANAL_ARENA", "ARENA_ATAQUES_DIA", "MEDALHA", "nomeDoIdioma", "LINGUAS_MENU", "custoDeEvoluir", "handicapDoTime",
+      "chanceDeVitoria", "timesDaArena", "placarDaArena", "botoesDaArena"]);
+
+  /* ---- evoluir fica mais caro ---- */
+  ok("o primeiro nível custa 10", custoDeEvoluir(1), 10);
+  ok("o quinto custa 50", custoDeEvoluir(5), 50);
+  verdade("e nunca fica mais barato subindo",
+    [1, 2, 5, 10, 50].every((p, i, a) => i === 0 || custoDeEvoluir(p) > custoDeEvoluir(a[i - 1])));
+  /* Custo fixo faria o ouro virar só espera: quem clica mais sobe mais, para
+     sempre. Poder zero ou lixo não pode dar evolução de graça. */
+  verdade("poder zero ainda custa", custoDeEvoluir(0) >= 10);
+  verdade("poder inválido não zera o custo", custoDeEvoluir("abacaxi") >= 10);
+
+  /* ---- time pequeno bate mais forte ---- */
+  ok("o maior time não ganha handicap", handicapDoTime(14, 14), 1);
+  verdade("um time menor ganha", handicapDoTime(4, 14) > 1);
+  verdade("quanto menor, maior", handicapDoTime(2, 14) > handicapDoTime(7, 14));
+  /* Teto de 2x: sem ele, um time de uma pessoa venceria sempre e a vantagem
+     viraria o defeito novo. */
+  verdade("mas nunca passa de 2x", handicapDoTime(1, 100000) <= 2);
+  ok("time vazio conta como um", handicapDoTime(0, 10), handicapDoTime(1, 10));
+  verdade("lixo não quebra a conta", Number.isFinite(handicapDoTime(null, undefined)));
+
+  /* ---- a chance nunca é certeza ---- */
+  ok("forças iguais dão meio a meio", chanceDeVitoria(100, 100), 0.5);
+  verdade("mais forte tem mais chance", chanceDeVitoria(300, 100) > 0.5);
+  /* Certeza dos dois lados mata o jogo: o forte perde a graça e o fraco para
+     de tentar. */
+  ok("e o esmagador ainda pode perder", chanceDeVitoria(999999, 1), 0.9);
+  ok("o esmagado ainda pode ganhar", chanceDeVitoria(1, 999999), 0.1);
+  ok("dois zeros dão meio a meio", chanceDeVitoria(0, 0), 0.5);
+  verdade("negativo não vira chance maluca",
+    chanceDeVitoria(-5, 100) >= 0.1 && chanceDeVitoria(-5, 100) <= 0.9);
+
+  /* ---- os times ---- */
+  const jogadores = [
+    { idioma: "pt", poder: 10, vitorias: 3 },
+    { idioma: "pt", poder: 5, vitorias: 1 },
+    { idioma: "de", poder: 8, vitorias: 9 },
+  ];
+  const leitores = [{ idioma: "pt", quantos: 14 }, { idioma: "de", quantos: 4 }];
+  const times = timesDaArena(jogadores, leitores);
+
+  ok("dois times", times.length, 2);
+  ok("o placar é por vitórias da temporada", times[0].idioma, "de");
+  ok("o poder do time é a soma dos jogadores", times.find((t) => t.idioma === "pt").poder, 15);
+  ok("e conta quantos jogam", times.find((t) => t.idioma === "pt").jogadores, 2);
+  /* O tamanho do time é quanta GENTE lê naquele idioma, não quantos jogam --
+     senão o handicap premiaria o idioma que ninguém escolheu, que é o
+     contrário do que ele existe para fazer. */
+  ok("o tamanho vem dos leitores, não dos jogadores",
+    times.find((t) => t.idioma === "de").gente, 4);
+  verdade("e o time pequeno fica mais forte que o poder cru dele",
+    times.find((t) => t.idioma === "de").forca > 8);
+
+  ok("sem jogadores, sem times", timesDaArena([], leitores).length, 0);
+  /* Idioma sem leitor cadastrado não pode quebrar a conta. */
+  verdade("jogador de idioma sem leitores ainda entra",
+    timesDaArena([{ idioma: "ja", poder: 2, vitorias: 0 }], leitores).length === 1);
+
+  /* ---- o placar ---- */
+  const placar = placarDaArena(times, "2026-08-31");
+  verdade("o título fala as duas línguas", /Arena das Línguas · Language Arena/.test(placar.title));
+  verdade("mostra a temporada em dia/mês, não na data do banco",
+    /31\/08/.test(placar.description) && !/2026-08-31/.test(placar.description));
+  verdade("o time pequeno ganha a seta que convida", /▲/.test(placar.description));
+  verdade("o rodapé explica o handicap sem precisar de manual",
+    /bate mais forte/.test(placar.footer.text) && /smaller teams hit harder/i.test(placar.footer.text));
+
+  const vazio = placarDaArena([], "2026-08-31");
+  verdade("arena vazia convida em vez de mostrar tabela vazia", /primeiro/i.test(vazio.description));
+  verdade("e convida em inglês também", /you're the first/i.test(vazio.description));
+
+  /* Doze times é o teto do desenho; vinte idiomas não podem estourar o embed. */
+  const muitos = timesDaArena(
+    LINGUAS_MENU.map(([c], i) => ({ idioma: c, poder: 100 + i, vitorias: i })),
+    LINGUAS_MENU.map(([c], i) => ({ idioma: c, quantos: i + 1 })));
+  const cheio = placarDaArena(muitos, "2026-08-31");
+  verdade("com 20 idiomas a descrição cabe", cheio.description.length <= 4096);
+  verdade("e o rodapé cabe", cheio.footer.text.length <= 2048);
+
+  /* ---- os botões ---- */
+  const linhasArena = botoesDaArena();
+  ok("uma linha", linhasArena.length, 1);
+  ok("três botões", linhasArena[0].components.length, 3);
+  for (const b of linhasArena[0].components) {
+    verdade(`"${b.label}" cabe`, b.label.length <= 80);
+    verdade(`"${b.label}" é clique, não link`, b.style !== 5 && !!b.custom_id);
+    verdade(`"${b.label}" é da arena`, b.custom_id.startsWith("arena:"));
+  }
+
+  /* ---- o teto de ataques é rígido ---- */
+  verdade("há um teto de ataques por dia", Number.isInteger(ARENA_ATAQUES_DIA) && ARENA_ATAQUES_DIA > 0);
+  verdade("e ele é baixo o bastante para o custo não escapar", ARENA_ATAQUES_DIA <= 20);
+
+  /* ---- a arena não gasta tradução ----
+
+     A regra vale para todo recurso de engajamento: gamificar o recurso medido
+     é transformar diversão em conta a pagar. */
+  const fonteArena = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpo = fonteArena.slice(
+    fonteArena.indexOf("const CANAL_ARENA"),
+    fonteArena.indexOf("function botoesDoRecibo"));
+  for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo"]) {
+    verdade(`a arena não chama ${proibido}`, !corpo.includes(proibido));
+  }
+}
+
 /* ============ a bandeira que não deu em nada ============
 
    Cinco saídas mudas: servidor sem instalar, recurso desligado, mensagem sem

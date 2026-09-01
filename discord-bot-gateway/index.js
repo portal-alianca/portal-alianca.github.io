@@ -4057,6 +4057,17 @@ async function instalarServidor(guild) {
     console.log(`instalar: canal-fonte em #${fonte.name}`);
   }
 
+  /* A arena.
+
+     Nasce junto porque uma sala vazia que ninguem sabe que existe nao convida
+     ninguem -- e o placar e' o convite. Se a tabela do jogo ainda nao estiver
+     no banco, o desenho falha sozinho e sobra um canal com uma frase; o bot
+     continua traduzindo, que e' o que ele veio fazer. */
+  await canalPorNomeOuCria(guild, CANAL_ARENA,
+    "Lute pela bandeira que você escolheu. Time pequeno bate mais forte.")
+    .then((canal) => console.log(`instalar: arena em #${canal.name}`))
+    .catch((e) => console.error("instalar: nao consegui criar a arena:", e?.message || e));
+
   cacheServidor.delete(guild.id); // a proxima mensagem ja enxerga o servidor novo
   return servidor;
 }
@@ -4590,6 +4601,288 @@ async function reciboDaSemana(guild, servidor) {
 /* Um botão só, e o destino já é conhecido: o canal-fonte é o canal que o
    próprio servidor apontou para mim. Pedir para escolher o canal seria uma
    tela a mais entre a vontade de mostrar e o mostrar. */
+/* ---------------- a Arena das Línguas ----------------
+
+   Arena porque o Kingshot tem Arena: quem joga ali ja sabe o que a palavra
+   quer dizer, e familiaridade vale mais que originalidade num botao que a
+   pessoa ve pela primeira vez.
+
+   O time e' o IDIOMA. Voce luta pela bandeira que escolheu, e e' isso que faz
+   este jogo ser sobre o CYRON em vez de ser um clicker pregado nele.
+
+   Tres decisoes que seguram o custo:
+
+   - Zero traducao. Botao e' emoji, placar e' bandeira e numero. Nada aqui tem
+     lingua, entao nada aqui passa pelo tradutor.
+   - Cinco ataques por dia, por pessoa. O teto e' rigido: nao existe caminho
+     pra alguem gastar mais clicando mais, que era o defeito da versao em que
+     clique dava ouro sem limite.
+   - Resposta efemera. So' quem clicou ve, e some sozinha. A sala fica com UMA
+     mensagem fixada -- o placar -- editada no lugar. Nada a apagar, nada
+     acumulando. */
+
+const CANAL_ARENA = "⚔️-arena";
+const ARENA_ATAQUES_DIA = 5;
+
+/* Evoluir fica mais caro a cada nivel.
+
+   Custo fixo faria o ouro virar so' uma espera: quem clica mais, sobe mais,
+   pra sempre. Crescendo, o poder alto exige muitas vitorias -- e vitoria
+   depende do time, nao do dedo. */
+function custoDeEvoluir(poder) {
+  /* Math.max(1, NaN) e' NaN, e nao 1 -- entao poder invalido devolvia custo
+     NaN. Como `ouro >= NaN` e' sempre falso, a evolucao travaria em silencio
+     para essa pessoa, sem erro e sem log. Number.isFinite antes do maximo. */
+  const n = Math.trunc(Number(poder));
+  return 10 * (Number.isFinite(n) && n > 1 ? n : 1);
+}
+
+/* Time pequeno bate mais forte, e esta e' a peca que amarra o jogo ao produto.
+
+   Sem isto, o idioma com mais gente ganha sempre e os outros desistem na
+   primeira semana. Com isto, os quatro alemaes conseguem ganhar dos quatorze
+   brasileiros -- e a conversa que aparece no servidor vira "escolhe alemao,
+   a gente ta precisando", que e' exatamente o passo que o CYRON precisa que
+   aconteca. O jogo empurra a escolha de idioma em vez de queimar orcamento.
+
+   O teto e' 2x: mais que isso, um time de uma pessoa so' venceria sempre e a
+   vantagem viraria o novo defeito. */
+function handicapDoTime(gente, maiorTime) {
+  const meu = Math.max(1, Number(gente) || 1);
+  const maior = Math.max(meu, Number(maiorTime) || 1);
+  return 1 + (maior - meu) / maior;
+}
+
+/* Chance proporcional, e nunca 0% nem 100%.
+
+   Certeza dos dois lados mata o jogo: o forte para de ter graca e o fraco para
+   de tentar. Entre 10% e 90%, todo ataque vale a pena e nenhum e' garantido. */
+function chanceDeVitoria(minha, alvo) {
+  const a = Math.max(0, Number(minha) || 0);
+  const b = Math.max(0, Number(alvo) || 0);
+  if (a + b <= 0) return 0.5;
+  return Math.min(0.9, Math.max(0.1, a / (a + b)));
+}
+
+/* Junta os jogadores por idioma e calcula a forca de cada time. */
+function timesDaArena(jogadores, leitores) {
+  const porIdioma = new Map();
+  for (const j of jogadores || []) {
+    const t = porIdioma.get(j.idioma) || { idioma: j.idioma, poder: 0, vitorias: 0, jogadores: 0 };
+    t.poder += Number(j.poder || 0);
+    t.vitorias += Number(j.vitorias || 0);
+    t.jogadores += 1;
+    porIdioma.set(j.idioma, t);
+  }
+
+  /* O tamanho do time e' quanta GENTE le naquele idioma no servidor -- e nao
+     quantos jogam. Senao o handicap premiaria o idioma que ninguem escolheu,
+     que e' o contrario do que ele existe pra fazer. */
+  const quantos = new Map((leitores || []).map((l) => [l.idioma, l.quantos]));
+  const maior = Math.max(1, ...[...porIdioma.keys()].map((i) => quantos.get(i) || 1));
+
+  const times = [...porIdioma.values()].map((t) => {
+    const gente = quantos.get(t.idioma) || 1;
+    const handicap = handicapDoTime(gente, maior);
+    return { ...t, gente, handicap, forca: Math.round(t.poder * handicap) };
+  });
+  return times.sort((a, b) => b.vitorias - a.vitorias || b.forca - a.forca);
+}
+
+const MEDALHA = ["🥇", "🥈", "🥉"];
+
+function placarDaArena(times, temporada) {
+  const linhas = times.length
+    ? times.slice(0, 12).map((t, i) => {
+        /* Duas setas quando o handicap e' grande: e' o convite pra entrar
+           no time pequeno, e ele precisa ser visivel sem explicacao. */
+        const seta = t.handicap >= 1.5 ? " ▲▲" : t.handicap >= 1.2 ? " ▲" : "";
+        return `${MEDALHA[i] || "　"} ${nomeDoIdioma(t.idioma)} — **${t.vitorias}**` +
+          ` · força ${t.forca}${seta}`;
+      }).join("\n")
+    : "_Ninguém entrou na arena ainda. Toque em ⚔️ e você é o primeiro._\n" +
+      "_Nobody has entered yet. Tap ⚔️ and you're the first._";
+
+  return {
+    color: COR,
+    title: "⚔️ Arena das Línguas · Language Arena",
+    description: [
+      /* Dia e mês, e não a data do banco: "2026-08-31" é como eu guardo a
+         semana, não como alguém a lê. */
+      `**Temporada de ${String(temporada).slice(8, 10)}/${String(temporada).slice(5, 7)}**` +
+      " · termina domingo / _ends Sunday_",
+      "",
+      linhas,
+    ].join("\n"),
+    footer: {
+      text: `Você luta pela bandeira que escolheu. Time pequeno bate mais forte (▲).\n` +
+        `${ARENA_ATAQUES_DIA} ataques por dia · You fight for the flag you picked; ` +
+        `smaller teams hit harder.`,
+    },
+  };
+}
+
+function botoesDaArena() {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, custom_id: "arena:atacar", style: 1, emoji: { name: "⚔️" }, label: "Atacar" },
+      { type: 2, custom_id: "arena:evoluir", style: 2, emoji: { name: "⬆️" }, label: "Evoluir" },
+      { type: 2, custom_id: "arena:perfil", style: 2, emoji: { name: "🏆" }, label: "Meu perfil" },
+    ],
+  }];
+}
+
+/* Le a arena inteira de um servidor. Tabela ausente devolve lista vazia, e a
+   arena simplesmente nao aparece -- o bot continua traduzindo. */
+async function jogadoresDaArena(servidorId) {
+  return await sb(
+    `cyron_arena?servidor_id=eq.${servidorId}&select=discord_user_id,idioma,poder,ouro,vitorias,ataques_dia,dia,temporada`,
+  ).catch(() => null) || [];
+}
+
+async function estadoDaArena(guild, servidor) {
+  const [jogadores, salas] = await Promise.all([
+    jogadoresDaArena(servidor.id),
+    sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,role_id`).catch(() => null),
+  ]);
+  const temporada = semanaDe();
+  /* Vitoria de temporada passada nao conta no placar de hoje. A linha so' e'
+     zerada quando a pessoa joga de novo -- ate' la', ignorar aqui e' o que
+     mantem o placar honesto sem escrever no banco pra ninguem. */
+  const desta = jogadores.map((j) => (j.temporada === temporada ? j : { ...j, vitorias: 0 }));
+  return {
+    temporada,
+    jogadores: desta,
+    times: timesDaArena(desta, leitoresPorIdioma(guild, salas || [])),
+  };
+}
+
+/* O placar e' UMA mensagem fixada, editada no lugar.
+
+   Uma por rodada encheria a sala com o historico inteiro de placares mortos,
+   e o vivo perdido no meio -- mesmo motivo do cartao do painel. */
+async function desenharArena(guild, servidor) {
+  const canal = guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildText && c.name === CANAL_ARENA);
+  if (!canal) return;
+
+  const { times, temporada } = await estadoDaArena(guild, servidor);
+  const carga = { embeds: [placarDaArena(times, temporada)], components: botoesDaArena() };
+
+  const fixadas = await canal.messages.fetchPinned().catch(() => null);
+  const minha = fixadas?.find((m) => m.author?.id === client.user.id);
+  if (minha) return void await minha.edit(carga).catch(() => {});
+
+  const nova = await canal.send(carga).catch(() => null);
+  if (nova) await nova.pin("placar da arena").catch(() => {});
+}
+
+async function cliqueArena(inter) {
+  await inter.deferReply({ flags: 64 });
+
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.editReply({ content: "Ainda não terminei de me instalar aqui." });
+
+  /* Sem idioma escolhido nao ha' time -- e mandar a pessoa escolher e' o
+     ponto: e' o passo que o CYRON precisa que aconteca, e o jogo e' quem
+     convence. */
+  const idioma = await idiomaEscolhido(inter.user.id);
+  if (!idioma) {
+    return inter.editReply({
+      embeds: [{ color: COR, title: "🌐 Escolha sua língua primeiro",
+        description: `Você luta pela bandeira que escolheu. Passe em <#${servidor.canal_porta || ""}>` +
+          " ou use **/mylanguage**.\n\n_Pick your language first — you fight for that flag._" }],
+    });
+  }
+
+  const acao = inter.customId.slice("arena:".length);
+  const { times, temporada } = await estadoDaArena(inter.guild, servidor);
+  const meu = times.find((t) => t.idioma === idioma);
+  const eu = (await jogadoresDaArena(servidor.id)).find((j) => j.discord_user_id === inter.user.id);
+
+  if (acao === "perfil") {
+    const poder = eu?.poder ?? 1;
+    return inter.editReply({
+      embeds: [{
+        color: COR,
+        title: `${nomeDoIdioma(idioma)}`,
+        description: [
+          `⚔️ Poder **${poder}** · 🪙 Ouro **${eu?.ouro ?? 0}** · 🏆 Vitórias **${eu?.vitorias ?? 0}**`,
+          `Ataques hoje: **${eu?.dia === diaISO(Date.now()) ? eu.ataques_dia : 0}** de ${ARENA_ATAQUES_DIA}`,
+          "",
+          `Próxima evolução: **${custoDeEvoluir(poder)}** 🪙`,
+        ].join("\n"),
+      }],
+    });
+  }
+
+  if (acao === "evoluir") {
+    const custo = custoDeEvoluir(eu?.poder ?? 1);
+    const r = (await rpc("cyron_arena_evoluir", {
+      p_servidor: servidor.id, p_user: inter.user.id, p_custo: custo,
+    }).catch(() => null))?.[0];
+
+    if (!r?.ok) {
+      return inter.editReply({
+        embeds: [{ color: COR, title: "🪙 Falta ouro",
+          description: `Evoluir custa **${custo}** 🪙 e você tem **${r?.ouro ?? 0}**.\n` +
+            "Ataque para ganhar mais.\n\n_Not enough gold — attack to earn more._" }],
+      });
+    }
+    await desenharArena(inter.guild, servidor);
+    return inter.editReply({
+      embeds: [{ color: COR, title: "⬆️ Evoluiu",
+        description: `⚔️ Poder **${r.poder}** · 🪙 Ouro **${r.ouro}**` }],
+    });
+  }
+
+  /* Atacar: o alvo e' o time mais forte que nao seja o seu. Escolher o alvo
+     seria mais uma tela entre a vontade e o clique -- e o mais forte e' o
+     alvo que a pessoa escolheria de qualquer jeito. */
+  const alvo = times.find((t) => t.idioma !== idioma);
+  if (!alvo) {
+    return inter.editReply({
+      embeds: [{ color: COR, title: "🕊️ Ninguém para enfrentar ainda",
+        description: "Só a sua língua entrou na arena. Chame gente de outro idioma.\n\n" +
+          "_Yours is the only language here yet. Bring someone from another._" }],
+    });
+  }
+
+  const chance = chanceDeVitoria(meu?.forca ?? 1, alvo.forca);
+  const venceu = Math.random() < chance;
+  const r = (await rpc("cyron_arena_atacar", {
+    p_servidor: servidor.id, p_user: inter.user.id, p_idioma: idioma,
+    p_max_dia: ARENA_ATAQUES_DIA, p_venceu: venceu,
+    p_hoje: diaISO(Date.now()), p_temporada: temporada,
+  }).catch(() => null))?.[0];
+
+  if (!r) {
+    return inter.editReply({ content: "A arena não respondeu agora. Tente de novo em instantes." });
+  }
+  if (!r.ok) {
+    return inter.editReply({
+      embeds: [{ color: COR, title: "😴 Acabaram seus ataques de hoje",
+        description: `Volta amanhã com mais ${ARENA_ATAQUES_DIA}.\n\n_Out of attacks — back tomorrow._` }],
+    });
+  }
+
+  await desenharArena(inter.guild, servidor);
+  return inter.editReply({
+    embeds: [{
+      color: COR,
+      title: venceu ? "⚔️ Vitória!" : "🛡️ Derrota",
+      description: [
+        `${nomeDoIdioma(idioma)} × ${nomeDoIdioma(alvo.idioma)}`,
+        `Chance: **${Math.round(chance * 100)}%**`,
+        "",
+        `🪙 **+${venceu ? 5 : 1}** · total **${r.ouro}** · 🏆 **${r.vitorias}**`,
+        `Ataques hoje: **${r.ataques_dia}** de ${ARENA_ATAQUES_DIA}`,
+      ].join("\n"),
+    }],
+  });
+}
+
 function botoesDoRecibo() {
   return [{
     type: 1,
@@ -8184,6 +8477,9 @@ client.on("interactionCreate", async (inter) => {
        trocar o tipo do componente nao volta a quebrar isto. */
     if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
       return await cliquePainel(inter);
+    }
+    if (inter.isMessageComponent() && inter.customId.startsWith("arena:")) {
+      return await cliqueArena(inter);
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("admin:")) {
       return await cliqueAdmin(inter);
