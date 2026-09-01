@@ -1898,9 +1898,12 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      português repetiria, no dono, exatamente o defeito que a NYX achou.
      A saída é escrever pouco e escrever nas duas. */
   const fonte = readFileSync(`${aqui}/index.js`, "utf8");
-  const corpoDoRecibo = fonte.slice(
-    fonte.indexOf("async function reciboDaSemana"),
-    fonte.indexOf("function botoesDoRecibo"));
+  /* Até a chave que fecha a função, e não até a próxima que eu lembrar de
+     nomear: o recorte anterior ia de reciboDaSemana a botoesDoRecibo, e no dia
+     em que cliqueArena nasceu no meio, o guarda do recibo passou a julgar a
+     arena. Guarda que mede a coisa errada acusa defeito onde não há. */
+  const inicioRecibo = fonte.indexOf("async function reciboDaSemana");
+  const corpoDoRecibo = fonte.slice(inicioRecibo, fonte.indexOf("\n}", inicioRecibo) + 2);
   for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo", "anotarUso"]) {
     verdade(`o recibo não chama ${proibido}`, !corpoDoRecibo.includes(proibido));
   }
@@ -2206,6 +2209,81 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("e o título, para não apagar o que não é placar",
     /startsWith\("⚔️ Arena das Línguas"\)/.test(fonteArena2));
 
+  /* ---- número não vai para o tradutor ----
+
+     O jogo fala a língua de quem clicou, e isso é de graça porque os RÓTULOS
+     são fixos: vinte idiomas vezes uma dúzia de palavras é uma tradução única,
+     cacheada para sempre.
+
+     O que quebraria isso é número dentro da frase: cada valor seria uma chave
+     de cache nova, que nunca se repete, e o jogo passaria a custar por clique.
+     Por isso rótulo de um lado e número do outro -- e por isso o tradutor
+     agora recusa texto sem letra nenhuma. */
+  {
+    const { traduzirEmbed } = carregar(["traduzirEmbed"]);
+    const pedidos = [];
+    globalThis.traduzirComCache = async (t) => { pedidos.push(t); return `<${t}>`; };
+
+    const traduzido = await traduzirEmbed({
+      title: "⚔️ Vitória!",
+      fields: [
+        { name: "Chance", value: "39%" },
+        { name: "🪙 Ouro", value: "+5 · 28" },
+        { name: "Ataques hoje", value: "3 / 5" },
+        { name: "Duelo", value: "🇧🇷 × 🇸🇦" },
+      ],
+    }, "de");
+
+    verdade("o rótulo é traduzido", traduzido.fields[0].name === "<Chance>");
+    ok("o número passa intacto", traduzido.fields[0].value, "39%");
+    ok("o ouro com sinal também", traduzido.fields[1].value, "+5 · 28");
+    ok("a contagem de ataques também", traduzido.fields[2].value, "3 / 5");
+    ok("e as bandeiras do duelo também", traduzido.fields[3].value, "🇧🇷 × 🇸🇦");
+
+    for (const t of pedidos) {
+      verdade(`"${t}" tem letra, então valia traduzir`, /\p{L}/u.test(t));
+    }
+    /* O ponto: nenhum número foi pedido ao tradutor. */
+    verdade("nada sem letra foi ao tradutor", !pedidos.some((t) => !/\p{L}/u.test(t)));
+
+    /* Alfabeto nenhum é privilegiado: árabe, japonês e cirílico contam como
+       letra do mesmo jeito que o "a". */
+    pedidos.length = 0;
+    await traduzirEmbed({ title: "العربية", description: "日本語" }, "en");
+    ok("árabe e japonês são texto, e vão", pedidos.length, 2);
+
+    pedidos.length = 0;
+    await traduzirEmbed({ title: "2 / 5", description: "100%" }, "en");
+    ok("só número não vai", pedidos.length, 0);
+
+    globalThis.traduzirComCache = async (t) => `<${t}>`;
+  }
+
+  /* ---- os rótulos da arena são fixos, para o cache pegar ----
+
+     Se um número entrar no título ou na descrição, cada valor vira uma chave
+     de cache nova e o jogo passa a custar por clique, para sempre. */
+  const fonteJogo = readFileSync(`${aqui}/index.js`, "utf8");
+  const clique = fonteJogo.slice(
+    fonteJogo.indexOf("async function cliqueArena"),
+    fonteJogo.indexOf("\nfunction botoesDoRecibo"));
+  for (const m of clique.matchAll(/title: "([^"]*)"/g)) {
+    verdade(`o título "${m[1]}" não carrega número`, !/\d/.test(m[1]));
+  }
+  verdade("a resposta passa pelo tradutor na língua de quem clicou",
+    /traduzirEmbed\(embed, idioma, MOTOR_AUTO\)/.test(fonteJogo));
+  verdade("e a língua sai da escolha da pessoa, com o Discord como palpite",
+    /idiomaEscolhido\(inter\.user\.id\)\) \|\| idiomaDoAplicativo\(inter\.locale\)/.test(fonteJogo));
+
+  /* ---- não pode sobrar leitura pelo nome antigo, nem com ?. ----
+
+     A primeira vez que renomeei isto, um `r?.ouro` escapou: a substituição sem
+     assert falhou em silêncio, e o teste procurava "r.ouro", que não casa com
+     "r?.ouro". Quem ficasse sem ouro via "você tem 0", sempre. */
+  for (const velho of ["r.ouro", "r?.ouro", "r.poder", "r?.poder", "r.vitorias", "r.ataques_dia"]) {
+    verdade(`nenhuma leitura por "${velho}"`, !clique.includes(velho));
+  }
+
   /* ---- A Casa se anuncia, e não finge ser gente ----
 
      A alternativa recusada foi criar jogadores falsos para encher o placar.
@@ -2216,9 +2294,14 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      O teste prende a diferença: o nome d'A Casa tem que se anunciar, e não
      pode existir nenhum jogador semeado no banco. */
   const fonteCasa = readFileSync(`${aqui}/index.js`, "utf8");
-  verdade("A Casa se identifica no próprio nome", /A Casa \/ The House/.test(fonteCasa));
+  verdade("A Casa se identifica como adversário de treino",
+    /A Casa\*\* — o adversário de treino/.test(fonteCasa));
   verdade("e ela não tem idioma, então não entra no placar como time",
     /idioma: null, forca:/.test(fonteCasa));
+  /* No duelo ela aparece como 🏰, e não como bandeira: bandeira ali seria um
+     país, e aí sim pareceria gente. */
+  verdade("no duelo ela é um castelo, não uma bandeira",
+    /alvo\.idioma \? \(bandeiraDoIdioma\(alvo\.idioma\) \|\| "🌐"\) : "🏰"/.test(fonteCasa));
   /* Nenhum insert de jogador que não venha de um ataque real de alguém. */
   const inserts = [...fonteCasa.matchAll(/sbPost\("cyron_arena"/g)].length;
   ok("o bot nunca insere jogador direto na arena", inserts, 0);
@@ -2246,11 +2329,30 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
      A regra vale para todo recurso de engajamento: gamificar o recurso medido
      é transformar diversão em conta a pagar. */
   const fonteArena = readFileSync(`${aqui}/index.js`, "utf8");
-  const corpo = fonteArena.slice(
-    fonteArena.indexOf("const CANAL_ARENA"),
-    fonteArena.indexOf("function botoesDoRecibo"));
-  for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo"]) {
-    verdade(`a arena não chama ${proibido}`, !corpo.includes(proibido));
+  /* A regra MUDOU, e mudou por um motivo, não por conveniência.
+
+     Era "a arena não traduz nada". Estava certa enquanto o texto misturava
+     rótulo e número: traduzir "Poder 7 · Ouro 23" cobraria por clique, para
+     sempre, porque cada número é uma chave de cache nova.
+
+     Separado -- rótulo fixo de um lado, número do outro --, traduzir passa a
+     ser uma vez por idioma e nunca mais. E aí NÃO traduzir é que era o defeito:
+     um jogo de tradutor falando só português é a piada contra si mesmo.
+
+     O que continua proibido é o que de fato custa: texto que varia. Isso é
+     guardado acima, no bloco que prova que número não vai ao tradutor. */
+  /* Por FUNÇÃO, e não por região do arquivo. Recortar "daqui até ali" já me
+     mordeu três vezes hoje: basta alguém escrever uma função nova no meio para
+     o guarda passar a julgar o código errado. O nome não se move. */
+  const corpoDe = (nome) => {
+    const i = fonteArena.indexOf(nome);
+    verdade(`achei ${nome} para conferir`, i > 0);
+    return fonteArena.slice(i, fonteArena.indexOf("\n}", i) + 2);
+  };
+  for (const naoTraduz of ["function placarDaArena", "async function desenharArena"]) {
+    const c = corpoDe(naoTraduz);
+    verdade(`${naoTraduz} não traduz: é uma mensagem para o servidor inteiro`,
+      !c.includes("traduzirEmbed") && !c.includes("traduzirComCache"));
   }
 }
 

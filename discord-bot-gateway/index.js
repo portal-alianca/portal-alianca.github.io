@@ -4813,13 +4813,17 @@ function placarDaArena(times, temporada, servidores = 0) {
   };
 }
 
+/* Os botoes vivem no PLACAR, que e' uma mensagem so' para o servidor inteiro
+   -- entao eles nao podem ser por pessoa, como as respostas sao. Bilingues por
+   construcao, como o resto do cartao: o rotulo cabe nos 80 caracteres e nao
+   custa traducao nenhuma. */
 function botoesDaArena() {
   return [{
     type: 1,
     components: [
-      { type: 2, custom_id: "arena:atacar", style: 1, emoji: { name: "⚔️" }, label: "Atacar" },
-      { type: 2, custom_id: "arena:evoluir", style: 2, emoji: { name: "⬆️" }, label: "Evoluir" },
-      { type: 2, custom_id: "arena:perfil", style: 2, emoji: { name: "🏆" }, label: "Meu perfil" },
+      { type: 2, custom_id: "arena:atacar", style: 1, emoji: { name: "⚔️" }, label: "Atacar · Attack" },
+      { type: 2, custom_id: "arena:evoluir", style: 2, emoji: { name: "⬆️" }, label: "Evoluir · Upgrade" },
+      { type: 2, custom_id: "arena:perfil", style: 2, emoji: { name: "🏆" }, label: "Meu perfil · My profile" },
     ],
   }];
 }
@@ -4921,21 +4925,46 @@ async function limparPlacaresVelhos(canal) {
   if (meus.length) console.log(`arena: recolhi ${meus.length} placar(es) antigo(s)`);
 }
 
+/* Responder na lingua de quem clicou, sem que isso vire conta.
+
+   O jogo de um tradutor falando so' portugues era a piada contra mim mesmo. A
+   NYX e' alema; o placar diz "Vitoria!" e ela nao le.
+
+   Da' pra traduzir de graca porque os ROTULOS sao fixos: "Poder", "Ouro",
+   "Chance", "Ataques hoje". Vinte idiomas vezes uma duzia de palavras e' uma
+   traducao unica, cacheada pra sempre -- diferente da mensagem de gente, que
+   nunca se repete.
+
+   O que muda -- os NUMEROS -- fica fora do texto traduzido, em campos
+   separados. Se numero entrasse na frase, cada valor seria uma chave de cache
+   nova e o jogo passaria a custar por clique. E' por isso que aqui e' rotulo
+   num lado e numero no outro, e nao uma linha so' bonita.
+
+   O PLACAR nao entra nisso, e nao tem jeito: ele e' UMA mensagem para o
+   servidor inteiro. Nao existe versao por pessoa de uma mensagem so'. Ele
+   segue bilingue por construcao, como o recibo. */
+async function respostaDaArena(inter, idioma, embed) {
+  return inter.editReply({
+    embeds: [{ color: COR, ...(await traduzirEmbed(embed, idioma, MOTOR_AUTO)) }],
+  });
+}
+
 async function cliqueArena(inter) {
   await inter.deferReply({ flags: 64 });
 
   const servidor = await servidorDoGuild(inter.guildId);
   if (!servidor) return inter.editReply({ content: "Ainda não terminei de me instalar aqui." });
 
-  /* Sem idioma escolhido nao ha' time -- e mandar a pessoa escolher e' o
-     ponto: e' o passo que o CYRON precisa que aconteca, e o jogo e' quem
-     convence. */
-  const idioma = await idiomaEscolhido(inter.user.id);
-  if (!idioma) {
-    return inter.editReply({
-      embeds: [{ color: COR, title: "🌐 Escolha sua língua primeiro",
-        description: `Você luta pela bandeira que escolheu. Passe em <#${servidor.canal_porta || ""}>` +
-          " ou use **/mylanguage**.\n\n_Pick your language first — you fight for that flag._" }],
+  /* A lingua de quem clicou manda em tudo daqui pra baixo. Sem escolha, vale
+     a lingua do Discord dela -- o mesmo palpite que consertou a NYX. */
+  const idioma = (await idiomaEscolhido(inter.user.id)) || idiomaDoAplicativo(inter.locale) || "en";
+  const escolheu = !!(await idiomaEscolhido(inter.user.id));
+
+  if (!escolheu) {
+    return respostaDaArena(inter, idioma, {
+      title: "🌐 Escolha sua língua primeiro",
+      description: "Você luta pela bandeira que escolheu. Use **/mylanguage** " +
+        "ou passe no canal de idiomas.",
     });
   }
 
@@ -4946,30 +4975,21 @@ async function cliqueArena(inter) {
 
   if (acao === "perfil") {
     const poder = eu?.poder ?? 1;
-    return inter.editReply({
-      embeds: [{
-        color: COR,
-        title: `${nomeDoIdioma(idioma)}`,
-        description: [
-          `⚔️ Poder **${poder}** · 🪙 Ouro **${eu?.ouro ?? 0}** · 🏆 Vitórias **${eu?.vitorias ?? 0}**`,
-          `Ataques hoje: **${eu?.dia === diaISO(Date.now()) ? eu.ataques_dia : 0}** de ${ARENA_ATAQUES_DIA}`,
-          "",
-          `Próxima evolução: **${custoDeEvoluir(poder)}** 🪙`,
-        ].join("\n"),
-      }],
+    const hoje = eu?.dia === diaISO(Date.now()) ? eu.ataques_dia : 0;
+    return respostaDaArena(inter, idioma, {
+      title: nomeDoIdioma(idioma),
+      fields: [
+        { name: "⚔️ Poder", value: `${poder}`, inline: true },
+        { name: "🪙 Ouro", value: `${eu?.ouro ?? 0}`, inline: true },
+        { name: "🏆 Vitórias", value: `${eu?.vitorias ?? 0}`, inline: true },
+        { name: "Ataques hoje", value: `${hoje} / ${ARENA_ATAQUES_DIA}`, inline: true },
+        { name: "Próxima evolução", value: `${custoDeEvoluir(poder)} 🪙`, inline: true },
+      ],
     });
   }
 
   if (acao === "evoluir") {
     const custo = custoDeEvoluir(eu?.poder ?? 1);
-    /* O erro do banco vai pro log, e nao pro lixo.
-
-       Esta linha era `.catch(() => null)`. Ela engoliu, por horas, uma
-       mensagem exata e acionavel -- "column reference ouro is ambiguous" --
-       e mostrou "a arena nao respondeu agora" no lugar. Eu passei a noite sem
-       conseguir dizer se o jogo funcionava, com a resposta escrita e jogada
-       fora a cada clique. Silencio nao e' robustez; e' o defeito de amanha
-       sem pista. */
     const r = (await rpc("cyron_arena_evoluir", {
       p_servidor: servidor.id, p_user: inter.user.id, p_custo: custo,
     }).catch((e) => {
@@ -4978,39 +4998,37 @@ async function cliqueArena(inter) {
     }))?.[0];
 
     if (!r?.r_ok) {
-      return inter.editReply({
-        embeds: [{ color: COR, title: "🪙 Falta ouro",
-          description: `Evoluir custa **${custo}** 🪙 e você tem **${r?.ouro ?? 0}**.\n` +
-            "Ataque para ganhar mais.\n\n_Not enough gold — attack to earn more._" }],
+      return respostaDaArena(inter, idioma, {
+        title: "🪙 Falta ouro",
+        description: "Ataque para ganhar mais.",
+        fields: [
+          { name: "Custa", value: `${custo} 🪙`, inline: true },
+          { name: "Você tem", value: `${r?.r_ouro ?? 0} 🪙`, inline: true },
+        ],
       });
     }
     await desenharArena(inter.guild, servidor);
-    return inter.editReply({
-      embeds: [{ color: COR, title: "⬆️ Evoluiu",
-        description: `⚔️ Poder **${r.r_poder}** · 🪙 Ouro **${r.r_ouro}**` }],
+    return respostaDaArena(inter, idioma, {
+      title: "⬆️ Evoluiu",
+      fields: [
+        { name: "⚔️ Poder", value: `${r.r_poder}`, inline: true },
+        { name: "🪙 Ouro", value: `${r.r_ouro}`, inline: true },
+      ],
     });
   }
 
-  /* Atacar: o alvo e' o time mais forte que nao seja o seu. Escolher o alvo
-     seria mais uma tela entre a vontade e o clique -- e o mais forte e' o
-     alvo que a pessoa escolheria de qualquer jeito. */
   /* Quem esta sozinho bate n'A CASA, e nao no vazio.
 
      A alternativa que eu recusei foi criar jogadores falsos pra encher o
-     placar: um adversario inventado com cara de gente e' registro fabricado
+     placar: adversario inventado com cara de gente e' registro fabricado
      apresentado como verdadeiro, e quem descobre que o placar e' invencao
      passa a duvidar da traducao junto -- e a traducao e' o que se vende.
 
-     A Casa e' o contrario disso: ela se anuncia. Ninguem confunde "🏰 A Casa"
-     com uma pessoa, e todo jogo tem boneco de treino. E' honesto porque nao
-     finge ser ninguem.
-
-     A forca dela acompanha a de quem bate, entao ela nao e' presa facil nem
-     muro: da' pra ganhar e da' pra perder, que e' o unico jeito de valer
-     alguma coisa. */
+     A Casa se anuncia. Ninguem confunde "🏰 A Casa" com uma pessoa, e todo
+     jogo tem boneco de treino. A forca dela acompanha a de quem bate: da' pra
+     ganhar e da' pra perder, que e' o unico jeito de valer alguma coisa. */
   const aCasa = { idioma: null, forca: Math.max(2, Math.round((meu?.forca ?? 1) * 0.9)) };
   const alvo = times.find((t) => t.idioma !== idioma && t.poder > 0) || aCasa;
-  const nomeDoAlvo = alvo.idioma ? nomeDoIdioma(alvo.idioma) : "🏰 A Casa / The House";
 
   const chance = chanceDeVitoria(meu?.forca ?? 1, alvo.forca);
   const venceu = Math.random() < chance;
@@ -5027,25 +5045,28 @@ async function cliqueArena(inter) {
     return inter.editReply({ content: "A arena não respondeu agora. Tente de novo em instantes." });
   }
   if (!r.r_ok) {
-    return inter.editReply({
-      embeds: [{ color: COR, title: "😴 Acabaram seus ataques de hoje",
-        description: `Volta amanhã com mais ${ARENA_ATAQUES_DIA}.\n\n_Out of attacks — back tomorrow._` }],
+    return respostaDaArena(inter, idioma, {
+      title: "😴 Acabaram seus ataques de hoje",
+      description: `Volte amanhã com mais ${ARENA_ATAQUES_DIA}.`,
     });
   }
 
   await desenharArena(inter.guild, servidor);
-  return inter.editReply({
-    embeds: [{
-      color: COR,
-      title: venceu ? "⚔️ Vitória!" : "🛡️ Derrota",
-      description: [
-        `${nomeDoIdioma(idioma)} × ${nomeDoAlvo}`,
-        `Chance: **${Math.round(chance * 100)}%**`,
-        "",
-        `🪙 **+${venceu ? 5 : 1}** · total **${r.r_ouro}** · 🏆 **${r.r_vitorias}**`,
-        `Ataques hoje: **${r.r_ataques}** de ${ARENA_ATAQUES_DIA}`,
-      ].join("\n"),
-    }],
+
+  /* O duelo em BANDEIRAS, e nao em nomes de idioma: bandeira nao tem lingua,
+     entao esta linha nao custa traducao nenhuma e todo mundo le igual. */
+  const duelo = `${bandeiraDoIdioma(idioma) || "🌐"} × ${alvo.idioma ? (bandeiraDoIdioma(alvo.idioma) || "🌐") : "🏰"}`;
+
+  return respostaDaArena(inter, idioma, {
+    title: venceu ? "⚔️ Vitória!" : "🛡️ Derrota",
+    description: alvo.idioma ? undefined : "Você enfrentou **A Casa** — o adversário de treino.",
+    fields: [
+      { name: "Duelo", value: duelo, inline: true },
+      { name: "Chance", value: `${Math.round(chance * 100)}%`, inline: true },
+      { name: "🪙 Ouro", value: `+${venceu ? 5 : 1} · ${r.r_ouro}`, inline: true },
+      { name: "🏆 Vitórias", value: `${r.r_vitorias}`, inline: true },
+      { name: "Ataques hoje", value: `${r.r_ataques} / ${ARENA_ATAQUES_DIA}`, inline: true },
+    ],
   });
 }
 
@@ -7463,6 +7484,15 @@ async function traduzirEmbed(embed, idioma, motor = MOTOR_AUTO) {
   if (!idioma || idioma === "pt") return embed;
   const campo = async (t) => {
     if (typeof t !== "string" || !t.trim()) return t;
+    /* Texto sem LETRA nenhuma nao vai pro tradutor.
+
+       "7", "39%", "2 / 5", "🇧🇷 × 🇸🇦" voltariam iguais -- mas cada numero
+       diferente seria uma chave de cache nova, que nunca se repete. Um painel
+       com contador viraria uma traducao paga por clique, pra sempre, sem teto.
+
+       \p{L} cobre alfabeto nenhum em particular: arabe, japones e cirilico
+       contam como letra do mesmo jeito que o "a". */
+    if (!/\p{L}/u.test(t)) return t;
     return (await traduzirComCache(t, idioma, motor)) || t;
   };
   const novo = { ...embed };
