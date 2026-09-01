@@ -4517,9 +4517,27 @@ async function reciboDaSemana(guild, servidor) {
   }
   const seguidas = semanasSeguidas(oito);
 
+  /* Bilingue por CONSTRUCAO, e nao traduzido.
+
+     Traduzir este cartao gastaria caractere pago -- e um recurso que existe
+     pra fazer lembrarem de mim nao pode se pagar com a conta que eu quero
+     baixar. Mas so' portugues seria repetir, no dono, o defeito que acabei de
+     consertar na NYX: cartao numa lingua que ele nao le.
+
+     A saida e' escrever pouco. O cartao e' quase todo numero e bandeira, que
+     nao tem lingua, e as duas frases que precisam de palavras vem nas duas.
+     Custa zero e serve a todo mundo. */
+  const quantos = leitores.length || salas.length;
+
+  /* Numero SEM separador de milhar. "1.240" em portugues e' mil duzentos e
+     quarenta; para quem le em ingles e' um virgula dois. Num cartao que as
+     duas pessoas leem, o ponto mente para uma delas -- e sem ele nao mente
+     para ninguem. */
   const linhas = [
-    `**${agora.toLocaleString("pt-BR")} ${agora === 1 ? "mensagem atravessou" : "mensagens atravessaram"}** ` +
-    `**${leitores.length || salas.length} ${(leitores.length || salas.length) === 1 ? "idioma" : "idiomas"}** esta semana.`,
+    `**${agora} ${agora === 1 ? "mensagem atravessou" : "mensagens atravessaram"}** ` +
+    `**${quantos} ${quantos === 1 ? "idioma" : "idiomas"}** esta semana.`,
+    `_${agora} ${agora === 1 ? "message crossed" : "messages crossed"} ` +
+    `${quantos} ${quantos === 1 ? "language" : "languages"} this week._`,
   ];
 
   /* A comparacao so' aparece quando ha' com o que comparar: "↑ 100%" na
@@ -4527,18 +4545,20 @@ async function reciboDaSemana(guild, servidor) {
   if (antes > 0) {
     const variacao = Math.round(((agora - antes) / antes) * 100);
     if (variacao !== 0) {
-      linhas.push(`${variacao > 0 ? "📈" : "📉"} ${variacao > 0 ? "+" : ""}${variacao}% em relação à semana passada.`);
+      const sinal = `${variacao > 0 ? "+" : ""}${variacao}%`;
+      linhas.push(`${variacao > 0 ? "📈" : "📉"} ${sinal} · semana passada / _last week_`);
     }
   }
 
   if (seguidas >= 2) {
-    linhas.push(`🔥 **${seguidas} semanas seguidas** sem ninguém ficar sem entender.`);
+    linhas.push(`🔥 **${seguidas} semanas seguidas** sem ninguém ficar sem entender · ` +
+      `_${seguidas} weeks in a row with nobody left out_`);
   }
 
   const campos = [];
   if (leitores.length) {
     campos.push({
-      name: `🗣️ Quem lê em cada língua — ${gente} ${gente === 1 ? "pessoa" : "pessoas"}`,
+      name: `🗣️ Quem lê em cada língua · Who reads what — ${gente}`,
       /* Sem bandeira na frente: nomeDoIdioma JA' devolve "🇧🇷 Português".
          Acrescentar outra dava "🇧🇷 🇧🇷 Português" -- e nenhum teste pegaria,
          porque o texto continua certo e o limite continua cabendo. Foi a
@@ -4551,15 +4571,18 @@ async function reciboDaSemana(guild, servidor) {
 
   return {
     color: COR,
-    title: "📊 A semana de vocês, em línguas",
+    title: "📊 A semana de vocês, em línguas · Your week in languages",
     description: linhas.join("\n"),
     fields: campos,
     /* O fecho e' o que faz a conta na cabeca de quem le: sem tradutor, essa
-       gente teria lido a propria lingua e mais nada. */
+       gente teria lido a propria lingua e mais nada. E' a unica frase do
+       cartao que precisa mesmo de palavras, entao vem nas duas linguas. */
     footer: {
       text: gente
-        ? `Sem tradução, cada uma dessas ${gente} pessoas teria lido só o que foi escrito na língua dela.`
-        : "Cada uma dessas mensagens chegou legível para quem não fala a língua de quem escreveu.",
+        ? `Sem tradução, cada uma dessas ${gente} pessoas teria lido só a própria língua.\n` +
+          `Without translation, each of those ${gente} would have read only their own.`
+        : "Cada mensagem chegou legível para quem não fala a língua de quem escreveu.\n" +
+          "Each message arrived readable for people who don't speak the writer's language.",
     },
   };
 }

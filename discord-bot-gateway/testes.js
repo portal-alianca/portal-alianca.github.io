@@ -1871,7 +1871,9 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("a variação aparece quando há com o que comparar", /\+20%/.test(cartao.description));
   verdade("o streak aparece", /semanas seguidas/.test(cartao.description));
   verdade("os leitores viram campo", /Quem lê em cada língua/.test(cartao.fields[0].name));
-  verdade("com o total de gente", /51 pessoas/.test(cartao.fields[0].name));
+  /* O total sai como número solto, sem a palavra "pessoas": o campo é
+     bilíngue e o número não tem língua. */
+  verdade("com o total de gente", /— 51$/.test(cartao.fields[0].name));
 
   /* A bandeira sai UMA vez. nomeDoIdioma já devolve "🇧🇷 Português", e eu
      tinha posto outra na frente: "🇧🇷 🇧🇷 Português". Nenhum teste de texto ou
@@ -1886,6 +1888,39 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     verdade(`"${linha}" tem uma bandeira só`, bandeiras <= 2);
   }
   verdade("o fecho faz a conta na cabeça de quem lê", /Sem tradução/.test(cartao.footer.text));
+
+  /* ---- o recibo não gasta tradução, e mesmo assim serve a quem não lê
+         português ----
+
+     As duas regras andam juntas e uma quase quebrou a outra. Traduzir o
+     cartão gastaria caractere pago -- um recurso que existe para fazerem
+     lembrar de mim não pode se pagar com a conta que eu quero baixar. Mas só
+     português repetiria, no dono, exatamente o defeito que a NYX achou.
+     A saída é escrever pouco e escrever nas duas. */
+  const fonte = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpoDoRecibo = fonte.slice(
+    fonte.indexOf("async function reciboDaSemana"),
+    fonte.indexOf("function botoesDoRecibo"));
+  for (const proibido of ["traduzirComCache", "traduzirEmbed", "traduzirLongo", "anotarUso"]) {
+    verdade(`o recibo não chama ${proibido}`, !corpoDoRecibo.includes(proibido));
+  }
+
+  const tudoQueEleEscreve = [cartao.title, cartao.description, cartao.footer.text,
+    ...cartao.fields.map((f) => f.name)].join("\n");
+  verdade("o título fala inglês também", /Your week in languages/.test(cartao.title));
+  verdade("a contagem também", /messages crossed/.test(cartao.description));
+  verdade("o streak também", /weeks in a row/.test(tudoQueEleEscreve));
+  verdade("o campo dos leitores também", /Who reads what/.test(cartao.fields[0].name));
+  verdade("e o fecho também", /Without translation/.test(cartao.footer.text));
+
+  /* Separador de milhar mente para metade do público: "1.240" é mil duzentos
+     e quarenta em português e um vírgula dois e quatro em inglês. Num cartão
+     que os dois leem, o número vai sem separador. */
+  globalThis.sb = async (rota) =>
+    (rota.startsWith("discord_chat_espelho") ? salas : [{ traducoes: 12345 }]);
+  const grande = await reciboDaSemana(guild, { id: "s1" });
+  verdade("número grande sai sem ponto de milhar", /\b12345\b/.test(grande.description));
+  verdade("e sem vírgula de milhar", !/12,345|12\.345/.test(grande.description));
 
   /* Os limites do Discord, medidos aqui porque o cartão é montado com números
      que vêm de fora: um servidor com vinte idiomas não pode estourar o embed
