@@ -2128,6 +2128,53 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   verdade("atualizarArenas está dentro da varredura, e viva",
     /^\s*await atualizarArenas\(\)/m.test(passada));
 
+  /* ---- o que o bot lê tem que ser o que a função devolve ----
+
+     A arena respondeu "não respondeu agora" a noite inteira por causa disto:
+     `returns table (poder int, ouro int, ...)` declara VARIÁVEIS com o nome
+     das colunas, e dentro da função `set ouro = ouro + 5` virou ambíguo. O
+     Postgres recusou a função inteira -- erro 42702 -- em tempo de execução.
+
+     A saída ganhou prefixo `r_`. O teste prende os dois lados: o SQL
+     versionado não pode voltar a devolver nomes que colidem com colunas, e o
+     bot tem que ler exatamente os nomes que a função devolve. Errar um lado
+     dos dois dá "undefined" na tela, em silêncio. */
+  const sqlArena = readFileSync(`${aqui}/../supabase/migracoes/001-arena.sql`, "utf8");
+  const colunas = ["poder", "ouro", "vitorias", "ataques_dia", "idioma", "dia", "temporada"];
+
+  /* SÓ nas funções plpgsql. Em `language sql` a saída não vira variável, e
+     não há conflito -- cyron_arena_placar devolve `idioma` e `poder` e está
+     correta, aplicada e em uso. Guarda que acusa código certo acaba desligado
+     por quem estiver com pressa, e aí ele não guarda mais nada.
+
+     A primeira versão deste teste era assim, e reprovou três funções boas. */
+  const plpgsql = [...sqlArena.matchAll(
+    /returns table \(([^)]*)\)\s*language plpgsql/gs)];
+  verdade("achei as funções plpgsql para conferir", plpgsql.length >= 2);
+  for (const saida of plpgsql) {
+    for (const campo of saida[1].split(",")) {
+      const nome = campo.trim().split(/\s+/)[0];
+      if (!nome) continue;
+      verdade(`a saída plpgsql "${nome}" não colide com nome de coluna`, !colunas.includes(nome));
+    }
+  }
+
+  const fonteRpc = readFileSync(`${aqui}/index.js`, "utf8");
+  const trecho = fonteRpc.slice(fonteRpc.indexOf("async function cliqueArena"));
+  const usa = trecho.slice(0, trecho.indexOf("\nfunction "));
+  for (const campo of ["r_ok", "r_ouro", "r_poder", "r_vitorias", "r_ataques"]) {
+    verdade(`o bot lê ${campo}, o nome que a função devolve`, usa.includes(campo));
+  }
+  /* E não pode ter sobrado nenhuma leitura pelo nome antigo. */
+  for (const velho of ["r.ok", "r.ouro", "r.poder", "r.vitorias", "r.ataques_dia"]) {
+    verdade(`nenhuma leitura por "${velho}", que não existe mais`, !usa.includes(velho));
+  }
+
+  /* O erro do banco tem que ir para o log. Foi o `.catch(() => null)` que
+     escondeu a mensagem exata por horas e mostrou "não respondeu agora". */
+  verdade("o erro de atacar vai para o log", /arena: atacar falhou/.test(fonteRpc));
+  verdade("o erro de evoluir também", /arena: evoluir falhou/.test(fonteRpc));
+
   /* ---- A Casa se anuncia, e não finge ser gente ----
 
      A alternativa recusada foi criar jogadores falsos para encher o placar.
