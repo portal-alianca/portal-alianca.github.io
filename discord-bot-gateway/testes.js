@@ -3635,6 +3635,82 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+
+/* ============ ninguém deveria procurar onde se escolhe o idioma ============ */
+{
+  const { cartaoDeConvite, devoConvidar, CONVIDAR_DE_NOVO, menuIdioma, OFERTA_TEXTO } =
+    carregar(["LINGUAS_MENU", "nomeNaPropriaLingua", "menuIdioma", "COR",
+      "cartaoDeConvite", "CONVIDAR_DE_NOVO", "devoConvidar", "OFERTA_TITULO", "OFERTA_TEXTO"]);
+
+  /* ---- o cartão da entrada ---- */
+  const convite = cartaoDeConvite();
+  conferirCartao("o convite da entrada", convite, menuIdioma());
+
+  /* Nesta tela eu ainda NÃO sei a língua da pessoa: o Discord só manda o
+     locale em interação, e entrar no servidor não é uma. Então ela é curta e
+     fala as duas — e quem realmente fala é o menu, que é bandeira e nome na
+     própria língua. */
+  verdade("o convite fala inglês", /Pick your language/.test(convite.title));
+  verdade("e português", /Escolha seu idioma/.test(convite.title));
+  verdade("o corpo também vem nas duas",
+    /your language/.test(convite.description) && /sua língua/.test(convite.description));
+  verdade("e é curto, porque quem explica é o menu", convite.description.length < 400);
+
+  /* ---- quem é convidado, e quantas vezes ---- */
+  const AGORA = Date.UTC(2026, 8, 15, 12, 0);
+  const DIA = 86400000;
+  ok("quem nunca escolheu e nunca foi convidado, é", devoConvidar(false, 0, AGORA), true);
+  ok("quem já escolheu, não", devoConvidar(true, 0, AGORA), false);
+  ok("quem já escolheu não é convidado nem tendo sido antes",
+    devoConvidar(true, AGORA - 30 * DIA, AGORA), false);
+  ok("convidado ontem não é convidado de novo", devoConvidar(false, AGORA - DIA, AGORA), false);
+  ok("nem seis dias depois", devoConvidar(false, AGORA - 6 * DIA, AGORA), false);
+  ok("mas depois de sete dias, sim", devoConvidar(false, AGORA - 8 * DIA, AGORA), true);
+  ok("a janela é de sete dias", CONVIDAR_DE_NOVO, 7 * 86400000);
+
+  /* ---- a oferta por escrita vai NA LÍNGUA DELA ---- */
+  verdade("o texto da oferta tem marcador para o nome da língua",
+    OFERTA_TEXTO.includes("{0}"));
+  /* O nome da língua entra como marcador porque já está escrito na própria
+     língua: passar "Deutsch" por um tradutor é pedir para ele estragar. */
+  verdade("e o marcador é a única parte que varia",
+    (OFERTA_TEXTO.match(/\{\d\}/g) || []).length === 1);
+
+  const fonteConv = readFileSync(`${aqui}/index.js`, "utf8");
+  const corpo = fonteConv.slice(
+    fonteConv.indexOf("async function talvezOferecerIdioma"),
+    fonteConv.indexOf("const CANAL_ARENA"));
+  verdade("achei a oferta para conferir", corpo.length > 100);
+  /* A língua DETECTADA é o alvo da tradução. Traduzir para a língua da casa
+     seria a mesma porta fechada de antes, com mais passos. */
+  verdade("a oferta é traduzida para a língua detectada", /falaFixa\(cod,/.test(corpo));
+  verdade("e o nome da língua vai como marcador, sem passar pelo tradutor",
+    /T\(OFERTA_TEXTO, nomeNaPropriaLingua\(cod\)\)/.test(corpo));
+  verdade("quem já escolheu não é incomodado", /if \(await idiomaEscolhido/.test(corpo));
+  verdade("e a dúvida cala em vez de chutar", /if \(!cod\) return/.test(corpo));
+
+  /* ---- o convite na entrada não pode depender de aliança ----
+
+     Era esse o buraco: o guildMemberAdd desiste na segunda linha quando o
+     servidor não tem aliança ligada -- o estado normal de quem instalou o
+     CYRON só pelo tradutor. Com o convite depois disso, o cliente comum não
+     recebia nada, e é justamente onde ninguém sabe onde se escolhe idioma. */
+  /* A partir do handler, e não do começo do arquivo: `aliancaDoGuild` aparece
+     antes dele em outro lugar, e a fatia saía VAZIA -- passando por acidente
+     em vez de conferir alguma coisa. Guarda que mede a coisa errada é guarda
+     nenhum. */
+  const inicioEntrada = fonteConv.indexOf('client.on("guildMemberAdd"');
+  const entrada = fonteConv.slice(inicioEntrada,
+    fonteConv.indexOf("const aliancaId = await aliancaDoGuild", inicioEntrada));
+  verdade("achei a entrada para conferir, e ela não está vazia", entrada.length > 200);
+  verdade("o convite acontece antes de perguntar pela aliança",
+    /convidarParaEscolherIdioma\(member\)/.test(entrada));
+
+  /* E não pode segurar a entrada: convite que espera uma consulta chega
+     depois de a pessoa já ter aberto o primeiro canal. */
+  verdade("e não espera pela consulta", !/await convidarParaEscolherIdioma/.test(fonteConv));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes

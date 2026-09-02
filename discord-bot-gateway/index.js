@@ -371,6 +371,19 @@ client.on("guildMemberAdd", async (member) => {
        vazio. Quem entra no Discord entra uma vez: nao da pra reproduzir depois. */
     const quem = member.displayName || member.user.username;
 
+    /* O convite de idioma vem ANTES de tudo, e nao depende de alianca.
+
+       Daqui pra baixo e' o cartao de boas-vindas do Kingshot, que desiste na
+       linha seguinte quando o servidor nao tem alianca ligada -- o estado
+       NORMAL de quem instalou o CYRON so' pelo tradutor. Com o convite depois
+       disso, o cliente comum nao recebia nada ao entrar alguem: justamente o
+       servidor onde ninguem sabe onde se escolhe o idioma.
+
+       Nao espera: convite que atrasa por causa de uma consulta de alianca e'
+       convite que chega depois de a pessoa ja ter aberto o primeiro canal. */
+    convidarParaEscolherIdioma(member).catch((e) =>
+      console.error("idioma: nao consegui convidar na entrada:", e?.message || e));
+
     const aliancaId = await aliancaDoGuild(member.guild.id);
     if (!aliancaId) {
       /* Nao e' erro: e' o estado NORMAL de quem instalou o CYRON so' pelo
@@ -5303,6 +5316,131 @@ async function cliqueEvento(inter) {
   }
 }
 
+/* ---------------- ninguém deveria procurar onde se escolhe o idioma ----------------
+
+   Tres camadas, e cada uma pega quem a anterior perdeu.
+
+   1. NA ENTRADA. A pessoa chega e recebe o menu de bandeiras no privado, sem
+      procurar nada. E' a hora certa: antes de ela abrir o primeiro canal e
+      concluir que este servidor nao fala com ela.
+
+      Aqui eu NAO sei a lingua dela, e isso e' limite do Discord, nao
+      escolha minha: `locale` so' vem em interacao, e entrar no servidor nao
+      e' uma. Entao esta primeira tela e' curta e bilingue, e quem fala mesmo
+      e' o menu -- bandeira e nome na propria lingua nao precisam de traducao.
+
+   2. NO PRIMEIRO TOQUE. No instante em que ela mexe em qualquer coisa minha,
+      `inter.locale` chega junto e eu passo a falar a lingua do aplicativo
+      dela sem que ela tenha escolhido nada. Isso ja funciona desde o conserto
+      da NYX.
+
+   3. NA PRIMEIRA FRASE. Se ela escrever antes de tocar em qualquer botao, eu
+      reconheco a lingua pelo que ela escreveu e ofereco -- uma vez, e JA NA
+      LINGUA DELA, que e' o unico jeito de a oferta ser lida por quem ela
+      existe pra ajudar. */
+
+function cartaoDeConvite() {
+  return {
+    color: COR,
+    title: "🌐 Pick your language · Escolha seu idioma",
+    description:
+      "Pick your flag below and this server starts reading in your language — " +
+      "announcements, chat, everything.\n\n" +
+      "_Escolha sua bandeira abaixo e este servidor passa a ser lido na sua " +
+      "língua — avisos, conversa, tudo._",
+  };
+}
+
+/* Uma vez por pessoa, e na memoria de proposito.
+
+   Entrar num servidor e' raro; guardar isso no banco criaria uma linha por
+   membro pra resolver um caso que quase nao acontece -- e dado que eu nao
+   guardo e' dado que eu nao preciso prometer apagar. Se o bot reiniciar, o
+   pior caso e' alguem ser convidado duas vezes. */
+const convidados = new Map();
+const CONVIDAR_DE_NOVO = 7 * 24 * 60 * 60 * 1000;
+
+function devoConvidar(jaEscolheu, ultimoConvite, agora = Date.now()) {
+  if (jaEscolheu) return false;
+  return !ultimoConvite || agora - ultimoConvite >= CONVIDAR_DE_NOVO;
+}
+
+async function convidarParaEscolherIdioma(member) {
+  if (member.user?.bot) return;
+
+  const servidor = await servidorDoGuild(member.guild.id);
+  if (!servidor) return;   // servidor sem CYRON instalado
+
+  /* Quem ja escolheu em QUALQUER servidor onde eu esteja nao e' perguntado de
+     novo: a escolha e' da pessoa, e nao do servidor. */
+  const jaEscolheu = !!(await idiomaEscolhido(member.id));
+  if (!devoConvidar(jaEscolheu, convidados.get(member.id))) return;
+  convidados.set(member.id, Date.now());
+  for (const [id, quando] of convidados) {
+    if (Date.now() - quando > CONVIDAR_DE_NOVO) convidados.delete(id);
+  }
+
+  /* Privado fechado e' quase regra em servidor de jogo. O plano B e' a sala
+     de idiomas, que existe exatamente para isto -- e a mensagem solta some
+     sozinha, para a sala nao virar um mural de convites. */
+  const porta = member.guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildText && c.name === CANAL_PORTA);
+
+  const onde = await entregarNoPrivado(member.user, porta, {
+    embeds: [cartaoDeConvite()],
+    components: menuIdioma(),
+  });
+  console.log(onde
+    ? `idioma: convidei ${member.user.username} pelo ${onde}`
+    : `idioma: nao consegui convidar ${member.user.username} (privado fechado e sem sala de idiomas)`);
+}
+
+/* A terceira camada: quem escreveu antes de tocar em qualquer botão.
+
+   E aqui a oferta vai NA LÍNGUA DELA, que é o ponto inteiro. Um convite em
+   português para quem escreve em árabe é a mesma porta fechada de antes, só
+   que com mais passos. Como eu reconheci a língua pela frase, eu já sei em
+   que língua perguntar.
+
+   As duas frases são fixas: vinte idiomas depois, quarenta linhas de cache,
+   uma vez. O nome da língua entra como marcador -- ele já está escrito na
+   própria língua e não pode passar por tradutor. */
+const OFERTA_TITULO = "🌐 Read this server in your language?";
+const OFERTA_TEXTO = "You seem to write in {0}. Pick your flag below and everything " +
+  "here starts arriving in your language — announcements, chat, everything.";
+
+const oferecidos = new Map();
+
+async function talvezOferecerIdioma(msg, servidor, texto) {
+  if (msg.author?.bot) return;
+
+  /* Quem já escolheu não é perguntado, e quem já foi perguntado também não:
+     a oferta é UMA, e gastá-la duas vezes é o mesmo que não tê-la. */
+  if (await idiomaEscolhido(msg.author.id)) return;
+  if (!devoConvidar(false, oferecidos.get(msg.author.id))) return;
+
+  const cod = linguaProvavel(texto);
+  if (!cod) return;   // na dúvida eu calo, para não queimar a única chance
+
+  oferecidos.set(msg.author.id, Date.now());
+  for (const [id, quando] of oferecidos) {
+    if (Date.now() - quando > CONVIDAR_DE_NOVO) oferecidos.delete(id);
+  }
+
+  const T = falaFixa(cod, await motorDoGuild(msg.guild.id).catch(() => MOTOR_AUTO), "en");
+  const onde = await entregarNoPrivado(msg.author, msg.channel, {
+    embeds: [{
+      color: COR,
+      title: await T(OFERTA_TITULO),
+      description: await T(OFERTA_TEXTO, nomeNaPropriaLingua(cod)),
+    }],
+    components: menuIdioma(),
+  });
+  console.log(onde
+    ? `idioma: ofereci ${cod} a ${msg.author.username} pelo ${onde}`
+    : `idioma: nao consegui oferecer ${cod} a ${msg.author.username}`);
+}
+
 const CANAL_ARENA = "⚔️-arena";
 const ARENA_ATAQUES_DIA = 5;
 
@@ -10037,6 +10175,16 @@ client.on("messageCreate", async (msg) => {
     }
 
     const texto = String(msg.content || "").trim();
+
+    /* Reconhecer a língua de quem ainda não escolheu, e oferecer uma vez.
+
+       Fica aqui em cima porque vale para QUALQUER canal: quem se perde não
+       escolhe onde se perder. Sem await -- a oferta não pode segurar a
+       tradução da mensagem, que é o serviço de verdade. */
+    if (texto) {
+      talvezOferecerIdioma(msg, servidor, texto).catch((e) =>
+        console.error("idioma: nao consegui oferecer:", e?.message || e));
+    }
 
     /* Canal de chat espelhado tem regra propria e sai por aqui: nada de
        seletor de traducao nem topico, porque a traducao ja vai acontecer nos
