@@ -127,6 +127,11 @@ const GUARDO_POR = [
   ["discord_msg_traducao", 7, "o texto das mensagens"],
   ["discord_traducao_cache", 90, "o cache de traduções"],
   ["discord_fala_espelhada", 14, "as falas espelhadas"],
+  /* Evento acontecido some sozinho seis horas depois, na varredura que
+     redesenha a agenda. Este prazo e' a rede embaixo: servidor de onde eu fui
+     expulso nao tem varredura, e o que ficou pra tras nao pode ficar pra
+     sempre. A presenca vai junto, por cascata. */
+  ["cyron_evento", 30, "os eventos e quem confirmou presença"],
 ];
 
 async function sbPatch(caminho, corpo) {
@@ -4124,6 +4129,11 @@ async function instalarServidor(guild) {
      ninguem -- e o placar e' o convite. Se a tabela do jogo ainda nao estiver
      no banco, o desenho falha sozinho e sobra um canal com uma frase; o bot
      continua traduzindo, que e' o que ele veio fazer. */
+  await canalPorNomeOuCria(guild, CANAL_EVENTOS,
+    "Eventos com hora. O horário aparece no fuso de cada um. / " +
+    "Events with a time. Everyone sees it in their own clock.")
+    .catch((e) => console.error("instalar: nao consegui criar os eventos:", e?.message || e));
+
   await canalPorNomeOuCria(guild, CANAL_ARENA,
     "Lute pela bandeira que você escolheu. Time pequeno bate mais forte.")
     .then(async (canal) => {
@@ -4772,6 +4782,401 @@ async function reciboDaSemana(guild, servidor) {
    - Resposta efemera. So' quem clicou ve, e some sozinha. A sala fica com UMA
      mensagem fixada -- o placar -- editada no lugar. Nada a apagar, nada
      acumulando. */
+
+/* ---------------- eventos com hora ----------------
+
+   O problema que isto resolve nao e' traducao, e' o vizinho dela.
+
+   Numa alianca internacional o lider escreve "Urso 20:30" e metade nao
+   aparece. Uns nao leram a lingua; outros leram, calcularam o fuso de cabeca
+   e erraram. A lingua o CYRON ja resolve. A hora, nao -- e ela divide o
+   servidor exatamente como o idioma divide.
+
+   O CONSERTO E' DO DISCORD, E E' DE GRACA
+
+   `<t:1757000000:F>` o Discord desenha no relogio de QUEM ESTA OLHANDO. Uma
+   mensagem so', e cada pessoa le no fuso dela, sem eu guardar o fuso de
+   ninguem. Isso importa duas vezes: o recurso sai sem custo e sem dado novo
+   -- e fuso e' dado pessoal que eu teria que prometer apagar na pagina de
+   privacidade.
+
+   O que sobra pra mim e' o pedaco que o Discord nao faz: entender o que o
+   lider digitou, mostrar o cartao, e contar quem vai. */
+
+const CANAL_EVENTOS = "📅-eventos";
+
+/* Quanto tempo um evento fica de pe' depois de acontecer.
+
+   Some sozinho: agenda que acumula evento morto vira mural de coisa que ja
+   passou, e a proxima chamada se perde no meio. */
+const EVENTO_SOBREVIVE = 6 * 60 * 60 * 1000;
+
+/* Teto de um ano. Sem ele, "9999h" viraria um evento no ano 3000 -- e nao ha
+   erro de digitacao mais facil que segurar a tecla. */
+const EVENTO_MAX = 365 * 24 * 60 * 60 * 1000;
+
+/* Le o que o lider digitou em "quando".
+
+   Aceita duas familias, e a diferenca entre elas e' o fuso:
+
+   RELATIVA ("3h", "90m", "2h30", "2d") nao depende de fuso NENHUM -- e por
+   isso e' a forma recomendada, e a que serve pra chamada de rally, que e' o
+   caso mais comum: "daqui a 3 horas" quer dizer a mesma coisa no mundo todo.
+
+   DE RELOGIO ("20:30", "15/09 20:30") depende de saber em que fuso o lider
+   pensou. Esse numero vem de fora, e quando nao vier vale UTC -- errado por
+   algumas horas e' melhor que recusar a criacao do evento.
+
+   Devolve o instante em ms, ou null quando nao entendeu. Nunca chuta: evento
+   marcado na hora errada e' pior que evento nao criado, porque o pessoal
+   aparece e nao ha ninguem. */
+function quandoDoTexto(bruto, agora = Date.now(), fusoMin = 0) {
+  const t = String(bruto || "").trim().toLowerCase()
+    .replace(/\s+/g, " ")
+    /* "às", "as", "em", "in", "at" na frente sao ruido de quem escreve como
+       fala. Tirar aqui e' mais barato que ensinar todo mundo a sintaxe. */
+    .replace(/^(?:às|as|em|in|at|daqui a|dentro de)\s+/, "");
+  if (!t) return null;
+
+  const somar = (ms) => (ms > 0 && ms <= EVENTO_MAX ? agora + ms : null);
+
+  let m;
+  /* "2h30m" -- com o "m" no fim, e nao "2h30".
+
+     "20h30" e' a armadilha deste parser. Como duracao seria "vinte horas e
+     meia a partir de agora"; escrito por um brasileiro e' quase sempre
+     8h30 da noite. As duas leituras sao defensaveis, e uma delas marca o
+     evento vinte horas fora do lugar -- com o pessoal aparecendo e nao
+     achando ninguem.
+
+     Entao a regra e' de forma, e nao de adivinhacao pelo tamanho do numero:
+     DOIS-PONTOS e' relogio, "m" no fim e' duracao, e o meio-termo e'
+     RECUSADO logo abaixo com uma frase que ensina os dois. Recusar custa uma
+     correcao; chutar custa a chamada inteira. */
+  if ((m = t.match(/^(\d{1,4})\s*h(?:oras?|rs?|s)?\s*(\d{1,2})\s*(?:m|min|minutos?)$/))) {
+    const min = Number(m[2]);
+    if (min > 59) return null;
+    return somar((Number(m[1]) * 60 + min) * 60000);
+  }
+  if ((m = t.match(/^(\d{1,4})\s*h(?:oras?|rs?|s)?$/))) return somar(Number(m[1]) * 3600000);
+  if ((m = t.match(/^(\d{1,5})\s*(?:m|min|mins|minutos?)$/))) return somar(Number(m[1]) * 60000);
+  if ((m = t.match(/^(\d{1,3})\s*d(?:ias?)?$/))) return somar(Number(m[1]) * 86400000);
+
+  /* A forma ambigua morre aqui.
+
+     Hoje isto e' redundante: o relogio exige DOIS-PONTOS logo abaixo, entao
+     "20h30" cairia fora de qualquer jeito -- conferi apagando esta linha e a
+     bateria seguiu verde. Fica porque afrouxar o relogio depois e' uma
+     mudanca de uma letra, e ela devolveria a ambiguidade em silencio. */
+  if (/^\d{1,4}\s*h\s*\d{1,2}$/.test(t)) return null;
+
+  /* Daqui pra baixo e' relogio, e ai o fuso entra. */
+  const daData = (ano, mes, dia, hora, min) => {
+    if (hora > 23 || min > 59 || mes < 1 || mes > 12 || dia < 1 || dia > 31) return null;
+    const ms = Date.UTC(ano, mes - 1, dia, hora, min) - fusoMin * 60000;
+    /* Date.UTC aceita 31 de fevereiro e devolve 3 de março. Conferir de volta
+       recusa a data que nao existe em vez de marcar o evento noutro dia. */
+    const d = new Date(ms + fusoMin * 60000);
+    if (d.getUTCMonth() !== mes - 1 || d.getUTCDate() !== dia) return null;
+    return ms;
+  };
+
+  /* "15/09 20:30" e "15/09/2026 20:30". Dia antes do mes: e' como se escreve
+     em quase todo lugar que nao os Estados Unidos, e o servidor e' daqui. */
+  if ((m = t.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s+(\d{1,2}):(\d{2})$/))) {
+    const hoje = new Date(agora + fusoMin * 60000);
+    const ano = m[3] ? (m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : hoje.getUTCFullYear();
+    const quando = daData(ano, Number(m[2]), Number(m[1]), Number(m[4]), Number(m[5]));
+    if (quando === null) return null;
+    /* Sem ano e a data ja passou: e' o ano que vem. Quem escreve "05/01" em
+       dezembro esta falando do proximo janeiro, nao do que passou. */
+    if (!m[3] && quando < agora) {
+      return daData(ano + 1, Number(m[2]), Number(m[1]), Number(m[4]), Number(m[5]));
+    }
+    return quando <= agora + EVENTO_MAX ? quando : null;
+  }
+
+  /* "20:30" ou "20h30" sozinho: hoje, e amanha se ja passou. */
+  if ((m = t.match(/^(\d{1,2}):(\d{2})$/))) {
+    const hoje = new Date(agora + fusoMin * 60000);
+    const quando = daData(hoje.getUTCFullYear(), hoje.getUTCMonth() + 1, hoje.getUTCDate(),
+      Number(m[1]), Number(m[2]));
+    if (quando === null) return null;
+    return quando > agora ? quando : quando + 86400000;
+  }
+
+  return null;
+}
+
+/* "-3", "+2", "-03:00", "utc-3", "gmt+5:30" -> minutos a leste de UTC.
+   Devolve null quando nao entendeu, e ai quem chama decide o que fazer. */
+function fusoDoTexto(bruto) {
+  const t = String(bruto || "").trim().toLowerCase().replace(/\s+/g, "").replace(/^(?:utc|gmt)/, "");
+  if (!t) return null;
+  const m = t.match(/^([+-]?)(\d{1,2})(?::?(\d{2}))?$/);
+  if (!m) return null;
+  const horas = Number(m[2]);
+  const min = Number(m[3] || 0);
+  if (horas > 14 || min > 59) return null;
+  return (m[1] === "-" ? -1 : 1) * (horas * 60 + min);
+}
+
+/* O cartao do evento.
+
+   O titulo e os detalhes sao as palavras do lider, e ficam como ele
+   escreveu: e' UMA mensagem para o servidor inteiro, como o placar. O 🌐 ao
+   lado devolve a copia traduzida de cada um.
+
+   Mas a HORA -- que e' a informacao que faz alguem aparecer ou nao -- ja sai
+   pessoal aqui, de graca, porque <t:unix:F> o Discord desenha no relogio de
+   quem le. Metade do trabalho de traduzir um evento e' o fuso, e essa metade
+   nao custa nada. */
+function cartaoDoEvento(ev, presencas = [], agora = Date.now()) {
+  const s = Math.floor(new Date(ev.quando).getTime() / 1000);
+  const passou = new Date(ev.quando).getTime() <= agora;
+
+  const partes = [`🕒 <t:${s}:F>`, `⏳ <t:${s}:R>`];
+  if (ev.detalhes) partes.push("", String(ev.detalhes));
+
+  const campos = [];
+  if (ev.votacao) {
+    const vao = presencas.filter((p) => p.vai);
+    const nao = presencas.filter((p) => !p.vai);
+    /* Nomes em mencao, e nao em texto: mencao nao tem lingua, cabe em poucos
+       caracteres e o Discord desenha o apelido de cada servidor sozinho. */
+    const lista = (gente) => gente.length
+      ? gente.slice(0, 20).map((p) => `<@${p.discord_user_id}>`).join(" ") +
+        (gente.length > 20 ? ` +${gente.length - 20}` : "")
+      : "—";
+    campos.push({ name: `✋ ${vao.length}`, value: lista(vao), inline: true });
+    campos.push({ name: `😴 ${nao.length}`, value: lista(nao), inline: true });
+  }
+
+  return {
+    color: passou ? 0x9aa0a6 : COR,
+    title: `${passou ? "✔️" : "📅"} ${String(ev.titulo).slice(0, 240)}`,
+    description: partes.join("\n"),
+    ...(campos.length ? { fields: campos } : {}),
+    footer: { text: "🌐 read this in your language · the time is already in your clock" },
+  };
+}
+
+/* `agora` entra por fora, como no cartão.
+
+   Estava lendo Date.now() aqui dentro, e com isso a função não tinha como ser
+   testada num instante escolhido -- o teste do evento passado passava por
+   acidente, porque a data inventada ainda era futura no relógio de verdade. */
+function botoesDoEvento(ev, agora = Date.now()) {
+  const linha = [];
+  if (ev.votacao && new Date(ev.quando).getTime() > agora) {
+    linha.push(
+      { type: 2, custom_id: `evento:vou:${ev.id}`, style: 3, emoji: { name: "✋" }, label: "I'm in" },
+      { type: 2, custom_id: `evento:nao:${ev.id}`, style: 2, emoji: { name: "😴" }, label: "Can't" },
+    );
+  }
+  linha.push({ type: 2, custom_id: `evento:idioma:${ev.id}`, style: 2,
+    emoji: { name: "🌐" }, label: "My language" });
+  return [{ type: 1, components: linha }];
+}
+
+/* Tudo abaixo e' tolerante a tabela que ainda nao existe: leitura que falha
+   devolve vazio, e a agenda simplesmente nao aparece. O bot segue traduzindo,
+   que e' o que ele veio fazer -- mesma regra da arena. */
+async function eventosDoServidor(servidorId) {
+  const desde = new Date(Date.now() - EVENTO_SOBREVIVE).toISOString();
+  return await sb(`cyron_evento?servidor_id=eq.${servidorId}&quando=gte.${desde}` +
+    "&select=id,titulo,detalhes,quando,votacao,msg_id&order=quando.asc")
+    .catch(() => null) || [];
+}
+
+async function presencasDoEvento(id) {
+  return await sb(`cyron_evento_presenca?evento_id=eq.${id}&select=discord_user_id,vai`)
+    .catch(() => null) || [];
+}
+
+/* Um evento, uma mensagem, editada no lugar.
+
+   Diferente do placar, que e' UM cartao para sempre: evento nasce, acontece e
+   morre. Por isso cada um guarda o proprio msg_id -- e por isso a varredura
+   tambem APAGA, senao a sala vira mural de coisa que ja passou e a proxima
+   chamada se perde no meio. */
+async function desenharEventos(guild, servidor) {
+  const canal = guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildText && c.name === CANAL_EVENTOS);
+  if (!canal) return;
+
+  const eventos = await eventosDoServidor(servidor.id);
+  for (const ev of eventos) {
+    const carga = {
+      embeds: [cartaoDoEvento(ev, ev.votacao ? await presencasDoEvento(ev.id) : [])],
+      components: botoesDoEvento(ev),
+      allowedMentions: { parse: [] },
+    };
+    if (ev.msg_id) {
+      const antiga = await canal.messages.fetch(ev.msg_id).catch(() => null);
+      if (antiga) {
+        await antiga.edit(carga).catch((e) =>
+          console.error("eventos: nao consegui editar o cartão:", e?.message || e));
+        continue;
+      }
+    }
+    const nova = await canal.send(carga).catch((e) => {
+      console.error("eventos: nao consegui postar o cartão:", e?.message || e);
+      return null;
+    });
+    if (nova) await sbPatch(`cyron_evento?id=eq.${ev.id}`, { msg_id: nova.id }).catch(() => {});
+  }
+
+  /* O que ja passou do prazo sai da sala E do banco. */
+  const velhos = await sb(`cyron_evento?servidor_id=eq.${servidor.id}` +
+    `&quando=lt.${new Date(Date.now() - EVENTO_SOBREVIVE).toISOString()}&select=id,msg_id`)
+    .catch(() => null) || [];
+  for (const v of velhos) {
+    if (v.msg_id) {
+      const m = await canal.messages.fetch(v.msg_id).catch(() => null);
+      if (m) await m.delete().catch(() => {});
+    }
+    await sbDel(`cyron_evento?id=eq.${v.id}`).catch(() => {});
+  }
+}
+
+async function atualizarEventos() {
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const servidor = await servidorDoGuild(guild.id);
+      if (!servidor) continue;
+      await desenharEventos(guild, servidor);
+    } catch (e) {
+      console.error("eventos: nao consegui desenhar em", guild.name, e?.message || e);
+    }
+  }
+}
+
+/* O lider mandou a janela de volta. */
+async function criarEvento(inter) {
+  await inter.deferReply({ flags: 64 });
+
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.editReply({ content: "Ainda não terminei de me instalar aqui." });
+
+  const titulo = inter.fields.getTextInputValue("titulo").trim();
+  const bruto = inter.fields.getTextInputValue("quando").trim();
+  const detalhes = (inter.fields.getTextInputValue("detalhes") || "").trim();
+  const fusoBruto = (inter.fields.getTextInputValue("fuso") || "").trim();
+
+  const fuso = fusoDoTexto(fusoBruto);
+  if (fusoBruto && fuso === null) {
+    return inter.editReply({ content:
+      `🤔 Não entendi o fuso **${fusoBruto}**. Escreva como \`-3\`, \`+2\` ou \`+5:30\`.` });
+  }
+
+  const quando = quandoDoTexto(bruto, Date.now(), fuso ?? 0);
+  if (quando === null) {
+    /* A recusa ENSINA, porque a forma ambígua é a que mais vai aparecer:
+       "20h30" some aqui e a pessoa precisa saber para onde ir. */
+    return inter.editReply({ content:
+      `🤔 Não entendi **${bruto}**.\n\n` +
+      "**Daqui a tanto tempo:** `3h` · `90m` · `2h30m` · `2d`\n" +
+      "**Hora marcada:** `20:30` · `16/09 20:30` — com dois-pontos\n\n" +
+      "_`20h30` eu recuso de propósito: como duração seriam vinte horas e meia, " +
+      "como relógio seriam oito e meia da noite, e marcar no horário errado é " +
+      "pior que não marcar._" });
+  }
+
+  /* O fuso deste oficial fica lembrado para a próxima janela vir preenchida. */
+  if (fuso !== null) await porAjuste(`fuso:${inter.user.id}`, String(fuso)).catch(() => {});
+
+  const criado = await sbPost("cyron_evento", {
+    servidor_id: servidor.id, guild_id: inter.guildId, titulo,
+    detalhes: detalhes || null, quando: new Date(quando).toISOString(),
+    votacao: false, criado_por: inter.user.id,
+  }).catch((e) => {
+    console.error("eventos: nao consegui criar:", e?.message || e);
+    return null;
+  });
+  const ev = Array.isArray(criado) ? criado[0] : criado;
+  if (!ev?.id) {
+    return inter.editReply({ content:
+      "Não consegui guardar o evento. Se isto continuar, a tabela dos eventos " +
+      "pode não ter sido criada ainda — está em `supabase/migracoes/002-eventos.sql`." });
+  }
+
+  await desenharEventos(inter.guild, servidor).catch(() => {});
+
+  const s = Math.floor(quando / 1000);
+  return inter.editReply({
+    content: `📅 **${titulo}** marcado para <t:${s}:F> — <t:${s}:R>.\n` +
+      "_Cada pessoa vê esse horário no fuso dela._",
+    components: [{ type: 1, components: [
+      { type: 2, custom_id: `evento:votacao:${ev.id}`, style: 1, emoji: { name: "✋" },
+        label: "Adicionar votação de presença" },
+      { type: 2, custom_id: `evento:apagar:${ev.id}`, style: 4, emoji: { name: "🗑️" },
+        label: "Apagar" },
+    ] }],
+  });
+}
+
+async function cliqueEvento(inter) {
+  const [, acao, id] = inter.customId.split(":");
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui." });
+
+  const ev = (await sb(`cyron_evento?id=eq.${id}&select=id,titulo,detalhes,quando,votacao,msg_id,criado_por`)
+    .catch(() => null))?.[0];
+  if (!ev) return inter.reply({ flags: 64, content: "Esse evento não existe mais." });
+
+  /* Ligar a votação e apagar são do LÍDER. A checagem é no clique, e não só
+     no botão: botão escondido não é botão protegido. */
+  if (acao === "votacao" || acao === "apagar") {
+    if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      return inter.reply({ flags: 64, content: "Só quem administra o servidor pode mexer no evento." });
+    }
+    await inter.deferUpdate();
+    if (acao === "apagar") {
+      if (ev.msg_id) {
+        const canal = inter.guild.channels.cache.find(
+          (c) => c.type === ChannelType.GuildText && c.name === CANAL_EVENTOS);
+        const m = canal && await canal.messages.fetch(ev.msg_id).catch(() => null);
+        if (m) await m.delete().catch(() => {});
+      }
+      await sbDel(`cyron_evento?id=eq.${ev.id}`).catch(() => {});
+      return inter.editReply({ content: "🗑️ Evento apagado.", components: [] });
+    }
+    await sbPatch(`cyron_evento?id=eq.${ev.id}`, { votacao: !ev.votacao }).catch(() => {});
+    await desenharEventos(inter.guild, servidor).catch(() => {});
+    return inter.editReply({
+      content: ev.votacao ? "Votação de presença desligada." : "✋ Votação de presença ligada.",
+      components: [],
+    });
+  }
+
+  /* O 🌐: a cópia traduzida deste evento, só para quem pediu. */
+  if (acao === "idioma") {
+    await inter.deferReply({ flags: 64 });
+    const escolhido = await idiomaEscolhido(inter.user.id);
+    const idioma = escolhido || idiomaDoAplicativo(inter.locale) || "en";
+    const presencas = ev.votacao ? await presencasDoEvento(ev.id) : [];
+    const cartao = cartaoDoEvento(ev, presencas);
+    /* O horário sai do tradutor: <t:...> não é texto, é marcação, e traduzir
+       marcação a quebra. Ele já está no fuso de quem lê de qualquer jeito. */
+    return inter.editReply({
+      embeds: [{ color: cartao.color, ...(await traduzirEmbed(
+        { ...cartao, description: undefined }, idioma, await motorDoGuild(inter.guildId))),
+        description: cartao.description }],
+    });
+  }
+
+  /* Presença. Um upsert por pessoa: dois cliques no mesmo instante não
+     disputam nada, porque cada um escreve a própria linha. */
+  if (acao === "vou" || acao === "nao") {
+    await inter.deferUpdate();
+    await sbPost("cyron_evento_presenca",
+      { evento_id: Number(ev.id), discord_user_id: inter.user.id, vai: acao === "vou" },
+      "resolution=merge-duplicates").catch((e) =>
+        console.error("eventos: nao consegui guardar a presenca:", e?.message || e));
+    await desenharEventos(inter.guild, servidor).catch(() => {});
+  }
+}
 
 const CANAL_ARENA = "⚔️-arena";
 const ARENA_ATAQUES_DIA = 5;
@@ -6531,6 +6936,42 @@ async function atualizarUmCartao(guild) {
    Ele entra por janela, e nao por mensagem no canal, pelo mesmo motivo da
    chave de API: um codigo postado num canal e' um codigo que outra pessoa
    resgata primeiro. */
+/* A janela de criar evento.
+
+   O campo do fuso vem PREENCHIDO com o que este oficial usou da ultima vez.
+   Ele so' importa para hora de relogio, e depois da primeira vez ninguem
+   toca nele -- que e' o unico jeito de pedir fuso sem transformar cada
+   chamada de rally em formulario. */
+function janelaDoEvento(fusoLembrado = "") {
+  return {
+    custom_id: "evento:novo",
+    title: "Novo evento",
+    components: [
+      { type: 1, components: [{
+        type: 4, custom_id: "titulo", style: 1, required: true, max_length: 100,
+        label: "O quê", placeholder: "Urso · Bear Trap",
+      }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "quando", style: 1, required: true, max_length: 40,
+        label: "Quando",
+        /* O exemplo ENSINA a diferença entre as duas famílias, porque é ela
+           que decide se o fuso entra na conta. */
+        placeholder: "3h · 90m · 20:30 · 16/09 20:30",
+      }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "fuso", style: 1, required: false, max_length: 10,
+        label: "Seu fuso (só para hora de relógio)",
+        placeholder: "-3", value: fusoLembrado || undefined,
+      }] },
+      { type: 1, components: [{
+        type: 4, custom_id: "detalhes", style: 2, required: false, max_length: 800,
+        label: "Detalhes (opcional)",
+        placeholder: "Tropa de cavalaria, nível 5.",
+      }] },
+    ],
+  };
+}
+
 function janelaDoCodigo() {
   return {
     custom_id: "cyron:codigo",
@@ -9159,6 +9600,15 @@ async function comandoDeInteracao(inter) {
   if (nome === "help") return comandoAjuda(inter);
   if (nome === "admin") return comandoAdmin(inter);
   if (nome === "arena") return comandoArena(inter);
+  if (nome === "evento") {
+    if (!inter.guildId) {
+      return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
+    }
+    /* A janela abre com o fuso que este oficial já usou: depois da primeira
+       vez, marcar um evento é digitar duas coisas. */
+    const lembrado = (await ajustes())[`fuso:${inter.user.id}`] || "";
+    return inter.showModal(janelaValida(janelaDoEvento(lembrado)));
+  }
 
   /* Os comandos que o dono escreveu vem DEPOIS dos meus, nao antes.
 
@@ -9305,6 +9755,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("cyron:")) {
       return await cliquePainel(inter);
     }
+    if (inter.isMessageComponent() && inter.customId.startsWith("evento:")) {
+      return await cliqueEvento(inter);
+    }
     if (inter.isMessageComponent() && inter.customId.startsWith("arena:")) {
       return await cliqueArena(inter);
     }
@@ -9344,6 +9797,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:palavras") return await salvarPalavras(inter);
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
+      if (inter.customId === "evento:novo") return await criarEvento(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       if (inter.customId === "admin:chaves") return await salvarChaves(inter);
@@ -9813,7 +10267,7 @@ client.on("messageReactionAdd", async (reacao, quem) => {
    A lista diz "nao mexa nisto", e nao "todo mundo usa". Sem ele aqui,
    separarComandos leria /admin como comando do jogo e o empurraria pros
    servidores com alianca -- exatamente o contrario do que ele e'. */
-const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help", "admin", "arena"]);
+const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help", "admin", "arena", "evento"]);
 
 async function separarComandos() {
   try {
@@ -10235,7 +10689,7 @@ async function janelaDeComando(existente) {
    lugar do /ranking do Kingshot. Lista escrita a mao erra assim, calada;
    por isso salvarComando tambem pergunta ao Discord o que ja' existe. */
 const NOMES_MEUS = new Set([
-  "cyron", "help", "admin", "mylanguage", "arena", "settings", "portal", "player", "events", "ranking",
+  "cyron", "help", "admin", "mylanguage", "arena", "evento", "settings", "portal", "player", "events", "ranking",
 ]);
 
 /* Uma linha do formulario que carrega duas respostas: "todos 60".
@@ -10558,6 +11012,15 @@ const GLOBAIS_DO_CYRON = [
     dmPermission: false,
   },
   {
+    /* Só de quem administra: é ele que convoca. Quem não tem o cargo nem vê
+       o comando na lista, e a checagem no clique continua existindo porque
+       cargo muda depois do comando publicado. */
+    name: "evento",
+    description: "Marcar um evento com hora / Schedule an event",
+    defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+    dmPermission: false,
+  },
+  {
     /* De todo mundo, como o /help: o placar fixado e' bilingue por ser uma
        mensagem so', e este comando e' a saida para quem nao le nenhuma das
        duas linguas. */
@@ -10651,6 +11114,7 @@ async function umaPassada() {
   await garantirConvites().catch((e) => console.error("portaria: passada falhou:", e?.message || e));
   await atualizarCartoes().catch((e) => console.error("config: cartões falharam:", e?.message || e));
   await atualizarArenas().catch((e) => console.error("arena: passada falhou:", e?.message || e));
+  await atualizarEventos().catch((e) => console.error("eventos: passada falhou:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
   await rodarComandosAgendados().catch((e) => console.error("agendado: passada falhou:", e?.message || e));
   await deHoraEmHora().catch((e) => console.error("hora: passada falhou:", e?.message || e));
