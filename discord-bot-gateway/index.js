@@ -11,7 +11,7 @@
  * de ambiente (ver .env.example).
  */
 
-import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType, MessageType } from "discord.js";
+import { Client, GatewayIntentBits, Partials, Options, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType, MessageType } from "discord.js";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 /* O catalogo do que eu faco. Mora fora daqui porque a pagina cyron/recursos.html
    nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
@@ -50,7 +50,56 @@ const client = new Client({
      evento e' descartado em silencio -- que e', justamente, a conversa velha
      que alguem quer entender. */
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
+
+  /* Quanto eu posso guardar na memória.
+   *
+   * A máquina tem 256 MB, e o discord.js guarda por padrão as últimas 200
+   * mensagens DE CADA CANAL -- com o conteúdo, porque eu peço MessageContent.
+   * Num servidor pago são até 200 canais: quarenta mil mensagens paradas na
+   * memória de um processo que nunca lê nenhuma delas. Todo lugar aqui que
+   * precisa de uma mensagem específica a busca por id (`messages.fetch`), e
+   * não existe nenhum `messages.cache` no arquivo inteiro.
+   *
+   * Estourar os 256 MB não dá erro: o Fly mata o processo e o reinicia. Quem
+   * clicou naquele segundo vê "CYRON não respondeu a tempo" e o canal de
+   * erros fica vazio, porque não houve erro -- houve morte.
+   *
+   * Membro fica de fora deste corte de propósito: `cargo.members.size` conta
+   * quem lê cada língua, e é o que o recibo da semana mostra. */
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    MessageManager: 25,
+  }),
+  sweepers: {
+    ...Options.DefaultSweeperSettings,
+    messages: { interval: 600, lifetime: 1800 },
+    /* O tradutor por mensagem abre um tópico por mensagem e o arquiva. Eles
+       não somem da memória sozinhos. */
+    threads: { interval: 3600, lifetime: 3600 },
+  },
 });
+
+/* Desde quando este processo está de pé.
+
+   Reinício não deixava rastro nenhum: o painel de saúde falava das cotas dos
+   tradutores, que é o que eu sabia perguntar, e não do próprio bot. */
+const NASCI = Date.now();
+
+/* O que a máquina do Fly tem, escrito aqui para o cartão de saúde poder dizer
+   "180 MB de 256" em vez de "180 MB" -- que sozinho não diz nada. Se o
+   fly.toml mudar, isto muda junto; um teste confere que os dois batem. */
+const TETO_MEMORIA = 256;
+
+/* Quantas mensagens estão paradas na memória agora.
+
+   É o número que o corte do makeCache existe para segurar. Sem ele à vista, o
+   limite é uma linha de configuração em que se acredita; com ele, é uma coisa
+   que se confere. */
+function mensagensGuardadas() {
+  let n = 0;
+  for (const [, canal] of client.channels.cache) n += canal.messages?.cache?.size ?? 0;
+  return n;
+}
 
 /* ---------------- Supabase (mesmo padrao do top-discord) ---------------- */
 
@@ -8640,7 +8689,11 @@ async function embedDeSaude() {
           : "🟢 sem falhas desde que subi" },
       { name: "Chaves próprias", value: `${(motores || []).length} servidores`, inline: true },
       ...(await camposDeCota()),
-      { name: "Memória", value: `${Math.round(process.memoryUsage().rss / 1048576)} MB`, inline: true },
+      /* Com o teto junto, porque MB sozinho não diz nada: 190 é confortável
+         numa máquina de 512 e é véspera de morte numa de 256 -- e morrer aqui
+         não dá erro, dá "não respondeu a tempo" em quem clicou. */
+      { name: "Memória", value: `${Math.round(process.memoryUsage().rss / 1048576)} MB de ${TETO_MEMORIA} MB`, inline: true },
+      { name: "Mensagens guardadas", value: `${mensagensGuardadas()}`, inline: true },
     ],
     footer: { text: "os contadores zeram quando eu reinicio" },
   };
@@ -11568,8 +11621,59 @@ async function deHoraEmHora() {
   await talvezOCartaoDoDia().catch((e) => console.error("diário: cartão falhou:", e?.message || e));
 }
 
+/* Morrer não pode ser silencioso.
+
+   Duas vezes num dia apareceu "não respondeu a tempo" -- uma no /evento, uma
+   num botão da arena -- e as duas com o canal de erros vazio. Erro nenhum é
+   compatível com duas coisas: uma demora, ou uma morte. A demora eu já cortei
+   (nada vai à rede antes de reconhecer a interação); a morte não deixava
+   rastro nenhum, e é justamente a que produz esse aviso em qualquer botão, de
+   qualquer comando, sem padrão.
+
+   A batida é uma linha no cyron_ajuste a cada dois minutos. Ao subir eu leio a
+   última: se ela é recente, o processo anterior não se despediu -- foi morto,
+   quase sempre por estourar os 256 MB da máquina. Se é antiga (ou não existe),
+   foi publicação minha, ou a primeira vez.
+
+   Sem limiar de barulho de propósito: um reinício por semana é uma linha por
+   semana; um a cada dez minutos faz o canal gritar, que é exatamente o que se
+   quer quando o bot está morrendo em silêncio. */
+const BATIDA = 2 * 60 * 1000;
+
+async function contarQueVoltei() {
+  const antes = Number((await ajustes().catch(() => ({})))["visto"]) || 0;
+  const parado = antes ? Date.now() - antes : null;
+  const morreu = parado !== null && parado < 3 * BATIDA;
+
+  await avisarNoPainel(CANAL_ERROS, {
+    embeds: [{
+      color: morreu ? 0xE03E3E : 0x5EBB83,
+      title: morreu ? "💀 Eu morri e voltei" : "🔄 Subi de novo",
+      description: morreu
+        ? "O processo anterior não se despediu: a última batida foi há " +
+          `${Math.round(parado / 1000)}s e elas são de ${BATIDA / 1000} em ${BATIDA / 1000}s.\n\n` +
+          "Quem clicou em algo nesse intervalo viu **“não respondeu a tempo”**. " +
+          "A causa quase sempre é memória: a máquina tem 256 MB e o Fly mata sem avisar."
+        : parado === null
+          ? "Primeira vez que eu conto isso — daqui pra frente todo reinício aparece aqui."
+          : `Sem batida há ${Math.round(parado / 60000)} min, então isto foi publicação, e não queda.`,
+      timestamp: new Date().toISOString(),
+    }],
+  });
+}
+
 client.once("clientReady", () => {
   console.log(`Conectado como ${client.user.tag}, em ${client.guilds.cache.size} servidor(es).`);
+
+  /* Contar primeiro, gravar depois: gravar antes apagaria a prova. */
+  contarQueVoltei()
+    .catch((e) => console.error("batida: nao consegui contar que voltei:", e?.message || e))
+    .finally(() => {
+      const bater = () => porAjuste("visto", String(Date.now()))
+        .catch((e) => console.error("batida: nao consegui bater:", e?.message || e));
+      bater();
+      setInterval(bater, BATIDA);
+    });
   /* Os comandos do dono voltam a existir depois de cada reinicio. Eles moram
      no banco, mas quem os registra no Discord e' o bot ao subir -- sem isto,
      um reinicio deixaria /ranking na lista do Discord apontando pra um bot
