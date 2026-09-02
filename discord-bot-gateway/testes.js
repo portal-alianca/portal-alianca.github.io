@@ -3711,6 +3711,55 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e não espera pela consulta", !/await convidarParaEscolherIdioma/.test(fonteConv));
 }
 
+
+/* ============ a porta se acha pelo ID guardado, não pelo nome ============
+
+   O primeiro servidor de verdade mostrou isto: o [TOP] Best não tem nenhum
+   canal chamado "🌐-idioma-language", e mesmo assim TEM porta. A instalação
+   guarda o canal ESCOLHIDO em discord_convite_idioma, e só cria um canal com
+   esse nome quando ainda não existe porta nenhuma -- num servidor que já
+   tinha lugar para isso, a porta é o canal que já existia.
+
+   Procurar pelo nome era inventar uma segunda fonte de verdade sobre onde
+   fica a porta, quando a primeira já estava no banco. E o plano B do convite
+   morria calado justamente onde o privado fechado é mais comum. */
+{
+  const fonteP = readFileSync(`${aqui}/index.js`, "utf8");
+  const convite = fonteP.slice(
+    fonteP.indexOf("async function convidarParaEscolherIdioma"),
+    fonteP.indexOf("const CANAL_ARENA"));
+  verdade("achei o convite para conferir", convite.length > 200);
+
+  verdade("a porta vem da linha guardada no banco",
+    /discord_convite_idioma\?servidor_id=eq\.\$\{servidor\.id\}/.test(convite));
+  verdade("e é buscada pelo id que estava lá",
+    /channels\.fetch\(linha\.canal_id\)/.test(convite));
+  /* O nome do canal não pode voltar a decidir onde fica a porta.
+
+     Sem os comentários: o texto que EXPLICA o erro antigo cita `c.name ===
+     CANAL_PORTA` de propósito, e a primeira versão deste teste reprovou o
+     código certo por causa da própria explicação. Mesma armadilha do
+     `timestamptz` no SQL dos eventos. */
+  const codigo = convite.replace(/\/\*[^]*?\*\//g, "");
+  verdade("o nome do canal não é usado para achar a porta",
+    !/c\.name === CANAL_PORTA/.test(codigo));
+  verdade("e o conferidor está olhando código de verdade", /channels\.fetch/.test(codigo));
+
+  /* O resto do sistema já achava a porta assim; agora o convite também.
+     Duas maneiras de responder "onde fica a porta" divergem no dia em que
+     alguém mexer numa delas. */
+  const portaria = fonteP.slice(
+    fonteP.indexOf("async function garantirConvites"),
+    fonteP.indexOf("async function garantirConvites") + 1200);
+  verdade("a portaria também lê a linha do banco",
+    /discord_convite_idioma\?servidor_id=eq/.test(portaria));
+
+  /* Sem porta gravada, o convite não pode estourar: privado fechado e sem
+     plano B é um caso normal, e ele tem que virar log e não exceção. */
+  verdade("porta ausente vira null, e não erro", /linha\?\.canal_id\s*\n?\s*\?/.test(convite));
+  verdade("e o log diz que não deu", /nao consegui convidar/.test(convite));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes

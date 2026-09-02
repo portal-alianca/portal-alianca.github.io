@@ -5382,9 +5382,25 @@ async function convidarParaEscolherIdioma(member) {
 
   /* Privado fechado e' quase regra em servidor de jogo. O plano B e' a sala
      de idiomas, que existe exatamente para isto -- e a mensagem solta some
-     sozinha, para a sala nao virar um mural de convites. */
-  const porta = member.guild.channels.cache.find(
-    (c) => c.type === ChannelType.GuildText && c.name === CANAL_PORTA);
+     sozinha, para a sala nao virar um mural de convites.
+
+     A porta se acha pelo ID GUARDADO, e nao pelo nome do canal.
+
+     Eu tinha escrito `c.name === CANAL_PORTA`, e no primeiro servidor de
+     verdade isso nao achou nada: o [TOP] Best nao tem nenhum canal chamado
+     "🌐-idioma-language". E tem porta -- a instalacao guarda o canal
+     ESCOLHIDO em discord_convite_idioma, e so' cria um canal novo com esse
+     nome quando ainda nao existe porta nenhuma. Num servidor que ja tinha
+     lugar pra isso, a porta e' o canal que ja existia.
+
+     Procurar pelo nome era eu inventando uma segunda fonte de verdade sobre
+     onde fica a porta, quando a primeira ja estava no banco. */
+  const linha = (await sb(
+    `discord_convite_idioma?servidor_id=eq.${servidor.id}&tipo=eq.convite&select=canal_id&limit=1`)
+    .catch(() => null))?.[0];
+  const porta = linha?.canal_id
+    ? await member.guild.channels.fetch(linha.canal_id).catch(() => null)
+    : null;
 
   const onde = await entregarNoPrivado(member.user, porta, {
     embeds: [cartaoDeConvite()],
