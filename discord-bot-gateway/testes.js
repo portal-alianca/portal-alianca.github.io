@@ -3760,6 +3760,99 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e o log diz que não deu", /nao consegui convidar/.test(convite));
 }
 
+
+/* ============ marcar um evento sem aprender sintaxe ============
+
+   "O /evento está me irritando, que difícil colocar um evento." Estava certo:
+   o desenho anterior obrigava a decorar uma sintaxe e só dizia se tinha
+   entendido DEPOIS de enviar. Numa chamada de rally ninguém tem paciência
+   para isso.
+
+   Agora o que se digita vira uma lista com o horário JÁ RESOLVIDO ao lado. */
+{
+  const { sugestoesDeQuando, comoFicaNoFuso } =
+    carregar(["EVENTO_MAX", "quandoDoTexto", "comoFicaNoFuso", "sugestoesDeQuando"]);
+
+  const AGORA = Date.UTC(2026, 8, 15, 12, 0);
+  const nomes = (t, fuso = 0) => sugestoesDeQuando(t, AGORA, fuso).map((s) => s.name);
+  const valores = (t, fuso = 0) => sugestoesDeQuando(t, AGORA, fuso).map((s) => s.value);
+
+  /* ---- como o instante é escrito na sugestão ---- */
+  ok("hoje é dito 'hoje'", comoFicaNoFuso(AGORA + 3 * 3600000, 0, AGORA), "hoje 15:00");
+  ok("amanhã é dito 'amanhã'", comoFicaNoFuso(AGORA + 20 * 3600000, 0, AGORA), "amanhã 08:00");
+  ok("depois disso vira data", comoFicaNoFuso(AGORA + 10 * 86400000, 0, AGORA), "25/09 12:00");
+  /* O fuso muda o que aparece -- é assim que um fuso errado se denuncia
+     antes de virar chamada errada. */
+  ok("e o fuso é aplicado", comoFicaNoFuso(AGORA + 3 * 3600000, -180, AGORA), "hoje 12:00");
+
+  /* ---- O CASO QUE GEROU A RECLAMAÇÃO: data sem hora ----
+
+     Antes era recusa. Agora é escolha: a mesma data, com horários prontos. */
+  const doDia = valores("23/09");
+  verdade("data sem hora deixa de ser recusa e vira opção pronta",
+    doDia.includes("23/09 20:00"));
+  verdade("com mais de um horário para escolher",
+    doDia.filter((v) => v.startsWith("23/09 ")).length >= 3);
+  verdade("e a sugestão mostra o horário resolvido ao lado",
+    nomes("23/09").some((n) => /23\/09 20:00\s+→\s+23\/09 20:00/.test(n)));
+
+  /* ---- número solto: as duas leituras, lado a lado ---- */
+  const tres = valores("3");
+  verdade("'3' oferece 3 horas", tres.includes("3h"));
+  verdade("e 3 minutos", tres.includes("3m"));
+
+  /* ---- o que já dá para entender vem primeiro ---- */
+  ok("o que a pessoa escreveu é a primeira opção", valores("2h")[0], "2h");
+  verdade("e mostra o que eu entendi", nomes("2h")[0].includes("hoje 14:00"));
+
+  /* ---- atalhos sempre disponíveis ---- */
+  const vazio = valores("");
+  for (const atalho of ["30m", "1h", "2h", "3h", "6h", "12h", "24h"]) {
+    verdade(`"${atalho}" está sempre à mão`, vazio.includes(atalho));
+  }
+
+  /* ---- os limites do Discord no autocompletar ---- */
+  for (const t of ["", "3", "23/09", "2h", "abacaxi", "20:30"]) {
+    const lista = sugestoesDeQuando(t, AGORA);
+    verdade(`"${t}": no máximo 25 sugestões`, lista.length <= 25);
+    for (const s of lista) {
+      verdade(`"${t}": o rótulo "${s.name.slice(0, 24)}" cabe em 100`, s.name.length <= 100);
+      verdade(`"${t}": o valor "${s.value}" cabe em 100`, s.value.length <= 100);
+      verdade(`"${t}": rótulo e valor são texto`,
+        typeof s.name === "string" && typeof s.value === "string");
+    }
+    /* Nenhuma sugestão pode ser algo que o parser depois recusa: seria
+       oferecer uma opção que não funciona ao ser escolhida. */
+    const { quandoDoTexto } = carregar(["EVENTO_MAX", "quandoDoTexto"]);
+    for (const s of lista) {
+      verdade(`"${s.value}" é aceito pelo parser`, quandoDoTexto(s.value, AGORA, 0) !== null);
+    }
+  }
+
+  /* Frase que não dá para entender ainda oferece os atalhos -- lista vazia
+     seria o autocompletar dizendo "não sei", que é o que irritava. */
+  verdade("texto sem sentido ainda oferece caminho", valores("abacaxi").length > 0);
+}
+
+/* ============ o /evento não pede mais uma janela ============ */
+{
+  const fonteEv2 = readFileSync(`${aqui}/index.js`, "utf8");
+
+  verdade("a janela do evento não existe mais", !/function janelaDoEvento/.test(fonteEv2));
+  verdade("e o comando não abre janela nenhuma",
+    !/showModal\(janelaValida\(janelaDoEvento/.test(fonteEv2));
+
+  const def = fonteEv2.slice(fonteEv2.indexOf('name: "evento",'), fonteEv2.indexOf('name: "evento",') + 1400);
+  verdade("o quando tem autocompletar", /name: "quando"[^]{0,120}autocomplete: true/.test(def));
+  verdade("a votação é uma opção do próprio comando", /name: "votacao"/.test(def));
+  verdade("e o fuso é opcional", /name: "fuso"[^]{0,120}required: false/.test(def));
+
+  /* O autocompletar tinha um dono só -- a lista de eventos do Kingshot --, e
+     responderia nomes de rally onde o /evento espera "3h". */
+  verdade("o autocompletar sabe de qual comando veio",
+    /inter\.commandName === "evento"[^]{0,200}sugestoesDeQuando/.test(fonteEv2));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
