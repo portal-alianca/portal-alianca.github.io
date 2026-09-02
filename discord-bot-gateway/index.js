@@ -4926,7 +4926,22 @@ function linhasDoPlacar(times, destaque = "") {
    bilíngue eu atendia dois idiomas dos vinte; pelo botão, todos. Inglês como
    base porque é a língua que mais gente lê em servidor de jogo -- e porque a
    tabela já é bandeira e número, que não têm língua nenhuma. */
-const LEGENDA_ARENA = "🏆 wins · ⚔️ power · 💬 translations · ▲ smaller teams hit harder";
+/* "hit harder" saiu, e o motivo é uma foto: em português o tradutor devolveu
+   "times menores SOFREM mais" -- o oposto exato da regra que sustenta o jogo.
+
+   Idioma é onde tradutor automático erra, e erra com cara de certo: a frase
+   volta fluente e afirmando o contrário. Quem lesse isso concluiria que
+   escolher o time pequeno é ruim, que é a decisão que o CYRON precisa que a
+   pessoa tome ao contrário.
+
+   "are stronger" é literal, e não tem como inverter. Vale para todo texto
+   fixo daqui: quem escreve o original escreve para ser traduzido por máquina,
+   não para soar bem em inglês.
+
+   Trocar o texto também conserta o que já está no cache: a chave é o texto de
+   origem, então a frase nova nasce sem tradução guardada e a errada fica para
+   trás sozinha. */
+const LEGENDA_ARENA = "🏆 wins · ⚔️ power · 💬 translations · ▲ smaller teams are stronger";
 const ARENA_VAZIA = "The arena opens when the first message gets translated.";
 
 function placarDaArena(times, temporada, servidores = 0) {
@@ -5103,9 +5118,16 @@ async function limparPlacaresVelhos(canal) {
    O PLACAR nao entra nisso, e nao tem jeito: ele e' UMA mensagem para o
    servidor inteiro. Nao existe versao por pessoa de uma mensagem so'. Ele
    segue bilingue por construcao, como o recibo. */
+/* Os botões vão em TODA resposta, e não só no placar.
+
+   Sem eles, atacar uma vez deixava a pessoa numa tela sem saída: ela tinha
+   que rolar de volta até o cartão fixado para atacar de novo. Com eles, a
+   resposta é o próprio jogo -- e, editada no lugar, é uma tela só que muda,
+   em vez de uma pilha. */
 async function respostaDaArena(inter, idioma, embed) {
   return inter.editReply({
     embeds: [{ color: COR, ...(await traduzirEmbed(embed, idioma, MOTOR_AUTO)) }],
+    components: botoesDaArena(),
   });
 }
 
@@ -5214,7 +5236,20 @@ async function mostrarArena(inter, servidor, idioma, escolheu) {
 }
 
 async function cliqueArena(inter) {
-  await inter.deferReply({ flags: 64 });
+  /* Clique vindo da própria resposta efêmera EDITA ela no lugar; vindo do
+     cartão fixado, cria uma nova.
+
+     Antes era sempre nova, e cada clique empilhava mais um cartão na tela:
+     abrir o placar, ver o perfil e atacar deixava três mensagens, uma embaixo
+     da outra, todas dizendo quase a mesma coisa. O jogo inteiro cabe numa
+     tela só que muda.
+
+     O fixado é público, e mensagem pública eu não posso trocar pela resposta
+     de uma pessoa -- daí a primeira ainda nascer nova. É a mesma regra do
+     menu de tradução das mensagens. */
+  const naEfemera = (Number(inter.message?.flags?.bitfield ?? 0) & 64) !== 0;
+  if (naEfemera) await inter.deferUpdate();
+  else await inter.deferReply({ flags: 64 });
 
   const servidor = await servidorDoGuild(inter.guildId);
   if (!servidor) return inter.editReply({ content: "Ainda não terminei de me instalar aqui." });
@@ -5377,7 +5412,9 @@ const ANUNCIO_ARENA = {
     "one single ranking.",
 
     "**⚖️ The rule that changes everything**\n" +
-    "Smaller teams hit harder — up to 2×. Four German speakers can beat " +
+    /* "are stronger", e não "hit harder", pelo mesmo motivo da legenda: o
+       idioma volta invertido em português. */
+    "Smaller teams are stronger — up to 2×. Four German speakers can beat " +
     "fourteen Portuguese speakers. Which means bringing someone into the " +
     "smaller team is worth more than clicking more.",
 

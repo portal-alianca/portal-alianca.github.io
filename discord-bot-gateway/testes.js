@@ -2431,10 +2431,18 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     /31\/08/.test(placar.description) && !/2026-08-31/.test(placar.description));
   verdade("o time pequeno ganha a seta que convida", /▲/.test(placar.description));
   verdade("o rodapé explica o handicap sem precisar de manual",
-    /smaller teams hit harder/i.test(placar.footer.text));
+    /smaller teams are stronger/i.test(placar.footer.text));
   verdade("e a legenda não é repetida em outra língua",
     (placar.footer.text.match(/smaller teams/gi) || []).length === 1 &&
     !/bate mais forte/.test(placar.footer.text));
+  /* Nada de expressão idiomática no texto que a máquina vai traduzir.
+     "hit harder" voltou em português como "times menores SOFREM mais" -- o
+     oposto exato da regra que sustenta o jogo, escrito com cara de certo.
+     Quem escreve o original aqui escreve para ser traduzido por máquina. */
+  for (const idiomatica of [/hit harder/i, /punch above/i, /pack a punch/i]) {
+    verdade(`a legenda não usa "${idiomatica.source}", que o tradutor inverte`,
+      !idiomatica.test(placar.footer.text));
+  }
   verdade("o rodapé aponta o 🌐 uma vez só",
     (placar.footer.text.match(/🌐/g) || []).length === 1);
 
@@ -2564,6 +2572,34 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
   for (const velho of ["r.ok", "r.ouro", "r.poder", "r.vitorias", "r.ataques_dia"]) {
     verdade(`nenhuma leitura por "${velho}", que não existe mais`, !usa.includes(velho));
   }
+
+  /* ---- uma tela só, que muda -- e não uma pilha ----
+
+     "Toda hora envia uma nova, não tem como reeditar apenas?" Não tinha:
+     cliqueArena fazia deferReply sempre, então abrir o placar, ver o perfil e
+     atacar deixava três cartões empilhados dizendo quase a mesma coisa.
+
+     Clique vindo da própria efêmera edita ela no lugar; vindo do cartão
+     fixado, que é público, ainda nasce nova -- mensagem de todo mundo não
+     pode virar a resposta de uma pessoa. */
+  const cliqueDaArena = fonteRpc.slice(
+    fonteRpc.indexOf("async function cliqueArena"),
+    fonteRpc.indexOf("function botoesDoRecibo"));
+  verdade("o clique sabe se veio de uma mensagem efêmera",
+    /const naEfemera = .*flags\?\.bitfield/.test(cliqueDaArena));
+  verdade("e na efêmera ele atualiza no lugar, sem mandar outra",
+    /if \(naEfemera\) await inter\.deferUpdate\(\)/.test(cliqueDaArena));
+  verdade("no cartão fixado, que é público, continua nascendo nova",
+    /else await inter\.deferReply\(\{ flags: 64 \}\)/.test(cliqueDaArena));
+
+  /* Editando no lugar, uma resposta sem componentes APAGA os botões da
+     mensagem -- e a pessoa fica numa tela sem saída, tendo que rolar até o
+     fixado para jogar de novo. */
+  const resposta = fonteRpc.slice(
+    fonteRpc.indexOf("async function respostaDaArena"),
+    fonteRpc.indexOf("async function placarPessoal"));
+  verdade("toda resposta da arena leva os botões junto",
+    /components: botoesDaArena\(\)/.test(resposta));
 
   /* O erro do banco tem que ir para o log. Foi o `.catch(() => null)` que
      escondeu a mensagem exata por horas e mostrou "não respondeu agora". */
