@@ -15,7 +15,7 @@ import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenu
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 /* O catalogo do que eu faco. Mora fora daqui porque a pagina cyron/recursos.html
    nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
-import { CATEGORIAS, RECURSOS, recursosDa } from "./catalogo.js";
+import { CATEGORIAS, doCliente } from "./catalogo.js";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -9681,8 +9681,9 @@ const TEMAS = {
   tudo: {
     rotulo: "Tudo que eu faço",
     titulo: "🗂️ Tudo que eu faço",
-    texto: `São ${RECURSOS.length} funções, em ${CATEGORIAS.length} categorias:\n\n` +
-      CATEGORIAS.map((c) => `${c.emoji} **${c.nome.pt}** — ${recursosDa(c.chave).length}`).join("\n") +
+    texto: `São ${doCliente().length} funções, em ${CATEGORIAS.length} categorias:\n\n` +
+      CATEGORIAS.map((c) =>
+        `${c.emoji} **${c.nome.pt}** — ${doCliente().filter((r) => r.categoria === c.chave).length}`).join("\n") +
       "\n\nA lista inteira, com o que cada uma faz, está no botão aqui embaixo.",
   },
   instalar: {

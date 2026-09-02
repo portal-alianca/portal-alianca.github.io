@@ -35,11 +35,13 @@ globalThis.StringSelectMenuBuilder = StringSelectMenuBuilder;
 /* O catalogo do que o bot faz. E' um arquivo de dados -- nenhuma linha dele
    abre conexao --, e o index.js o importa para montar o tema "Tudo que eu
    faco". Sem ele no escopo, esse pedaco nao carrega. */
-import { CATEGORIAS, RECURSOS, recursosDa, numeroDe } from "./catalogo.js";
+import { CATEGORIAS, CATEGORIA_DONO, RECURSOS, recursosDa, doCliente, doDono, numeroDe }
+  from "./catalogo.js";
 import { pagina as paginaDeRecursos, DESTINO as HTML_RECURSOS } from "./fazer-recursos.js";
 globalThis.CATEGORIAS = CATEGORIAS;
 globalThis.RECURSOS = RECURSOS;
 globalThis.recursosDa = recursosDa;
+globalThis.doCliente = doCliente;
 
 const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
@@ -3882,11 +3884,11 @@ function conferirCartao(onde, embed, componentes = []) {
   const semProva = RECURSOS.filter((r) => !fonte.includes(r.prova));
   ok("todo recurso do catálogo existe mesmo no bot", semProva.map((r) => `${r.chave} → ${r.prova}`), []);
 
-  const categorias = new Set(CATEGORIAS.map((c) => c.chave));
+  const categorias = new Set([...CATEGORIAS, CATEGORIA_DONO].map((c) => c.chave));
   ok("todo recurso mora numa categoria que existe",
     RECURSOS.filter((r) => !categorias.has(r.categoria)).map((r) => r.chave), []);
   ok("nenhuma categoria vazia",
-    CATEGORIAS.filter((c) => recursosDa(c.chave).length === 0).map((c) => c.chave), []);
+    [...CATEGORIAS, CATEGORIA_DONO].filter((c) => recursosDa(c.chave).length === 0).map((c) => c.chave), []);
 
   ok("todo plano é um dos três",
     RECURSOS.filter((r) => !["gratis", "pago", "ambos"].includes(r.plano)).map((r) => r.chave), []);
@@ -3910,28 +3912,51 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("nenhuma descrição ficou em português no lado inglês",
     RECURSOS.filter((r) => r.oque.pt === r.oque.en).map((r) => r.chave), []);
 
-  ok("o número é a posição na lista", numeroDe(RECURSOS[0].chave), 1);
-  ok("e o último é o total", numeroDe(RECURSOS.at(-1).chave), RECURSOS.length);
+  ok("o número é a posição na lista", numeroDe(doCliente()[0].chave), 1);
+  ok("e o último do cliente é o total dele", numeroDe(doCliente().at(-1).chave), doCliente().length);
   ok("chave que não existe não tem número", numeroDe("nao-existe"), 0);
+
+  /* ---- o que é do dono não é do cliente ----
+
+     Isto começou como um defeito real: o canal 🐛-erros estava anunciado
+     como recurso do cliente, e ele NUNCA aparece em servidor de cliente --
+     `avisarNoPainel` entrega só no servidor do painel do dono. Uma página de
+     venda que promete uma coisa que a pessoa não vai encontrar é o pior
+     tipo de erro que uma lista dessas pode ter: só se descobre depois de
+     instalar. */
+  ok("as duas listas somam o catálogo inteiro", doCliente().length + doDono().length, RECURSOS.length);
+  ok("todo item do dono mora na categoria do dono",
+    doDono().filter((r) => r.categoria !== CATEGORIA_DONO.chave).map((r) => r.chave), []);
+  ok("e nenhum item do cliente mora nela",
+    doCliente().filter((r) => r.categoria === CATEGORIA_DONO.chave).map((r) => r.chave), []);
+  verdade("a categoria do dono está fora da lista que gera a página",
+    !CATEGORIAS.some((c) => c.chave === CATEGORIA_DONO.chave));
+
+  /* Os canais do painel do dono são a assinatura do que não é do cliente:
+     se um deles aparecer na página, a separação vazou. */
+  for (const canal of ["🐛-erros", "📊-diário", "📋-clientes", "💳-pagamentos", "📥-novos", "/admin"]) {
+    verdade(`a página não anuncia ${canal}`, !paginaDeRecursos().includes(canal));
+  }
 
   /* ---- a página gerada ---- */
   const html = paginaDeRecursos();
-  ok("a página tem uma linha por recurso", (html.match(/<div class="item"/g) || []).length, RECURSOS.length);
+  ok("a página tem uma linha por recurso do cliente",
+    (html.match(/<div class="item"/g) || []).length, doCliente().length);
   ok("e uma seção por categoria", (html.match(/<section class="grupo"/g) || []).length, CATEGORIAS.length);
 
   /* Todo detalhe nasce fechado. Um `hidden` esquecido devolveria a página à
      parede de texto -- que é exatamente o defeito que ela veio consertar. */
-  ok("todo detalhe começa fechado", (html.match(/<div class="detalhe" hidden>/g) || []).length, RECURSOS.length);
-  ok("e toda linha se anuncia fechada", (html.match(/aria-expanded="false"/g) || []).length, RECURSOS.length);
+  ok("todo detalhe começa fechado", (html.match(/<div class="detalhe" hidden>/g) || []).length, doCliente().length);
+  ok("e toda linha se anuncia fechada", (html.match(/aria-expanded="false"/g) || []).length, doCliente().length);
 
   /* Só os do plano pago são marcados: 26 selos "Grátis" repetidos somem com
      os quatro que importam. */
   ok("só o plano pago ganha marca na linha",
     (html.match(/<span class="pago">/g) || []).length,
-    RECURSOS.filter((r) => r.plano === "pago").length);
+    doCliente().filter((r) => r.plano === "pago").length);
 
-  const forasDaPagina = RECURSOS.filter((r) => !html.includes(`>${r.nome.pt}<`) || !html.includes(`>${r.nome.en}<`));
-  ok("todo recurso aparece na página nos dois idiomas", forasDaPagina.map((r) => r.chave), []);
+  const forasDaPagina = doCliente().filter((r) => !html.includes(`>${r.nome.pt}<`) || !html.includes(`>${r.nome.en}<`));
+  ok("todo recurso do cliente aparece na página nos dois idiomas", forasDaPagina.map((r) => r.chave), []);
 
   /* A busca tira o acento do que se digita. Se o texto varrido guardasse o
      acento, procurar "traducao" não acharia "tradução" -- e a busca só
@@ -3961,7 +3986,7 @@ function conferirCartao(onde, embed, componentes = []) {
   for (const c of CATEGORIAS) {
     verdade(`o tema do catálogo cita ${c.nome.pt}`, TEMAS.tudo.texto.includes(c.nome.pt));
   }
-  verdade("e diz o total certo", TEMAS.tudo.texto.includes(String(RECURSOS.length)));
+  verdade("e diz o total certo", TEMAS.tudo.texto.includes(String(doCliente().length)));
 
   /* O endereço vai no botão, e não dentro do texto: texto passa pelo tradutor,
      e tradutor de máquina quebra URL. */
