@@ -2016,6 +2016,109 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
     /noFixado \? "" :/.test(refresca));
 }
 
+/* ============ o painel montado de verdade ============
+
+   Este bloco existe por um defeito que eu pus no ar e que nenhum dos 1307
+   testes pegou: `comoEstaOMotor` virou assíncrona e a chamada ficou sem
+   `await`. `motorUsado` passou a ser uma Promise, o Discord recebeu um objeto
+   onde esperava texto, e recusou a mensagem INTEIRA:
+
+     embeds[0].fields[2].value[STRING_TYPE_CONVERT]:
+       Could not interpret "{}" as string
+
+   O painel congelou em todo servidor. Nada estourou -- Promise é um valor
+   válido em JavaScript --, e os testes continuaram verdes porque todos
+   olhavam PEDAÇOS: o veredito sozinho, o molde sozinho, o texto-fonte. Nenhum
+   montava o cartão.
+
+   Guarda de texto não pega isto, e eu tentei: varrer o arquivo atrás de
+   chamada sem `await` deu 186 falsos positivos. O que pega é montar o cartão
+   e exigir que cada pedaço dele seja texto -- que é exatamente o que o
+   Discord exige. */
+{
+  const { montarPainel } = carregar([
+    "porMolde", "falaFixa", "vereditoDoPainel", "comoEstaOMotor", "montarPainel"]);
+
+  globalThis.COR = 0xF5A623;
+  globalThis.MOTOR_AUTO = { tipo: "auto" };
+  globalThis.MOTORES = { deepl: { nome: "DeepL" }, azure: { nome: "Azure Translator" } };
+  globalThis.BETA = false;
+  globalThis.BETA_ATE = null;
+  globalThis.PLANOS = { gratis: { idiomas: 2, fontes: 1 }, pago: { idiomas: 20, fontes: 10 } };
+  globalThis.falhaDoMotor = new Map();
+  globalThis.esperando = new Map();
+  globalThis.semAlcance = new Map();
+  globalThis.cargoAcimaDeMim = new Map();
+  globalThis.cargoTrocado = new Map();
+  globalThis.venceEm = () => null;
+  globalThis.planoDe = () => "gratis";
+  globalThis.corDoPainel = () => 0xF5A623;
+  globalThis.limitesDo = () => ({ fontes: 10, idiomas: 20 });
+  globalThis.cotaDoDonoNoDia = () => 40000;
+  globalThis.quandoFoi = () => "há 2 min";
+  globalThis.componentesDoPainel = () => [];
+  globalThis.nomeNaPropriaLingua = (c) => `🏳️ ${c}`;
+  globalThis.motorDoGuild = async () => ({ tipo: "auto" });
+  globalThis.replicasOrfas = async () => [];
+  globalThis.canaisElegiveis = async () => [{ id: "c9", name: "geral" }];
+  globalThis.usoDeHoje = async () => ({ traducoes: 3, caracteres: 512, cache: 1 });
+  globalThis.jaGastouHoje = async () => 0;
+  globalThis.sb = async (rota) => rota.includes("discord_fonte_replica")
+    ? [{ canal_id: "c1", tipo: "texto" }]
+    : [{ idioma: "de", canal_id: "c2" }, { idioma: "pt", canal_id: "c3" }];
+
+  const guild = { id: "g1", channels: { cache: new Map([["c1", {}], ["c2", {}], ["c3", {}]]) } };
+  const servidor = { id: "s1", tradutor_topico: false, tradutor_chave: null, plano: "gratis" };
+
+  globalThis.traduzirComCache = async (t) => `<${t}>`;
+
+  /* O ponto do teste: nada do que vai para o Discord pode ser outra coisa
+     senão texto. Uma Promise aqui é a mensagem inteira recusada. */
+  const soTexto = (cartao, onde) => {
+    verdade(`${onde}: o título é texto`, typeof cartao.embed.title === "string");
+    verdade(`${onde}: a descrição é texto`, typeof cartao.embed.description === "string");
+    verdade(`${onde}: o rodapé é texto`, typeof cartao.embed.footer.text === "string");
+    for (const [i, f] of cartao.embed.fields.entries()) {
+      verdade(`${onde}: o rótulo do campo ${i} é texto`, typeof f.name === "string");
+      verdade(`${onde}: o VALOR do campo ${i} é texto`, typeof f.value === "string");
+      /* "[object Promise]" passaria no typeof e chegaria feio na tela. */
+      verdade(`${onde}: o campo ${i} não é um objeto disfarçado`,
+        !/\[object |Promise/.test(f.name + f.value));
+    }
+  };
+
+  soTexto(await montarPainel(guild, servidor, ""), "em português");
+  soTexto(await montarPainel(guild, servidor, "de"), "em alemão");
+
+  /* E o campo do motor -- o que quebrou -- tem que dizer alguma coisa. */
+  const emCasa = await montarPainel(guild, servidor, "");
+  const motor = emCasa.embed.fields.find((f) => /Motor de tradução/.test(f.name));
+  verdade("o campo do motor existe", !!motor);
+  verdade("e diz qual motor está em uso", /Google grátis/.test(motor.value));
+
+  /* No painel traduzido, o motor tem que ser traduzido junto: ele passou anos
+     sem receber o T porque a chamada estava sem await, e sem T ele voltaria em
+     português dentro de um cartão alemão. */
+  const emAlemao = await montarPainel(guild, servidor, "de");
+  const motorDe = emAlemao.embed.fields.find((f) => f.name.includes("Motor de tradução"));
+  /* String() de propósito: se o valor voltar a ser uma Promise, quem tem que
+     falhar é o guarda acima, com nome. Um `.startsWith` estourando aqui
+     derruba o processo antes do resumo e esconde as outras falhas -- foi o
+     que aconteceu na primeira vez que conferi este bloco. */
+  verdade("o campo do motor foi traduzido junto com o resto",
+    String(motorDe.value).startsWith("<"));
+
+  /* Os limites do Discord, agora que o cartão é montado inteiro. */
+  for (const cartao of [emCasa, emAlemao]) {
+    verdade("o cartão cabe em 25 campos", cartao.embed.fields.length <= 25);
+    verdade("a descrição cabe", cartao.embed.description.length <= 4096);
+    verdade("o rodapé cabe", cartao.embed.footer.text.length <= 2048);
+    for (const f of cartao.embed.fields) {
+      verdade(`"${f.name.slice(0, 24)}" cabe`, f.name.length <= 256 && f.value.length <= 1024);
+    }
+  }
+}
+
 /* ---- os botões dizem o que fazem ---- */
 {
   const { componentesDoPainel } = carregar(["componentesDoPainel"]);

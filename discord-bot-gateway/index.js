@@ -5513,7 +5513,18 @@ async function montarPainel(guild, servidor, idioma = "") {
   const fila = esperando.get(servidor.id) || [];
   const orfas = await replicasOrfas(guild, servidor);
   const elegiveis = await canaisElegiveis(guild, servidor, vivas);
-  const motorUsado = comoEstaOMotor(servidor);
+  /* O `await` aqui foi esquecido quando esta função virou assíncrona, e o
+     painel parou de atualizar em TODO servidor.
+
+     Sem ele, `motorUsado` é uma Promise. O Discord recebe um objeto onde
+     esperava texto e recusa a mensagem inteira:
+     `embeds[0].fields[2].value[STRING_TYPE_CONVERT]: Could not interpret "{}"
+     as string`. Nada estourou aqui dentro -- a Promise é um valor válido em
+     JavaScript --, os testes passaram, e o cartão simplesmente congelou.
+
+     O `T` também faltava: sem ele o campo do motor ficaria em português
+     mesmo no painel traduzido. */
+  const motorUsado = await comoEstaOMotor(servidor, T);
   const uso = await usoDeHoje(servidor.id);
   const cotaHoje = cotaDoDonoNoDia(servidor);
   const gastoHoje = await jaGastouHoje(servidor.id);
