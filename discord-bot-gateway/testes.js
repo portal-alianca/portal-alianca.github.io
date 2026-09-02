@@ -3998,6 +3998,76 @@ function conferirCartao(onde, embed, componentes = []) {
     !/(title|description|texto):[^]{0,200}recursos\.html/.test(fonte));
 }
 
+/* ====== reconhecer a interação antes de ir à rede ======
+
+   Isto veio de um "O aplicativo não respondeu" no /evento.
+
+   O Discord dá TRÊS SEGUNDOS para a interação ser reconhecida. Depois disso a
+   resposta não é aceita mais, e quem clicou vê o aviso vermelho -- sem nada no
+   canal de erros, porque do meu lado nada falhou: só demorou.
+
+   O /evento reconhece na primeira linha dele. Mesmo assim morria, porque o
+   roteador lia o idioma da pessoa no banco ANTES de rotear: uma ida à rede na
+   frente de todo comando, inclusive dos que nem usam idioma.
+
+   Os testes abaixo prendem a ordem, e não o tempo. Tempo não se testa aqui;
+   ordem sim, e é a ordem que estava errada. */
+{
+  const pedaco = (nome) => {
+    const i = fonte.indexOf(`async function ${nome}(`);
+    if (i < 0) throw new Error(`nao achei ${nome}`);
+    return fonte.slice(i, fimDoBloco(fonte.indexOf("{", i)));
+  };
+
+  /* Chamadas que saem da máquina. Todas custam pelo menos uma viagem de rede,
+     e qualquer uma delas antes do reconhecimento gasta o orçamento inteiro. */
+  const REDE = /\b(sb|sbPost|sbPatch|sbDel|rpc|idiomaDoJogador|idiomaEscolhido|servidorDoGuild|ehDono|guildDoPainel|traduzirEmbed|traduzirComCache|traduzirLongo|motorDoGuild|comandosDoDono|aliancaCompleta|ajustes)\(/;
+  const RECONHECE = /(deferReply|deferUpdate|showModal|inter\.reply)\(/;
+
+  for (const nome of ["comandoAjuda", "comandoAdmin", "comandoArena", "criarEvento"]) {
+    const corpo = pedaco(nome);
+    const ack = corpo.search(RECONHECE);
+    const rede = corpo.search(REDE);
+    verdade(`${nome} reconhece a interação`, ack >= 0);
+    verdade(`${nome} reconhece antes de falar com a rede`, rede < 0 || ack < rede);
+  }
+
+  /* O roteador é o caso especial: ele não reconhece nada, ele DECIDE quem
+     reconhece. Então a regra dele é outra -- não pode haver `await` nenhum
+     antes de a decisão estar tomada. */
+  const roteador = pedaco("comandoDeInteracao");
+  /* Fora a linha do `lingua`, que é onde o `await` PODE estar: ela declara uma
+     função, não a executa. O que se está prendendo é o que roda. */
+  const ateORoteio = roteador
+    .slice(0, roteador.indexOf('if (nome === "help")'))
+    .split("\n").filter((l) => !l.includes("const lingua =")).join("\n");
+  verdade("o roteador não espera por nada antes de rotear", !/\bawait\b/.test(ateORoteio));
+  verdade("e o idioma virou leitura preguiçosa", /idiomaLido \?\?= await idiomaDoJogador/.test(roteador));
+  verdade("o idioma não é mais lido de saída",
+    !/^\s*const idioma = await idiomaDoJogador/m.test(roteador));
+
+  /* Nome meu não vai perguntar ao banco por um comando do dono: salvarComando
+     recusa esses nomes, então a busca só podia voltar vazia -- de graça, não:
+     uma ida à rede na frente do /cyron. */
+  verdade("o roteador pula a busca de comando do dono nos nomes meus",
+    /!NOMES_MEUS\.has\(nome\)[^]{0,120}comandosDoDono/.test(roteador));
+
+  /* ---- e a rede não pode pendurar ----
+
+     `fetch` sem sinal não desiste nunca, e um `await` pendurado não cai em
+     `catch` nenhum: o `try/catch` que existia em volta do idioma não protegia
+     de nada, porque o modo de falhar que importa não é o erro, é a resposta
+     que não chega. Com prazo, pendurar vira erro -- e erro esta casa trata. */
+  for (const nome of ["sb", "sbPost", "sbPatch", "sbDel"]) {
+    verdade(`${nome} vai ao banco com prazo`, /comPrazo\(\{/.test(pedaco(nome)));
+  }
+  verdade("o prazo é um AbortSignal de verdade",
+    /AbortSignal\.timeout\(PRAZO_BANCO\)/.test(fonte));
+  verdade("e o prazo cabe folgado nos 3 segundos do Discord... ou melhor, não cabe " +
+    "-- por isso ele é a rede de baixo, e não a de cima",
+    /const PRAZO_BANCO = \d+;/.test(fonte));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
