@@ -390,8 +390,8 @@ function conferirCartao(onde, embed, componentes = []) {
   const emAlemao = await anuncioTraduzido("de");
   ok("cada bloco é pedido uma vez", pedidos.length, tudo.length);
   verdade("nenhum bloco escapou", tudo.every((b) => pedidos.includes(b)));
-  verdade("o título traduzido entra no cartão", emAlemao.title.startsWith("<"));
-  verdade("o rodapé também", emAlemao.footer.text.startsWith("<"));
+  verdade("o título traduzido entra no cartão", String(emAlemao.title).startsWith("<"));
+  verdade("o rodapé também", String(emAlemao.footer.text).startsWith("<"));
 
   /* A segunda pessoa a abrir em alemão pede exatamente as mesmas chaves --
      que é o que faz o cache servir para alguma coisa. */
@@ -1964,7 +1964,7 @@ function conferirCartao(onde, embed, componentes = []) {
   const { vereditoDoPainel } = carregar(["porMolde", "falaFixa", "vereditoDoPainel"]);
 
   const limpo = await vereditoDoPainel([], 2, 4);
-  verdade("sem problema, o sinal é verde", limpo.startsWith("**🟢"));
+  verdade("sem problema, o sinal é verde", String(limpo).startsWith("**🟢"));
   verdade("e diz o que está acontecendo, não só 'tudo certo'", /2 canais/.test(limpo));
   verdade("com o número de idiomas junto", /4 idiomas/.test(limpo));
 
@@ -1982,12 +1982,12 @@ function conferirCartao(onde, embed, componentes = []) {
   const vazio = await vereditoDoPainel([], 0, 0);
   verdade("sem canal apontado, o veredito diz o que fazer", /menu/i.test(vazio));
   verdade("e não diz que está tudo funcionando", !/tudo funcionando/i.test(vazio));
-  verdade("mas também não acusa problema", !vazio.startsWith("**🔴"));
+  verdade("mas também não acusa problema", !String(vazio).startsWith("**🔴"));
 
   /* Com problema, o veredito conta QUANTOS -- "tem algo errado" não deixa
      saber se acabou depois de consertar um. */
   const um1 = await vereditoDoPainel([{ name: "🚨 Ninguém está recebendo o cargo do idioma" }], 2, 4);
-  verdade("com problema, o sinal é vermelho", um1.startsWith("**🔴"));
+  verdade("com problema, o sinal é vermelho", String(um1).startsWith("**🔴"));
   verdade("um problema é 'uma coisa'", /Uma coisa precisa de você/.test(um1));
   verdade("e o problema é nomeado", /Ninguém está recebendo o cargo/.test(um1));
   verdade("sem o emoji repetido na lista", !/• 🚨/.test(um1));
@@ -2971,11 +2971,11 @@ function conferirCartao(onde, embed, componentes = []) {
 
   /* ---- e todo valor de campo é número ou símbolo, jamais texto ---- */
   for (const f of cartao.fields) {
-    verdade(`o rótulo "${f.name}" foi traduzido`, f.name.startsWith("<"));
+    verdade(`o rótulo "${f.name}" foi traduzido`, String(f.name).startsWith("<"));
     verdade(`o valor de "${f.name}" não tem letra para traduzir`, !/\p{L}/u.test(f.value));
   }
-  verdade("o título foi traduzido", cartao.title.startsWith("<"));
-  verdade("a legenda dos símbolos também", cartao.footer.text.startsWith("<"));
+  verdade("o título foi traduzido", String(cartao.title).startsWith("<"));
+  verdade("a legenda dos símbolos também", String(cartao.footer.text).startsWith("<"));
 
   /* ---- o placar muda, a conta não ----
 
@@ -3017,7 +3017,7 @@ function conferirCartao(onde, embed, componentes = []) {
   /* ---- arena vazia explica-se na língua de quem olha ---- */
   pedidos = [];
   const vazia = await placarPessoal({ times: [], temporada: "2026-08-31", servidores: 0 }, "de", null, true);
-  verdade("a frase de arena vazia foi traduzida", vazia.description.startsWith("<"));
+  verdade("a frase de arena vazia foi traduzida", String(vazia.description).startsWith("<"));
   verdade("e é a frase certa", /first message gets translated/.test(vazia.description));
 
   /* ---- quem não paga agora é o INGLÊS, e o português passou a pagar ----
@@ -3037,7 +3037,7 @@ function conferirCartao(onde, embed, componentes = []) {
   pedidos = [];
   const emPortugues = await placarPessoal(estado, "pt", eu, true);
   verdade("português É traduzido, porque o original é inglês", pedidos.length > 0);
-  verdade("e o título dele não volta em inglês", emPortugues.title.startsWith("<"));
+  verdade("e o título dele não volta em inglês", String(emPortugues.title).startsWith("<"));
 
   /* ---- os limites do Discord ---- */
   const todos = timesDaArena(
@@ -3251,6 +3251,60 @@ function conferirCartao(onde, embed, componentes = []) {
     if (recibo) conferirCartao("o recibo da semana", recibo, botoesDoRecibo());
   }
 
+
+  /* ---- as telas do privado, que é onde chega quem não conhece o bot ---- */
+  {
+    const { paginaDeApresentacao, paginaDosPlanos, paginaDoPasso, PASSOS } = carregar([
+      "SITE_DO_CYRON", "PLANOS", "PASSOS", "precoDoPlano", "passoValido", "fotoDoPasso",
+      "paginaDeApresentacao", "paginaDosPlanos", "paginaDoPasso"]);
+
+    conferirCartao("a apresentação", paginaDeApresentacao());
+    conferirCartao("a página dos planos", paginaDosPlanos("pt"));
+    /* Todo passo do passo a passo, e não só o primeiro: é a tela que a pessoa
+       vê quando está instalando, e um passo torto ali custa o cliente. */
+    for (let n = 1; n <= PASSOS.length; n++) {
+      conferirCartao(`o passo ${n}`, paginaDoPasso(n, "pt"));
+    }
+  }
+
+  /* ---- os cartões do painel do dono ---- */
+  {
+    const { embedDeUso, embedDeErros, embedDeSaude } = carregar([
+      "quandoFoi", "camposDeCota", "embedDeUso", "embedDeErros", "embedDeSaude"]);
+
+    globalThis.INTERVALO_SINCRONIA = globalThis.INTERVALO_SINCRONIA ?? 60000;
+    globalThis.duracaoPassada = globalThis.duracaoPassada ?? 60000;
+    globalThis.client = { guilds: { cache: new Map([["g1", {}]]) }, user: { id: "bot" } };
+    globalThis.ultimaPassada = { quando: Date.now() - 60000, quanto: 1200, servidores: 1 };
+    globalThis.tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
+    globalThis.cotaDoDono = new Map();
+    globalThis.sb = async (rota) => rota.includes("cyron_uso_diario")
+      ? [{ dia: "2026-08-31", caracteres: 91234, traducoes: 812, do_cache: 90, motor: "dono-azure", servidor_id: "s1" }]
+      : [{ id: "s1", nome: "Servidor de teste", plano: "gratis", criado_em: "2026-08-01T00:00:00Z" }];
+    conferirCartao("o cartão de uso", await embedDeUso());
+
+    /* O cenário que o produto quer ter: quarenta clientes. Cartão que cresce
+       com o número de servidores estoura calado no dia em que der certo -- e
+       o cartão do dono é justamente o que ninguém olha até precisar. */
+    globalThis.sb = async (rota) => rota.includes("cyron_uso_diario")
+      ? Array.from({ length: 40 }, (_, i) => ({ dia: "2026-08-31", caracteres: 91234 + i,
+          traducoes: 812, do_cache: 90, motor: "dono-azure", servidor_id: `s${i}` }))
+      : Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`,
+          nome: `Aliança com um nome bem comprido número ${i}`, plano: "pago",
+          criado_em: "2026-08-01T00:00:00Z" }));
+    conferirCartao("o cartão de uso com 40 servidores", await embedDeUso());
+    conferirCartao("o cartão de saúde", await embedDeSaude());
+
+    /* Sem erro nenhum e com erro: o caminho vazio é onde campo fica sem valor,
+       e o Discord recusa campo vazio do mesmo jeito que recusa objeto. */
+    globalThis.errosRecentes = [];
+    conferirCartao("o cartão de erros, sem erro", embedDeErros());
+    globalThis.errosRecentes = Array.from({ length: 30 }, (_, i) => ({
+      onde: `lugar-${i}`, porque: "algo deu errado ".repeat(20), quando: Date.now() - i * 60000,
+    }));
+    conferirCartao("o cartão de erros, cheio", embedDeErros());
+  }
+
   /* ---- o cartão do dia, no painel do dono ---- */
   {
     const { cartaoDoDia } = carregar([
@@ -3272,6 +3326,22 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* Crash não pode engolir o placar.
+
+   Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
+   do resumo: ontem escondeu sete falhas reais, hoje escondeu a bateria toda.
+   Quem lê a saída conclui "não rodou" e vai procurar no lugar errado.
+
+   Este gancho roda mesmo quando a bateria morre no meio, e imprime o que já
+   tinha sido coletado -- inclusive as falhas que apontam para a causa. */
+let resumiu = false;
+process.on("exit", () => {
+  if (resumiu) return;
+  console.log(`\n  ⚠️  a bateria parou no meio: ${passou} passaram e ${falhou.length} falharam antes disso.`);
+  for (const f of falhou) console.log(`   ✗ ${f}\n`);
+});
+
+resumiu = true;
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
   for (const f of falhou) console.log(`   ✗ ${f}\n`);
