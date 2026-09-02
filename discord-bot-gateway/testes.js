@@ -3413,6 +3413,119 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+
+/* ============ o cartão do evento ============ */
+{
+  const { cartaoDoEvento, botoesDoEvento } = carregar([
+    "EVENTO_SOBREVIVE", "cartaoDoEvento", "botoesDoEvento"]);
+  globalThis.COR = 0xF5A623;
+
+  const AGORA = Date.UTC(2026, 8, 15, 12, 0);
+  const daqui = (h) => new Date(AGORA + h * 3600000).toISOString();
+  const base = { id: 7, titulo: "Urso · Bear Trap", detalhes: "Cavalaria nível 5.",
+    quando: daqui(3), votacao: false };
+
+  /* ---- A PEÇA CENTRAL: a hora sai como marcação do Discord ----
+
+     É <t:unix:F> que faz cada pessoa ler no relógio dela. Se isto virar texto
+     formatado por mim, o recurso inteiro perde o sentido: o alemão passa a
+     ver o horário de Brasília escrito por extenso. */
+  const cartao = cartaoDoEvento(base, [], AGORA);
+  const s = Math.floor((AGORA + 3 * 3600000) / 1000);
+  verdade("a hora vai como marcação do Discord, no fuso de quem lê",
+    cartao.description.includes(`<t:${s}:F>`));
+  verdade("e a contagem regressiva também", cartao.description.includes(`<t:${s}:R>`));
+  verdade("nenhuma hora é escrita por mim, em fuso nenhum",
+    !/\b\d{1,2}:\d{2}\b/.test(cartao.description));
+  verdade("o título do líder aparece como ele escreveu", cartao.title.includes("Urso · Bear Trap"));
+  verdade("os detalhes também", cartao.description.includes("Cavalaria nível 5."));
+
+  conferirCartao("o evento sem votação", cartao, botoesDoEvento(base));
+
+  /* ---- votação ---- */
+  const comVoto = { ...base, votacao: true };
+  const gente = [
+    { discord_user_id: "1", vai: true }, { discord_user_id: "2", vai: true },
+    { discord_user_id: "3", vai: false },
+  ];
+  const votado = cartaoDoEvento(comVoto, gente, AGORA);
+  verdade("conta quem vai", votado.fields.some((f) => f.name === "✋ 2"));
+  verdade("e quem não vai", votado.fields.some((f) => f.name === "😴 1"));
+  verdade("as pessoas aparecem como menção, que não tem língua",
+    votado.fields[0].value.includes("<@1>"));
+  conferirCartao("o evento com votação", votado, botoesDoEvento(comVoto));
+
+  /* Ninguém votou ainda: campo vazio é recusado pelo Discord, então tem que
+     haver algo ali. */
+  const semNinguem = cartaoDoEvento(comVoto, [], AGORA);
+  conferirCartao("o evento com votação e ninguém ainda", semNinguem, botoesDoEvento(comVoto));
+
+  /* Cinquenta pessoas: o valor do campo tem teto de 1024, e uma aliança
+     grande confirmando presença é exatamente onde ele estoura. */
+  const multidao = Array.from({ length: 50 }, (_, i) => ({ discord_user_id: `${100000000000000000 + i}`, vai: true }));
+  conferirCartao("o evento com cinquenta confirmados",
+    cartaoDoEvento(comVoto, multidao, AGORA), botoesDoEvento(comVoto));
+
+  /* ---- evento que já passou ---- */
+  const passado = { ...comVoto, quando: daqui(-2) };
+  const velho = cartaoDoEvento(passado, gente, AGORA);
+  verdade("evento que passou muda de marca", velho.title.startsWith("✔️"));
+  verdade("e perde os botões de presença, que não fazem mais sentido",
+    !botoesDoEvento(passado, AGORA)[0].components.some((b) => b.custom_id.startsWith("evento:vou")));
+  verdade("mas mantém o 🌐, porque ainda dá para querer ler",
+    botoesDoEvento(passado, AGORA)[0].components.some((b) => b.custom_id.startsWith("evento:idioma")));
+  conferirCartao("o evento que já passou", velho, botoesDoEvento(passado, AGORA));
+
+  /* ---- os botões carregam o id, senão o clique não sabe de quem é ---- */
+  for (const b of botoesDoEvento(comVoto)[0].components) {
+    verdade(`"${b.label}" carrega o id do evento`, b.custom_id.endsWith(":7"));
+  }
+}
+
+/* ============ o 🌐 do evento não pode traduzir a marcação de hora ============
+
+   `<t:1789...:F>` não é texto, é marcação. Passando pelo tradutor ela volta
+   com espaço no meio, ou traduzida, e o Discord desenha o texto cru em vez do
+   relógio de quem lê -- que é justamente o que o recurso existe para fazer. */
+{
+  const fonteEv = readFileSync(`${aqui}/index.js`, "utf8");
+  const clique = fonteEv.slice(
+    fonteEv.indexOf("async function cliqueEvento"),
+    fonteEv.indexOf("const CANAL_ARENA"));
+  verdade("achei o clique do evento para conferir", clique.length > 100);
+  verdade("a descrição é tirada antes de traduzir",
+    /description: undefined/.test(clique));
+  verdade("e devolvida crua depois", /description: cartao\.description/.test(clique));
+
+  /* Ligar votação e apagar são do líder, e a checagem é no clique. */
+  verdade("mexer no evento exige o cargo",
+    /acao === "votacao" \|\| acao === "apagar"[^]{0,220}ManageGuild/.test(clique));
+
+  /* Presença é upsert por pessoa: dois cliques no mesmo instante não podem
+     disputar a mesma linha, que era o defeito que o `for update` da arena
+     resolveu com trava. Aqui a chave composta resolve sem trava nenhuma. */
+  verdade("a presença é gravada como upsert, uma linha por pessoa",
+    /cyron_evento_presenca[^]{0,220}merge-duplicates/.test(clique));
+
+  const sql = readFileSync(`${aqui}/../supabase/migracoes/002-eventos.sql`, "utf8");
+  verdade("a tabela de presença tem chave composta, que é o que torna isso seguro",
+    /primary key \(evento_id, discord_user_id\)/.test(sql));
+  verdade("e a presença some junto com o evento", /on delete cascade/.test(sql));
+  /* Fuso não é guardado: o Discord resolve, e o que não se guarda não se
+     promete apagar. Os comentários saem antes -- eles FALAM de fuso
+     justamente para explicar por que ele não está lá. */
+  const ddl = sql.replace(/^\s*--.*$/gm, "");
+  /* Por NOME DE COLUNA, e não por palavra solta: `timestamptz` contém "tz" e
+     é exatamente o tipo certo -- ele guarda um instante absoluto, que é o
+     oposto de guardar o fuso de alguém. A primeira versão deste teste
+     reprovou o SQL correto por causa disso. */
+  verdade("nenhuma coluna guarda fuso de ninguém",
+    !/^\s*(fuso|timezone|time_zone|utc_offset|tz)\s/mi.test(ddl));
+  verdade("e o conferidor está olhando DDL de verdade", /create table/i.test(ddl));
+  verdade("a hora é guardada como instante absoluto, e não como relógio local",
+    /quando\s+timestamptz/i.test(ddl));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
