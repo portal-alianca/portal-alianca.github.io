@@ -40,11 +40,13 @@ function bi(par) {
   return `<span data-pt>${esc(par.pt)}</span><span data-en>${esc(par.en)}</span>`;
 }
 
-const SELO = {
-  gratis: { pt: "Grátis", en: "Free" },
-  pago: { pt: "Plano pago", en: "Paid plan" },
-  ambos: { pt: "Nos dois planos", en: "Both plans" },
-};
+/* Só o que foge da regra ganha marca.
+ *
+ * 26 dos 30 são grátis, então "Grátis" escrito 26 vezes é ruído que ninguém
+ * lê -- e some com o que importa, que são os quatro do plano pago. Os de
+ * plano "ambos" também não ganham marca: eles funcionam no grátis, e o teto
+ * maior está escrito no detalhe, onde a frase inteira cabe. */
+const SELO = { pago: { pt: "pago", en: "paid" } };
 
 /* O texto que a busca varre.
  *
@@ -56,18 +58,32 @@ function paraBuscar(r) {
   return tudo.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-function cartao(r, numero) {
-  return `      <article class="rec" data-plano="${r.plano}" data-cat="${r.categoria}" data-busca="${esc(paraBuscar(r))}">
-        <div class="n">${numero}</div>
-        <div class="corpo">
-          <h3>${bi(r.nome)}</h3>
-          <p>${bi(r.oque)}</p>
-          <div class="selos">
-            <span class="selo ${r.plano}">${bi(SELO[r.plano])}</span>
-            <span class="como">${bi(r.como)}</span>
+/* Uma linha fechada, e não um cartão aberto.
+ *
+ * A primeira versão desta página punha os 30 recursos como 30 cartões com o
+ * parágrafo inteiro à mostra. Cabia tudo, estava correto, e era ilegível: uma
+ * parede de texto onde nada tinha mais peso que o resto, 30 selos "Grátis"
+ * repetidos e cinco parágrafos de categoria para dizer o que o nome já dizia.
+ * Quem chega quer VER A LISTA -- e olhar o detalhe do que interessou.
+ *
+ * Então a linha mostra três coisas: o número, o nome, e "pago" quando for o
+ * caso. O selo do grátis não existe: 26 dos 30 são grátis, e um selo que
+ * aparece em quase tudo não informa nada -- só o que foge da regra merece
+ * tinta. O resto abre no clique. */
+function linha(r, numero) {
+  const pago = r.plano === "pago";
+  return `        <div class="item" data-plano="${r.plano}" data-cat="${r.categoria}" data-busca="${esc(paraBuscar(r))}">
+          <button type="button" class="linha" aria-expanded="false">
+            <span class="n">${String(numero).padStart(2, "0")}</span>
+            <span class="nome">${bi(r.nome)}</span>
+            ${pago ? `<span class="pago">${bi(SELO[r.plano])}</span>` : ""}
+            <span class="seta" aria-hidden="true">›</span>
+          </button>
+          <div class="detalhe" hidden>
+            <p>${bi(r.oque)}</p>
+            <p class="como"><span class="rot" data-pt>Como se usa</span><span class="rot" data-en>How you use it</span> ${bi(r.como)}</p>
           </div>
-        </div>
-      </article>`;
+        </div>`;
 }
 
 function secao(c) {
@@ -75,12 +91,9 @@ function secao(c) {
     .map((r, i) => [r, i + 1])
     .filter(([r]) => r.categoria === c.chave);
   return `  <section class="grupo" id="${c.chave}" data-cat="${c.chave}">
-    <div class="cab">
-      <h2><span class="emoji">${c.emoji}</span> ${bi(c.nome)} <em>${itens.length}</em></h2>
-      <p>${bi(c.resumo)}</p>
-    </div>
-    <div class="recs">
-${itens.map(([r, n]) => cartao(r, n)).join("\n")}
+    <h2><span class="emoji">${c.emoji}</span> ${bi(c.nome)} <em>${itens.length}</em></h2>
+    <div class="itens">
+${itens.map(([r, n]) => linha(r, n)).join("\n")}
     </div>
   </section>`;
 }
@@ -148,17 +161,15 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
   .idioma{margin-left:auto}
 }
 
-.topo{padding:70px 0 0; position:relative; overflow:hidden}
-.topo::before{content:""; position:absolute; inset:-40% 30% auto; height:460px;
-  background:radial-gradient(closest-side,rgba(245,166,35,.13),transparent 72%); pointer-events:none}
-.rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px; position:relative}
-.topo h1{font-size:clamp(30px,5.2vw,46px); font-weight:760; position:relative}
+/* Um topo de três linhas, e não de dez.
+ *
+ * Havia aqui um rótulo, um título, um parágrafo de três linhas e quatro
+ * caixas de número. Nada errado -- e cinco coisas para ler antes de chegar na
+ * lista, que é o que a pessoa veio ver. Ficou o título e uma linha. */
+.topo{padding:52px 0 0}
+.topo h1{font-size:clamp(28px,4.6vw,40px); font-weight:760}
 .topo h1 em{font-style:normal; color:var(--ambar)}
-.abre{margin:20px 0 0; color:var(--fraco); max-width:660px; font-size:18px; position:relative}
-
-.contas{display:flex; gap:10px; flex-wrap:wrap; margin-top:26px; position:relative}
-.conta{background:var(--painel); border:1px solid var(--borda); border-radius:12px; padding:11px 15px; font-size:14px; color:var(--fraco)}
-.conta b{color:var(--texto); font-weight:700}
+.abre{margin:14px 0 0; color:var(--fraco); font-size:16px}
 
 /* ---------- os filtros ----------
 
@@ -170,10 +181,15 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 .filtros{position:sticky; top:60px; z-index:20; background:var(--fundo);
   border-bottom:1px solid var(--borda); margin-top:40px; padding:14px 0}
 .filtros .env{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
-/* O separador antes do filtro de plano: ele não é mais uma categoria, e sem
-   isso a fileira lia como se fosse. */
-.sep{width:1px; align-self:stretch; background:var(--borda-viva); margin:2px 4px}
-.busca{flex:1 1 190px; min-width:150px; display:flex; align-items:center; gap:8px;
+/* O filtro de plano se distingue pela COR, e não por um separador.
+   O separador era um risco de 1px que, quando a fileira quebrava, ficava
+   pendurado no fim da primeira linha sem separar nada. Verde diz sozinho que
+   ele não é mais uma categoria. */
+.chip[data-plano]{color:var(--verde); border-color:rgba(94,187,131,.32)}
+.chip[data-plano][aria-pressed="true"]{background:var(--verde); border-color:var(--verde); color:#08170e}
+/* A busca ocupa a linha inteira. Dividindo a fileira com os chips ela tomava
+   455px e empurrava um deles para uma segunda fileira sozinho. */
+.busca{flex:1 1 100%; display:flex; align-items:center; gap:8px;
   background:var(--painel); border:1px solid var(--borda-viva); border-radius:10px; padding:0 12px}
 .busca input{flex:1; background:none; border:0; color:var(--texto); font:15px/1 inherit; padding:11px 0; outline:none; min-width:0}
 .busca input::placeholder{color:var(--fraquinho)}
@@ -185,46 +201,50 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 @media (max-width:760px){
   .filtros{top:auto; position:static}
   .chips{width:100%; padding-bottom:2px}
-  /* No telefone os chips quebram em três fileiras, e o separador cai sozinho
-     no começo de uma delas -- vira um risco solto que não separa nada. */
-  .sep{display:none}
 }
 
-/* ---------- os grupos ---------- */
-main{padding:0 0 90px}
+/* ---------- a lista ----------
+
+   Sem moldura, sem sombra, sem fundo por item: 30 caixas desenhadas é o que
+   fazia a página parecer cheia. O que separa uma linha da outra é um risco de
+   1px, e o que dá relevo é a linha em que o dedo está. */
+main{padding:0 0 80px}
+.env.lista{max-width:800px}
 /* A barra de cima mais os filtros somam ~190px de coisa grudada no topo. Sem
    isto, clicar num link para #viver deixaria o título da categoria embaixo
    deles -- a página pularia para o lugar certo e mostraria o errado. */
-.grupo{padding:56px 0 0; scroll-margin-top:200px}
-.grupo .cab{max-width:680px}
-.grupo h2{font-size:clamp(22px,3vw,30px); display:flex; align-items:center; gap:11px; flex-wrap:wrap}
-.grupo h2 .emoji{font-size:.95em}
-.grupo h2 em{font-style:normal; font-size:13px; font-weight:700; color:var(--fraquinho);
-  border:1px solid var(--borda-viva); border-radius:999px; padding:3px 9px; letter-spacing:.02em}
-.grupo .cab p{color:var(--fraco); margin:12px 0 0; font-size:16px}
+.grupo{padding:44px 0 0; scroll-margin-top:200px}
+.grupo h2{font-size:19px; font-weight:700; display:flex; align-items:center; gap:9px;
+  color:var(--fraco); letter-spacing:0}
+.grupo h2 .emoji{font-size:1.05em}
+.grupo h2 em{font-style:normal; font-size:13px; font-weight:600; color:var(--fraquinho)}
 
-.recs{display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); margin-top:24px}
-@media (max-width:900px){ .recs{grid-template-columns:1fr} }
+.itens{margin-top:8px; border-top:1px solid var(--borda)}
+.item{border-bottom:1px solid var(--borda)}
 
-.rec{display:flex; gap:15px; background:var(--painel); border:1px solid var(--borda);
-  border-radius:var(--r); padding:17px 19px}
-.rec .n{flex:0 0 34px; height:34px; border-radius:10px; background:var(--painel-3);
-  border:1px solid var(--borda-viva); color:var(--ambar);
-  display:flex; align-items:center; justify-content:center;
-  font:700 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
-.rec .corpo{min-width:0}
-.rec h3{font-size:17px; font-weight:700}
-.rec p{margin:8px 0 0; color:var(--fraco); font-size:15px; line-height:1.6}
-.selos{display:flex; gap:7px; flex-wrap:wrap; margin-top:12px; align-items:center}
-.selo{font-size:12px; font-weight:700; border-radius:999px; padding:4px 10px; border:1px solid transparent}
-.selo.gratis{color:var(--verde); border-color:rgba(94,187,131,.35); background:rgba(94,187,131,.09)}
-.selo.pago{color:var(--ambar-claro); border-color:rgba(245,166,35,.35); background:rgba(245,166,35,.09)}
-.selo.ambos{color:var(--fraco); border-color:var(--borda-viva); background:var(--painel-2)}
-.como{font-size:12.5px; color:var(--fraquinho); font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.linha{width:100%; display:flex; align-items:center; gap:14px; text-align:left;
+  background:none; border:0; color:inherit; font:inherit; cursor:pointer; padding:13px 6px}
+.linha:hover{background:var(--painel)}
+.linha .n{flex:0 0 auto; color:var(--fraquinho); font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
+.linha .nome{flex:1; font-size:16px; font-weight:600; min-width:0}
+.linha .pago{flex:0 0 auto; font-size:11.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--ambar); border:1px solid rgba(245,166,35,.32); border-radius:999px; padding:3px 8px}
+.linha .seta{flex:0 0 auto; color:var(--fraquinho); font-size:19px; line-height:1;
+  transition:transform .15s ease}
+.linha[aria-expanded="true"]{background:var(--painel)}
+.linha[aria-expanded="true"] .n{color:var(--ambar)}
+.linha[aria-expanded="true"] .seta{transform:rotate(90deg)}
 
-.vazio{display:none; padding:70px 0; text-align:center; color:var(--fraco)}
+.detalhe{padding:0 6px 16px 46px; background:var(--painel)}
+.detalhe p{margin:0; color:var(--fraco); font-size:15px; line-height:1.6; max-width:62ch}
+.detalhe .como{margin-top:9px; font-size:13.5px; color:var(--fraquinho)}
+.detalhe .rot{color:var(--fraquinho); font-weight:700; text-transform:uppercase;
+  letter-spacing:.08em; font-size:11px; margin-right:7px}
+@media (max-width:560px){ .detalhe{padding-left:6px} }
+
+.vazio{display:none; padding:60px 0; color:var(--fraco)}
 body[data-vazio] .vazio{display:block}
-.rec[hidden],.grupo[hidden]{display:none}
+.item[hidden],.grupo[hidden]{display:none}
 
 /* ---------- fecho ---------- */
 .fecho{border-top:1px solid var(--borda); margin-top:70px; padding:64px 0; text-align:center}
@@ -264,27 +284,20 @@ html[lang="en"] [data-en]{display:revert}
 </header>
 
 <div class="topo">
-  <div class="env">
-    <div class="rotulo"><span data-pt>O catálogo</span><span data-en>The catalogue</span></div>
+  <div class="env lista">
     <h1>
-      <span data-pt>As <em>${total} coisas</em> que o CYRON faz</span>
-      <span data-en>The <em>${total} things</em> CYRON does</span>
+      <span data-pt><em>${total} coisas</em> que o CYRON faz</span>
+      <span data-en><em>${total} things</em> CYRON does</span>
     </h1>
     <p class="abre">
-      <span data-pt>Numeradas, por categoria, e com o plano de cada uma à mostra. Esta página nasce da mesma lista que o bot usa — se um recurso sair do código, ele sai daqui junto.</span>
-      <span data-en>Numbered, grouped, and with each one's plan in plain sight. This page is generated from the same list the bot itself uses — if a feature leaves the code, it leaves this page with it.</span>
+      <span data-pt>${gratis} delas no plano grátis. Toque em qualquer uma para ver o que faz.</span>
+      <span data-en>${gratis} of them on the free plan. Tap any one to see what it does.</span>
     </p>
-    <div class="contas">
-      <div class="conta"><b>${total}</b> <span data-pt>funções</span><span data-en>features</span></div>
-      <div class="conta"><b>${gratis}</b> <span data-pt>no plano grátis</span><span data-en>on the free plan</span></div>
-      <div class="conta"><b>20</b> <span data-pt>idiomas</span><span data-en>languages</span></div>
-      <div class="conta"><b>${CATEGORIAS.length}</b> <span data-pt>categorias</span><span data-en>categories</span></div>
-    </div>
   </div>
 </div>
 
 <div class="filtros">
-  <div class="env">
+  <div class="env lista">
     <label class="busca">
       <span aria-hidden="true">🔎</span>
       <input type="search" id="busca" autocomplete="off"
@@ -293,14 +306,13 @@ html[lang="en"] [data-en]{display:revert}
     <div class="chips" role="group">
 ${chip("", `<span data-pt>Tudo</span><span data-en>All</span>`, "cat")}
 ${CATEGORIAS.map((c) => chip(c.chave, `${c.emoji} ${bi(c.nome)}`, "cat")).join("\n")}
-      <span class="sep" aria-hidden="true"></span>
-${chip("gratis", `<span data-pt>Só o que é grátis</span><span data-en>Free only</span>`, "plano")}
+${chip("gratis", `<span data-pt>grátis</span><span data-en>free</span>`, "plano")}
     </div>
   </div>
 </div>
 
 <main>
-  <div class="env">
+  <div class="env lista">
 ${CATEGORIAS.map(secao).join("\n")}
 
     <div class="vazio">
@@ -310,12 +322,8 @@ ${CATEGORIAS.map(secao).join("\n")}
 </main>
 
 <div class="fecho">
-  <div class="env">
+  <div class="env lista">
     <h2><span data-pt>Põe no seu servidor e vê.</span><span data-en>Put it in your server and see.</span></h2>
-    <p>
-      <span data-pt>As ${gratis} funções do plano grátis já funcionam no minuto em que ele entra. Nenhuma delas vence.</span>
-      <span data-en>The ${gratis} free-plan features work the minute it joins. None of them expire.</span>
-    </p>
     <a class="bt bt-1 convite" href="./"><span data-pt>Adicionar o CYRON</span><span data-en>Add CYRON</span></a>
   </div>
 </div>
@@ -362,6 +370,28 @@ function idioma(qual) {
   idioma(nav.indexOf("pt") === 0 ? "pt" : "en");
 })();
 
+/* ---- abrir e fechar uma linha ----
+
+   Uma de cada vez. Deixar várias abertas devolve a página à parede de texto
+   que ela era, e ninguém abre duas para comparar -- abre uma, lê, abre a
+   próxima. Fechar a anterior é o que mantém a lista sendo uma lista. */
+var aberta = null;
+function abrir(linha) {
+  var eraEla = aberta === linha;
+  if (aberta) {
+    aberta.setAttribute("aria-expanded", "false");
+    aberta.parentNode.querySelector(".detalhe").hidden = true;
+  }
+  aberta = null;
+  if (eraEla) return;
+  linha.setAttribute("aria-expanded", "true");
+  linha.parentNode.querySelector(".detalhe").hidden = false;
+  aberta = linha;
+}
+[].forEach.call(document.querySelectorAll(".linha"), function (b) {
+  b.addEventListener("click", function () { abrir(b); });
+});
+
 /* ---- os filtros ----
 
    Categoria e plano são independentes de propósito: "só o que é grátis"
@@ -380,21 +410,36 @@ function marcar(selector, atual) {
 
 function aplicar() {
   var achou = 0;
+  var unico = null;
   [].forEach.call(document.querySelectorAll(".grupo"), function (g) {
     var vivos = 0;
-    [].forEach.call(g.querySelectorAll(".rec"), function (r) {
+    [].forEach.call(g.querySelectorAll(".item"), function (r) {
       var passa =
         (!categoria || r.dataset.cat === categoria) &&
         (!sograte || r.dataset.plano !== "pago") &&
         (!termo || r.dataset.busca.indexOf(termo) >= 0);
       r.hidden = !passa;
-      if (passa) vivos++;
+      if (passa) { vivos++; unico = r; }
     });
     g.hidden = vivos === 0;
+    /* O número ao lado do título conta o que está À VISTA. Procurar "arena" e
+       ver "Viver junto 4" com uma linha embaixo é a página se contradizendo
+       na mesma tela. */
+    var conta = g.querySelector("h2 em");
+    if (conta) conta.textContent = vivos;
     achou += vivos;
   });
   if (achou) document.body.removeAttribute("data-vazio");
   else document.body.setAttribute("data-vazio", "1");
+
+  /* Sobrou um só: abre. Quem digitou até restar um item já disse qual queria
+     -- pedir mais um clique para ver a resposta é cobrar duas vezes pela
+     mesma pergunta. */
+  var so = achou === 1 ? unico.querySelector(".linha") : null;
+  /* A função abrir ALTERNA: chamada na linha já aberta, ela fecha. Sem esta
+     guarda, cada tecla digitada depois de sobrar um item abriria e fecharia
+     o detalhe. */
+  if (termo && so && aberta !== so) abrir(so);
 }
 
 [].forEach.call(document.querySelectorAll("[data-cat]"), function (b) {
