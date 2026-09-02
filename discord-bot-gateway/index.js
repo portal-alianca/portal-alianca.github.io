@@ -4783,6 +4783,105 @@ async function reciboDaSemana(guild, servidor) {
      mensagem fixada -- o placar -- editada no lugar. Nada a apagar, nada
      acumulando. */
 
+/* ---------------- adivinhar a lingua de quem escreveu ----------------
+
+   A NYX pos a bandeira e nada aconteceu. O caminho inverso e' mais forte que
+   consertar aquele: em vez de esperar a pessoa achar o /mylanguage, eu reparo
+   que ela escreveu em alemao e OFERECO, uma vez.
+
+   POR QUE NAO PERGUNTAR AO TRADUTOR
+
+   Azure e DeepL devolvem o idioma detectado junto da traducao, de graca. Nao
+   uso: os motores gratuitos nao devolvem, e eu teria detecao em servidor pago
+   e nao em servidor gratis -- que e' exatamente onde mora quem ainda nao
+   escolheu idioma. Uma chamada so' pra detectar seria pior: custo por
+   mensagem, pra sempre, pra oferecer uma vez.
+
+   Aqui e' de graca e funciona igual em todo mundo.
+
+   E E' CONSERVADOR DE PROPOSITO
+
+   Errar oferecendo alemao pra um brasileiro nao quebra nada, mas gasta a
+   unica chance que eu tenho com aquela pessoa -- a oferta e' uma so'. Entao
+   na duvida eu calo. Escrita que se identifica sozinha (arabe, cirilico,
+   kana, hangul, tailandes, devanagari, han) decide na hora; alfabeto latino
+   exige vantagem folgada, senao volta vazio. */
+
+/* Quando o alfabeto ja diz a lingua, nao ha o que adivinhar.
+
+   A ordem importa: japones usa kana E han, entao kana vem antes; ucraniano e'
+   cirilico com letras que o russo nao tem, entao ele vem antes do russo. */
+const ESCRITAS = [
+  [/[؀-ۿ]/u, "ar"],
+  [/[іїєґ]/iu, "uk"],
+  [/[Ѐ-ӿ]/u, "ru"],
+  [/[぀-ヿ]/u, "ja"],
+  [/[가-힯]/u, "ko"],
+  [/[฀-๿]/u, "th"],
+  [/[ऀ-ॿ]/u, "hi"],
+  [/[一-鿿]/u, "zh-CN"],
+];
+
+/* Palavras curtas e comuns, que aparecem em qualquer frase de conversa.
+
+   Nao e' dicionario: e' o suficiente pra separar as linguas latinas que o
+   servidor realmente fala. Palavra que serve a duas linguas (o "que" de
+   portugues e espanhol) nao ajuda a decidir e por isso nao entra. */
+const MARCAS = {
+  pt: ["não", "você", "está", "obrigado", "obrigada", "gente", "então", "muito", "aqui", "fazer"],
+  es: ["gracias", "pero", "ahora", "esto", "muy", "también", "hola", "bueno", "puedo"],
+  en: ["the", "you", "that", "with", "this", "thanks", "please", "what", "have", "guys"],
+  de: ["und", "nicht", "ich", "das", "ist", "auch", "aber", "danke", "wir", "haben"],
+  fr: ["pour", "avec", "pas", "nous", "merci", "bonjour", "mais", "être", "faire"],
+  it: ["che", "sono", "grazie", "ciao", "anche", "questo", "perché", "come"],
+  tr: ["için", "değil", "teşekkür", "merhaba", "evet", "hayır", "ben", "bir"],
+  id: ["yang", "untuk", "dengan", "tidak", "saya", "terima", "kasih", "sudah"],
+  vi: ["không", "được", "cảm", "ơn", "của", "tôi", "nhé"],
+  pl: ["nie", "jest", "się", "dziękuję", "cześć", "może", "tak"],
+  nl: ["niet", "het", "een", "dank", "maar", "ook", "wij"],
+  tl: ["ang", "sa", "po", "salamat", "hindi", "ako", "yung", "naman"],
+};
+
+/* Letras que so' existem em algumas linguas. Valem por meia palavra: sozinhas
+   nao decidem, mas desempatam. */
+const ACENTOS = [
+  [/[ãõ]/u, "pt"], [/[ñ¿¡]/u, "es"], [/[äöüß]/u, "de"],
+  [/[ğşı]/u, "tr"], [/[ąćęłńóśźż]/u, "pl"], [/[èœ]/u, "fr"],
+];
+
+/* Devolve o codigo da lingua, ou "" quando nao da' pra ter certeza. */
+function linguaProvavel(texto) {
+  const bruto = String(texto || "")
+    /* Mencao, link, emoji e codigo nao sao lingua nenhuma, e enchem o texto
+       de coisa que parece palavra. */
+    .replace(/<[@#:a-z]?[^>]*>/gi, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/`[^`]*`/g, " ")
+    .trim();
+
+  for (const [re, cod] of ESCRITAS) if (re.test(bruto)) return cod;
+
+  const limpo = bruto.toLowerCase();
+  const palavras = limpo.split(/[^\p{L}']+/u).filter(Boolean);
+  /* Frase curta nao decide nada: "ok", "lol", "gg" sao iguais no mundo todo,
+     e um palpite em cima disso queima a unica oferta. */
+  if (palavras.length < 4) return "";
+
+  const ponto = {};
+  for (const [cod, lista] of Object.entries(MARCAS)) {
+    ponto[cod] = palavras.filter((p) => lista.includes(p)).length;
+  }
+  for (const [re, cod] of ACENTOS) if (re.test(limpo)) ponto[cod] = (ponto[cod] || 0) + 0.5;
+
+  const ordem = Object.entries(ponto).sort((a, b) => b[1] - a[1]);
+  const [melhor, valor] = ordem[0] || [];
+  const segundo = ordem[1]?.[1] ?? 0;
+  /* Vantagem folgada, ou nada: dois marcadores e o dobro do segundo. Sem
+     isso, portugues e espanhol trocam de lugar o tempo todo. */
+  if (!melhor || valor < 2 || valor < segundo * 2) return "";
+  return melhor;
+}
+
 /* ---------------- eventos com hora ----------------
 
    O problema que isto resolve nao e' traducao, e' o vizinho dela.
@@ -4906,6 +5005,31 @@ function quandoDoTexto(bruto, agora = Date.now(), fusoMin = 0) {
   }
 
   return null;
+}
+
+/* Quando eu nao entendi, dizer O QUE FALTOU -- e nao despejar a lista.
+
+   O primeiro uso de verdade digitou "23/09". E' a coisa mais natural do
+   mundo, e a resposta foi a tabela inteira de formatos: quem le tem que
+   descobrir sozinho, no meio de quatro exemplos, que o problema era a hora.
+
+   Um quase-acerto merece a frase que fecha a distancia. */
+function porqueNaoEntendi(bruto) {
+  const t = String(bruto || "").trim().toLowerCase();
+
+  if (/^\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?$/.test(t)) {
+    return `Faltou a hora. Escreva **${t} 20:30**, com dois-pontos.`;
+  }
+  if (/^\d{1,2}[.,]\d{2}$/.test(t)) {
+    return `Hora se escreve com dois-pontos: **${t.replace(/[.,]/, ":")}**.`;
+  }
+  if (/^\d{1,4}\s*h\s*\d{1,2}$/.test(t)) {
+    return "**" + t + "** pode ser duas coisas, e eu não chuto: **" +
+      t.replace(/\s*h\s*/, ":") + "** para hora marcada, ou **" +
+      t.replace(/\s*h\s*/, "h") + "m** para daqui a tanto tempo.";
+  }
+  if (/^\d+$/.test(t)) return `Faltou a unidade. **${t}h** para horas, **${t}m** para minutos.`;
+  return "";
 }
 
 /* "-3", "+2", "-03:00", "utc-3", "gmt+5:30" -> minutos a leste de UTC.
@@ -5074,8 +5198,9 @@ async function criarEvento(inter) {
   if (quando === null) {
     /* A recusa ENSINA, porque a forma ambígua é a que mais vai aparecer:
        "20h30" some aqui e a pessoa precisa saber para onde ir. */
+    const dica = porqueNaoEntendi(bruto);
     return inter.editReply({ content:
-      `🤔 Não entendi **${bruto}**.\n\n` +
+      `🤔 Não entendi **${bruto}**.` + (dica ? ` ${dica}` : "") + "\n\n" +
       "**Daqui a tanto tempo:** `3h` · `90m` · `2h30m` · `2d`\n" +
       "**Hora marcada:** `20:30` · `16/09 20:30` — com dois-pontos\n\n" +
       "_`20h30` eu recuso de propósito: como duração seriam vinte horas e meia, " +
