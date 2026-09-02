@@ -146,6 +146,104 @@ function ok(nome, real, esperado) {
   falhou.push(`${nome}\n      esperava: ${JSON.stringify(esperado)}\n      veio:     ${JSON.stringify(real)}`);
 }
 function verdade(nome, valor) { ok(nome, !!valor, true); }
+/* ====== o cartão montado é válido para o Discord? ======
+
+   Este conferidor existe por um defeito que chegou na produção: uma função
+   virou assíncrona, a chamada ficou sem `await`, e o valor de um campo passou
+   a ser uma Promise. O Discord respondeu
+
+     embeds[0].fields[2].value[STRING_TYPE_CONVERT]:
+       Could not interpret "{}" as string
+
+   e recusou a MENSAGEM INTEIRA -- o cartão do servidor congelou. Nada
+   estourou do meu lado: Promise é um valor válido em JavaScript, e o
+   `node --check` passa.
+
+   Os testes não pegaram porque todos olhavam PEDAÇOS: uma frase, um molde, o
+   texto-fonte do arquivo. Nenhum montava o cartão e perguntava o que o
+   Discord pergunta.
+
+   Os limites abaixo são os DELE, e cada um recusa a mensagem toda quando
+   estourado -- não corta, não avisa. O de 6000 é o mais traiçoeiro: cada
+   pedaço cabe sozinho e a soma não. */
+const LIMITE = { title: 256, description: 4096, footer: 2048, autor: 256,
+  campos: 25, nome: 256, valor: 1024, total: 6000,
+  linhas: 5, porLinha: 5, rotulo: 80, id: 100, opcoes: 25 };
+
+function conferirCartao(onde, embed, componentes = []) {
+  verdade(`${onde}: o cartão existe`, !!embed && typeof embed === "object");
+  if (!embed) return;
+  let total = 0;
+
+  const pedaco = (rotulo, v, teto, obrigatorio = true) => {
+    if (v === undefined || v === null) {
+      if (obrigatorio) verdade(`${onde}: ${rotulo} existe`, false);
+      return;
+    }
+    /* Uma Promise passa por aqui como objeto -- é exatamente o que chegou ao
+       Discord naquele dia. */
+    const texto = typeof v === "string";
+    verdade(`${onde}: ${rotulo} é texto, e não objeto`, texto);
+    if (!texto) return;
+    verdade(`${onde}: ${rotulo} cabe em ${teto}`, v.length <= teto);
+    verdade(`${onde}: ${rotulo} não está vazio`, v.trim().length > 0);
+    /* Coisa que vaza para a tela com cara de defeito. "undefined" no meio de
+       uma frase é pior que erro: parece que o bot está confuso. */
+    verdade(`${onde}: ${rotulo} não vaza objeto nem valor perdido`,
+      !/\[object |Promise\b|undefined|\bNaN\b/.test(v));
+    total += v.length;
+  };
+
+  pedaco("o título", embed.title, LIMITE.title);
+  if (embed.description !== undefined) pedaco("a descrição", embed.description, LIMITE.description);
+  if (embed.footer) pedaco("o rodapé", embed.footer.text, LIMITE.footer);
+  if (embed.author) pedaco("o autor", embed.author.name, LIMITE.autor);
+
+  const campos = embed.fields || [];
+  verdade(`${onde}: no máximo ${LIMITE.campos} campos`, campos.length <= LIMITE.campos);
+  for (const [i, f] of campos.entries()) {
+    pedaco(`o rótulo do campo ${i}`, f.name, LIMITE.nome);
+    pedaco(`o valor do campo ${i}`, f.value, LIMITE.valor);
+  }
+
+  /* O teto que ninguém vê chegar: cada pedaço cabe, a soma não, e o Discord
+     recusa o cartão inteiro sem dizer qual parte sobrou. */
+  verdade(`${onde}: a soma de tudo cabe em ${LIMITE.total}`, total <= LIMITE.total);
+
+  verdade(`${onde}: no máximo ${LIMITE.linhas} linhas de botão`, componentes.length <= LIMITE.linhas);
+  for (const [i, linha] of componentes.entries()) {
+    const dentro = (linha.components || []).map((c) => c.data ?? c);
+    verdade(`${onde}: a linha ${i} tem no máximo ${LIMITE.porLinha}`, dentro.length <= LIMITE.porLinha);
+    verdade(`${onde}: a linha ${i} não está vazia`, dentro.length > 0);
+    for (const d of dentro) {
+      if (d.label !== undefined) {
+        verdade(`${onde}: o rótulo "${String(d.label).slice(0, 20)}" é texto e cabe`,
+          typeof d.label === "string" && d.label.length <= LIMITE.rotulo && d.label.trim().length > 0);
+      }
+      if (d.custom_id !== undefined) {
+        verdade(`${onde}: o custom_id "${String(d.custom_id).slice(0, 24)}" cabe`,
+          typeof d.custom_id === "string" && d.custom_id.length <= LIMITE.id);
+      }
+      /* Botão de link (estilo 5) não tem custom_id; todo o resto precisa, ou
+         o clique não chega em lugar nenhum. */
+      if (d.type === 2 && d.style !== 5) {
+        verdade(`${onde}: o botão "${String(d.label).slice(0, 20)}" tem para onde mandar o clique`,
+          !!d.custom_id);
+      }
+      for (const o of (d.options || [])) {
+        const od = o.data ?? o;
+        verdade(`${onde}: a opção "${String(od.label).slice(0, 20)}" cabe`,
+          typeof od.label === "string" && od.label.length <= 100 && od.label.trim().length > 0);
+        verdade(`${onde}: o valor da opção "${String(od.label).slice(0, 20)}" cabe`,
+          typeof od.value === "string" && od.value.length <= 100);
+      }
+      if (d.options) {
+        verdade(`${onde}: o menu tem no máximo ${LIMITE.opcoes} opções`, d.options.length <= LIMITE.opcoes);
+      }
+    }
+  }
+}
+
 
 /* ================= o glossário e a proteção do tradutor =================
    Toda esta seção nasceu de defeitos reais. */
@@ -3063,6 +3161,117 @@ function verdade(nome, valor) { ok(nome, !!valor, true); }
 }
 
 /* ---- o resultado ---- */
+
+/* ============ TODO cartão que vai ao Discord é montado e conferido ============
+
+   O defeito que fechou a noite passada chegou na produção porque os testes
+   olhavam pedaços. Havia OITO cartões indo para o Discord e exatamente UM
+   com teste que montava o cartão inteiro -- e ele nasceu depois do estrago.
+
+   Aqui os outros entram. Cada um é montado com o banco e o Discord de
+   mentira, e passa pelo mesmo conferidor: tudo é texto, nada vaza objeto,
+   cada pedaço cabe, a soma cabe, e os botões são clicáveis.
+
+   O que este bloco cobre não é uma regra de negócio: é a fronteira. Do lado
+   de cá, JavaScript aceita quase tudo; do lado de lá, o Discord recusa a
+   mensagem inteira e o cartão congela sem ninguém saber por quê. */
+{
+  globalThis.COR = 0xF5A623;
+  globalThis.COR_OK = 0x5EBB83;
+  globalThis.MOTOR_AUTO = { tipo: "auto" };
+  globalThis.MOTORES = { deepl: { nome: "DeepL" }, azure: { nome: "Azure Translator" } };
+  globalThis.traduzirComCache = async (t) => `«${t}»`;
+
+  /* ---- a arena: o cartão fixado e a cópia de cada um ---- */
+  {
+    const { placarDaArena, placarPessoal, botoesDaArena, timesDaArena, LINGUAS_MENU } = carregar([
+      "MEDALHA", "LINGUAS_MENU", "nomeDoIdioma", "nomeNaPropriaLingua", "bandeiraDoIdioma",
+      "diaISO", "ARENA_ATAQUES_DIA", "LEGENDA_ARENA", "ARENA_VAZIA", "handicapDoTime",
+      "setaDoTime", "linhasDoPlacar", "timesDaArena", "porMolde", "falaFixa",
+      "placarDaArena", "placarPessoal", "botoesDaArena"]);
+
+    const leitores = LINGUAS_MENU.map(([c], i) => ({ idioma: c, quantos: i + 1 }));
+    /* Vinte idiomas com números grandes: o pior caso do desenho, que é onde
+       a soma de 6000 estoura sem nenhum pedaço sozinho passar do limite. */
+    const cheio = timesDaArena(
+      LINGUAS_MENU.map(([c], i) => ({ idioma: c, poder: 99999 - i, vitorias: 4321 + i, meu_servidor: 77 })),
+      leitores, Object.fromEntries(LINGUAS_MENU.map(([c]) => [c, 987654])));
+
+    conferirCartao("o placar cheio", placarDaArena(cheio, "2026-08-31", 999), botoesDaArena());
+    conferirCartao("o placar vazio", placarDaArena([], "2026-08-31", 0), botoesDaArena());
+
+    const eu = { poder: 99, ouro: 12345, vitorias: 678, ataques_dia: 5, dia: "2026-08-31" };
+    for (const [quem, idioma, jogador, escolheu] of [
+      ["a cópia em alemão", "de", eu, true],
+      ["a cópia de quem não escolheu", "de", null, false],
+      ["a cópia em inglês, sem tradução", "en", eu, true],
+    ]) {
+      conferirCartao(quem,
+        await placarPessoal({ times: cheio, temporada: "2026-08-31", servidores: 999 },
+          idioma, jogador, escolheu),
+        botoesDaArena());
+    }
+    conferirCartao("a cópia de uma arena vazia",
+      await placarPessoal({ times: [], temporada: "2026-08-31", servidores: 0 }, "de", null, true),
+      botoesDaArena());
+  }
+
+  /* ---- o anúncio da arena ---- */
+  {
+    const { anuncioTraduzido, menuDoAnuncio } = carregar([
+      "LINGUAS_MENU", "ANUNCIO_ARENA", "anuncioTraduzido", "menuDoAnuncio"]);
+    conferirCartao("o anúncio em inglês", await anuncioTraduzido("en"), menuDoAnuncio());
+    /* Traduzido, cada bloco cresce: alemão é a língua que mais estica frase,
+       e é onde a soma de 6000 aperta. */
+    conferirCartao("o anúncio traduzido", await anuncioTraduzido("de"), menuDoAnuncio());
+  }
+
+  /* ---- a página do membro (/help) ---- */
+  {
+    const { paginaDoMembro, menuIdioma } = carregar([
+      "LINGUAS_MENU", "nomeNaPropriaLingua", "menuIdioma", "paginaDoMembro"]);
+    conferirCartao("o /help do membro", paginaDoMembro(false), menuIdioma());
+    conferirCartao("o /help de quem administra", paginaDoMembro(true), menuIdioma());
+  }
+
+  /* ---- o recibo da semana ---- */
+  {
+    const { reciboDaSemana, botoesDoRecibo } = carregar([
+      "SEMANA", "LINGUAS_MENU", "diaISO", "semanaDe", "nomeDoIdioma", "leitoresPorIdioma",
+      "semanasSeguidas", "botoesDoRecibo", "reciboDaSemana"]);
+
+    globalThis.traducoesEntre = async (id, de) => de.endsWith("31") ? 1240 : 1050;
+    globalThis.sb = async () => LINGUAS_MENU.map(([c]) => ({ idioma: c, role_id: `r-${c}` }));
+    const guild = {
+      roles: { cache: new Map(LINGUAS_MENU.map(([c], i) => [`r-${c}`, { members: { size: i + 1 } }])) },
+      members: { cache: new Map() },
+    };
+    const recibo = await reciboDaSemana(guild, { id: "s1" });
+    verdade("o recibo foi montado", !!recibo);
+    if (recibo) conferirCartao("o recibo da semana", recibo, botoesDoRecibo());
+  }
+
+  /* ---- o cartão do dia, no painel do dono ---- */
+  {
+    const { cartaoDoDia } = carregar([
+      "somaDoDia", "variacao", "ontemISO", "comoEstaACota", "cartaoDoDia"]);
+    globalThis.cotaDoDono = new Map();
+    globalThis.quandoFoi = () => "há 3 horas";
+    globalThis.contar = async () => 1777;
+    globalThis.sb = async () => ([
+      { dia: "2026-08-31", caracteres: 91234, traducoes: 812, do_cache: 90, motor: "dono-azure" },
+      { dia: "2026-08-31", caracteres: 0, traducoes: 7, do_cache: 0, motor: "sem:tamanho" },
+    ]);
+    conferirCartao("o cartão do dia", await cartaoDoDia());
+
+    /* Dia parado: o caminho em que quase todo campo fica vazio ou "—", e o
+       Discord recusa campo com valor vazio tanto quanto um objeto. */
+    globalThis.contar = async () => 0;
+    globalThis.sb = async () => [];
+    conferirCartao("o cartão de um dia parado", await cartaoDoDia());
+  }
+}
+
 if (falhou.length) {
   console.log(`\n  ${falhou.length} teste(s) falharam de ${passou + falhou.length}:\n`);
   for (const f of falhou) console.log(`   ✗ ${f}\n`);
