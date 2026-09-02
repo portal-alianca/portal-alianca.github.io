@@ -3326,6 +3326,93 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+
+/* ============ ler "quando" ============
+
+   Evento marcado na hora errada é pior que evento não criado: o pessoal
+   aparece e não há ninguém, e a culpa fica no bot. Por isso o parser recusa
+   em vez de chutar, e por isso este bloco é o maior do recurso. */
+{
+  const { quandoDoTexto, fusoDoTexto, EVENTO_MAX } =
+    carregar(["EVENTO_MAX", "quandoDoTexto", "fusoDoTexto"]);
+
+  /* Uma terça-feira às 12:00 UTC, para as contas serem conferíveis na mão. */
+  const AGORA = Date.UTC(2026, 8, 15, 12, 0);
+  const q = (t, fuso = 0) => quandoDoTexto(t, AGORA, fuso);
+  const emMin = (t, fuso = 0) => { const v = q(t, fuso); return v === null ? null : (v - AGORA) / 60000; };
+
+  /* ---- relativa: não depende de fuso nenhum ---- */
+  ok("3h são 180 minutos", emMin("3h"), 180);
+  ok("3 horas também", emMin("3 horas"), 180);
+  ok("3hs também", emMin("3hs"), 180);
+  ok("2h30m são 150", emMin("2h30m"), 150);
+  ok("2h30min também", emMin("2h30min"), 150);
+
+  /* A forma ambígua é RECUSADA, e é a decisão mais importante do parser.
+     "20h30" como duração é "vinte horas e meia a partir de agora"; escrito
+     por um brasileiro é quase sempre 8h30 da noite. Uma das leituras marca o
+     evento vinte horas fora do lugar, com o pessoal aparecendo e não achando
+     ninguém. Dois-pontos é relógio, "m" no fim é duração, e o meio-termo não
+     passa. */
+  for (const ambigua of ["20h30", "2h30", "19 h 30", "8h05"]) {
+    ok(`"${ambigua}" é ambígua demais para ser chutada`, q(ambigua), null);
+  }
+  ok("90m são 90", emMin("90m"), 90);
+  ok("90min também", emMin("90min"), 90);
+  ok("45 minutos também", emMin("45 minutos"), 45);
+  ok("2d são dois dias", emMin("2d"), 2880);
+  /* O fuso não pode mexer no relativo: "daqui a 3h" é igual no mundo todo. */
+  ok("o fuso não mexe no relativo", emMin("3h", -180), 180);
+
+  /* Ruído de quem escreve como fala. */
+  for (const t of ["em 3h", "daqui a 3h", "dentro de 3h", "in 3h", "  3H  "]) {
+    ok(`"${t}" é entendido`, emMin(t), 180);
+  }
+
+  /* ---- de relógio: aí sim o fuso manda ---- */
+  ok("20:30 em UTC", emMin("20:30"), 8 * 60 + 30);
+  /* 20:30 no fuso -3 é 23:30 UTC, ou seja 11h30 depois das 12:00 UTC. */
+  ok("20:30 em UTC-3", emMin("20:30", -180), 11 * 60 + 30);
+  /* Hora que já passou hoje vira amanhã, e não um evento no passado. */
+  ok("hora que já passou é amanhã", emMin("09:00"), 21 * 60);
+
+  ok("data com hora", q("16/09 20:30"), Date.UTC(2026, 8, 16, 20, 30));
+  ok("data com hora em UTC-3", q("16/09 20:30", -180), Date.UTC(2026, 8, 16, 23, 30));
+  ok("data com ano de dois dígitos", q("16/12/26 20:30"), Date.UTC(2026, 11, 16, 20, 30));
+  ok("data com ano de quatro dígitos", q("16/12/2026 20:30"), Date.UTC(2026, 11, 16, 20, 30));
+  /* Data explícita além de um ano também bate no teto: o teto existe para o
+     erro de digitação, e ele não distingue de quem quis mesmo. */
+  ok("data a mais de um ano é recusada", q("16/09/2028 20:30"), null);
+  ok("traço serve como barra", q("16-09 20:30"), Date.UTC(2026, 8, 16, 20, 30));
+  /* Quem escreve "05/01" em setembro está falando do janeiro que vem. */
+  ok("data sem ano que já passou vira o ano seguinte",
+    q("05/01 20:30"), Date.UTC(2027, 0, 5, 20, 30));
+
+  /* ---- o que tem que ser RECUSADO ---- */
+  for (const ruim of ["", "   ", "amanhã", "sábado", "logo mais", "20:30h30",
+                      "25:00", "20:75", "abc", "0h", "-3h", "3", "h", ":30", "30/02 10:00",
+                      "31/04 10:00", "13/13 10:00", "00/09 10:00"]) {
+    ok(`"${ruim}" é recusado em vez de chutado`, q(ruim), null);
+  }
+  /* Segurar a tecla não pode marcar evento no ano 3000. */
+  verdade("9999h passa do teto de um ano", q("9999h") === null);
+  verdade("9999d também", q("9999d") === null);
+  verdade("mas 8000h (menos de um ano) passa", q("8000h") !== null);
+  verdade("o teto é de um ano", EVENTO_MAX === 365 * 24 * 60 * 60 * 1000);
+
+  /* ---- o fuso ---- */
+  ok("-3 são -180 minutos", fusoDoTexto("-3"), -180);
+  ok("+2 são 120", fusoDoTexto("+2"), 120);
+  ok("2 sem sinal é positivo", fusoDoTexto("2"), 120);
+  ok("-03:00 também", fusoDoTexto("-03:00"), -180);
+  ok("utc-3 também", fusoDoTexto("utc-3"), -180);
+  ok("gmt+5:30 (Índia)", fusoDoTexto("gmt+5:30"), 330);
+  ok("+5:45 (Nepal)", fusoDoTexto("+5:45"), 345);
+  for (const ruim of ["", "abc", "+15", "-20", "+3:75", "sudeste"]) {
+    ok(`fuso "${ruim}" é recusado`, fusoDoTexto(ruim), null);
+  }
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes

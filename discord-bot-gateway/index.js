@@ -4773,6 +4773,139 @@ async function reciboDaSemana(guild, servidor) {
      mensagem fixada -- o placar -- editada no lugar. Nada a apagar, nada
      acumulando. */
 
+/* ---------------- eventos com hora ----------------
+
+   O problema que isto resolve nao e' traducao, e' o vizinho dela.
+
+   Numa alianca internacional o lider escreve "Urso 20:30" e metade nao
+   aparece. Uns nao leram a lingua; outros leram, calcularam o fuso de cabeca
+   e erraram. A lingua o CYRON ja resolve. A hora, nao -- e ela divide o
+   servidor exatamente como o idioma divide.
+
+   O CONSERTO E' DO DISCORD, E E' DE GRACA
+
+   `<t:1757000000:F>` o Discord desenha no relogio de QUEM ESTA OLHANDO. Uma
+   mensagem so', e cada pessoa le no fuso dela, sem eu guardar o fuso de
+   ninguem. Isso importa duas vezes: o recurso sai sem custo e sem dado novo
+   -- e fuso e' dado pessoal que eu teria que prometer apagar na pagina de
+   privacidade.
+
+   O que sobra pra mim e' o pedaco que o Discord nao faz: entender o que o
+   lider digitou, mostrar o cartao, e contar quem vai. */
+
+const CANAL_EVENTOS = "📅-eventos";
+
+/* Quanto tempo um evento fica de pe' depois de acontecer.
+
+   Some sozinho: agenda que acumula evento morto vira mural de coisa que ja
+   passou, e a proxima chamada se perde no meio. */
+const EVENTO_SOBREVIVE = 6 * 60 * 60 * 1000;
+
+/* Teto de um ano. Sem ele, "9999h" viraria um evento no ano 3000 -- e nao ha
+   erro de digitacao mais facil que segurar a tecla. */
+const EVENTO_MAX = 365 * 24 * 60 * 60 * 1000;
+
+/* Le o que o lider digitou em "quando".
+
+   Aceita duas familias, e a diferenca entre elas e' o fuso:
+
+   RELATIVA ("3h", "90m", "2h30", "2d") nao depende de fuso NENHUM -- e por
+   isso e' a forma recomendada, e a que serve pra chamada de rally, que e' o
+   caso mais comum: "daqui a 3 horas" quer dizer a mesma coisa no mundo todo.
+
+   DE RELOGIO ("20:30", "15/09 20:30") depende de saber em que fuso o lider
+   pensou. Esse numero vem de fora, e quando nao vier vale UTC -- errado por
+   algumas horas e' melhor que recusar a criacao do evento.
+
+   Devolve o instante em ms, ou null quando nao entendeu. Nunca chuta: evento
+   marcado na hora errada e' pior que evento nao criado, porque o pessoal
+   aparece e nao ha ninguem. */
+function quandoDoTexto(bruto, agora = Date.now(), fusoMin = 0) {
+  const t = String(bruto || "").trim().toLowerCase()
+    .replace(/\s+/g, " ")
+    /* "às", "as", "em", "in", "at" na frente sao ruido de quem escreve como
+       fala. Tirar aqui e' mais barato que ensinar todo mundo a sintaxe. */
+    .replace(/^(?:às|as|em|in|at|daqui a|dentro de)\s+/, "");
+  if (!t) return null;
+
+  const somar = (ms) => (ms > 0 && ms <= EVENTO_MAX ? agora + ms : null);
+
+  let m;
+  /* "2h30m" -- com o "m" no fim, e nao "2h30".
+
+     "20h30" e' a armadilha deste parser. Como duracao seria "vinte horas e
+     meia a partir de agora"; escrito por um brasileiro e' quase sempre
+     8h30 da noite. As duas leituras sao defensaveis, e uma delas marca o
+     evento vinte horas fora do lugar -- com o pessoal aparecendo e nao
+     achando ninguem.
+
+     Entao a regra e' de forma, e nao de adivinhacao pelo tamanho do numero:
+     DOIS-PONTOS e' relogio, "m" no fim e' duracao, e o meio-termo e'
+     RECUSADO logo abaixo com uma frase que ensina os dois. Recusar custa uma
+     correcao; chutar custa a chamada inteira. */
+  if ((m = t.match(/^(\d{1,4})\s*h(?:oras?|rs?|s)?\s*(\d{1,2})\s*(?:m|min|minutos?)$/))) {
+    const min = Number(m[2]);
+    if (min > 59) return null;
+    return somar((Number(m[1]) * 60 + min) * 60000);
+  }
+  if ((m = t.match(/^(\d{1,4})\s*h(?:oras?|rs?|s)?$/))) return somar(Number(m[1]) * 3600000);
+  if ((m = t.match(/^(\d{1,5})\s*(?:m|min|mins|minutos?)$/))) return somar(Number(m[1]) * 60000);
+  if ((m = t.match(/^(\d{1,3})\s*d(?:ias?)?$/))) return somar(Number(m[1]) * 86400000);
+
+  /* A forma ambigua morre aqui, de proposito. */
+  if (/^\d{1,4}\s*h\s*\d{1,2}$/.test(t)) return null;
+
+  /* Daqui pra baixo e' relogio, e ai o fuso entra. */
+  const daData = (ano, mes, dia, hora, min) => {
+    if (hora > 23 || min > 59 || mes < 1 || mes > 12 || dia < 1 || dia > 31) return null;
+    const ms = Date.UTC(ano, mes - 1, dia, hora, min) - fusoMin * 60000;
+    /* Date.UTC aceita 31 de fevereiro e devolve 3 de março. Conferir de volta
+       recusa a data que nao existe em vez de marcar o evento noutro dia. */
+    const d = new Date(ms + fusoMin * 60000);
+    if (d.getUTCMonth() !== mes - 1 || d.getUTCDate() !== dia) return null;
+    return ms;
+  };
+
+  /* "15/09 20:30" e "15/09/2026 20:30". Dia antes do mes: e' como se escreve
+     em quase todo lugar que nao os Estados Unidos, e o servidor e' daqui. */
+  if ((m = t.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s+(\d{1,2}):(\d{2})$/))) {
+    const hoje = new Date(agora + fusoMin * 60000);
+    const ano = m[3] ? (m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : hoje.getUTCFullYear();
+    const quando = daData(ano, Number(m[2]), Number(m[1]), Number(m[4]), Number(m[5]));
+    if (quando === null) return null;
+    /* Sem ano e a data ja passou: e' o ano que vem. Quem escreve "05/01" em
+       dezembro esta falando do proximo janeiro, nao do que passou. */
+    if (!m[3] && quando < agora) {
+      return daData(ano + 1, Number(m[2]), Number(m[1]), Number(m[4]), Number(m[5]));
+    }
+    return quando <= agora + EVENTO_MAX ? quando : null;
+  }
+
+  /* "20:30" ou "20h30" sozinho: hoje, e amanha se ja passou. */
+  if ((m = t.match(/^(\d{1,2}):(\d{2})$/))) {
+    const hoje = new Date(agora + fusoMin * 60000);
+    const quando = daData(hoje.getUTCFullYear(), hoje.getUTCMonth() + 1, hoje.getUTCDate(),
+      Number(m[1]), Number(m[2]));
+    if (quando === null) return null;
+    return quando > agora ? quando : quando + 86400000;
+  }
+
+  return null;
+}
+
+/* "-3", "+2", "-03:00", "utc-3", "gmt+5:30" -> minutos a leste de UTC.
+   Devolve null quando nao entendeu, e ai quem chama decide o que fazer. */
+function fusoDoTexto(bruto) {
+  const t = String(bruto || "").trim().toLowerCase().replace(/\s+/g, "").replace(/^(?:utc|gmt)/, "");
+  if (!t) return null;
+  const m = t.match(/^([+-]?)(\d{1,2})(?::?(\d{2}))?$/);
+  if (!m) return null;
+  const horas = Number(m[2]);
+  const min = Number(m[3] || 0);
+  if (horas > 14 || min > 59) return null;
+  return (m[1] === "-" ? -1 : 1) * (horas * 60 + min);
+}
+
 const CANAL_ARENA = "⚔️-arena";
 const ARENA_ATAQUES_DIA = 5;
 
