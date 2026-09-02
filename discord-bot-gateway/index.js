@@ -54,16 +54,35 @@ const client = new Client({
 
 /* ---------------- Supabase (mesmo padrao do top-discord) ---------------- */
 
+/* Toda ida ao banco tem prazo.
+ *
+ * Isto existe por um "O aplicativo não respondeu" no /evento. O Discord dá
+ * TRÊS SEGUNDOS para a interação ser reconhecida, e o roteador lia o idioma
+ * da pessoa no banco antes de rotear -- uma ida à rede antes do defer.
+ *
+ * O `catch` que existia em volta não protegia de nada, porque o modo de falhar
+ * que importa não é o erro: é a resposta que nunca chega. `fetch` sem sinal não
+ * desiste nunca, e um `await` pendurado não cai em `catch` nenhum. O comando
+ * simplesmente morria em silêncio, e quem clicou via o aviso vermelho do
+ * Discord sem nada no canal de erros.
+ *
+ * Com prazo, pendurar vira erro -- e erro esta casa já sabe tratar. */
+const PRAZO_BANCO = 8000;
+
+function comPrazo(extra = {}) {
+  return { ...extra, signal: AbortSignal.timeout(PRAZO_BANCO) };
+}
+
 async function sb(caminho) {
-  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, comPrazo({
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
-  });
+  }));
   if (!r.ok) throw new Error(`supabase ${r.status}`);
   return await r.json();
 }
 
 async function sbPost(caminho, corpo, prefer = "") {
-  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, comPrazo({
     method: "POST",
     headers: {
       apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
@@ -73,7 +92,7 @@ async function sbPost(caminho, corpo, prefer = "") {
       Prefer: ["return=representation", prefer].filter(Boolean).join(","),
     },
     body: JSON.stringify(corpo),
-  });
+  }));
   /* Com o motivo junto. "supabase 400" sozinho me custou meia hora caçando
      uma instalacao que parava no meio: a resposta dizia exatamente qual
      coluna estava reclamando, e eu estava jogando isso fora. */
@@ -102,10 +121,10 @@ async function idsVivos(guild) {
 }
 
 async function sbDel(caminho) {
-  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, comPrazo({
     method: "DELETE",
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, Prefer: "return=minimal" },
-  });
+  }));
   if (!r.ok) throw new Error(`supabase ${r.status} ao apagar ${caminho}: ${(await r.text()).slice(0, 200)}`);
 }
 
@@ -138,14 +157,14 @@ const GUARDO_POR = [
 ];
 
 async function sbPatch(caminho, corpo) {
-  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, {
+  const r = await fetch(`${SB_URL}/rest/v1/${caminho}`, comPrazo({
     method: "PATCH",
     headers: {
       apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
       "Content-Type": "application/json", Prefer: "return=minimal",
     },
     body: JSON.stringify(corpo),
-  });
+  }));
   if (!r.ok) throw new Error(`supabase ${r.status} em ${caminho}: ${(await r.text()).slice(0, 300)}`);
 }
 
@@ -7912,14 +7931,18 @@ async function limparTopicosOrfaos(sala, servidores) {
    quebrou. E' de proposito que sejam duas coisas: tentar fazer a lista de
    canais responder isso e' o que ia frustrar em duas semanas. */
 async function comandoAdmin(inter) {
+  /* O defer vem antes da checagem porque a checagem vai à rede: `ehDono`
+     pergunta ao Discord de quem é o aplicativo, e com o cache frio isso é uma
+     chamada dentro dos três segundos. Quem não é dono continua vendo a mesma
+     recusa -- só depois de um "pensando" de um piscar de olhos. */
+  await inter.deferReply({ flags: 64 });
+
   if (!await ehDono(inter.user.id)) {
     /* Nao digo "voce nao e' o dono" -- digo que o comando nao existe pra
        quem pergunta. Confirmar que existe um painel de dono e' contar metade
        do caminho pra quem estava tateando. */
-    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+    return inter.editReply({ content: "Não conheço esse comando." });
   }
-
-  await inter.deferReply({ flags: 64 });
 
   const gid = await guildDoPainel();
   if (!gid) {
@@ -9901,11 +9924,18 @@ async function atenderNoPrivado(msg) {
 }
 
 async function comandoAjuda(inter) {
+  /* Reconhecer primeiro, e com folga.
+
+     Este cartão custava DUAS idas à rede antes de responder -- o idioma da
+     pessoa e a tradução do cartão inteiro -- dentro dos três segundos que o
+     Discord dá. Tradutor lento aqui não deixava a ajuda lenta: deixava a ajuda
+     inexistente, e justamente para quem não lê a língua da casa e não tem
+     outra porta. */
+  await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
   const embed = await traduzirEmbed(paginaDoMembro(souAdmin), idioma, await motorDoGuild(inter.guildId));
-  return inter.reply({
-    flags: 64,
+  return inter.editReply({
     embeds: [{ color: COR, ...embed }],
     components: menuIdioma(),
   });
@@ -9931,8 +9961,22 @@ async function comandoArena(inter) {
 }
 
 async function comandoDeInteracao(inter) {
-  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const nome = inter.commandName;
+
+  /* Rotear PRIMEIRO, ler o banco depois.
+
+     O idioma da pessoa era lido aqui em cima, antes de qualquer coisa -- uma
+     ida ao banco na frente de todo comando, inclusive dos que nem usam o
+     idioma. O Discord dá três segundos para a interação ser reconhecida, e
+     esse tempo estava sendo gasto antes de o comando começar: o /evento
+     reconhece na primeira linha dele, e mesmo assim aparecia "O aplicativo
+     não respondeu", porque ele nunca chegava a rodar.
+
+     Os quatro daqui de baixo cuidam do próprio reconhecimento. Quem precisa
+     do idioma passa por `lingua()`, que só vai ao banco quando alguém
+     pergunta -- e uma vez só. */
+  let idiomaLido = null;
+  const lingua = async () => (idiomaLido ??= await idiomaDoJogador(inter.user.id, inter.locale));
 
   /* O painel onde a pessoa estiver.
 
@@ -9957,7 +10001,13 @@ async function comandoDeInteracao(inter) {
      e o dono derrubaria o proprio painel sem perceber. Depois, o pior caso e'
      o dele nao ser chamado -- e o formulario recusa esses nomes na hora de
      salvar, que e' onde ainda da' pra explicar por que. */
-  if (inter.guildId) {
+  /* Nome meu nem chega a perguntar ao banco.
+
+     `salvarComando` recusa os nomes de NOMES_MEUS na hora de gravar, então um
+     comando do dono nunca pode se chamar `cyron` ou `player` -- e procurar por
+     eles era uma ida à rede antes do defer, na frente de todo comando meu que
+     ainda não tinha reconhecido a interação. */
+  if (inter.guildId && !NOMES_MEUS.has(nome)) {
     const meu = (await comandosDoDono(inter.guildId)).find((c) => c.nome === nome);
     if (meu) return rodarComandoDoDono(inter, meu);
   }
@@ -9966,14 +10016,17 @@ async function comandoDeInteracao(inter) {
     if (!inter.guildId) {
       return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     }
+    /* Reconhecer antes de ir ao banco. Com o `servidorDoGuild` na frente, um
+       banco lento gastava os três segundos e o painel morria em "O aplicativo
+       não respondeu" -- sem nada no canal de erros, porque nada falhou. */
+    await inter.deferReply({ flags: 64 });
     const servidor = await servidorDoGuild(inter.guildId);
     if (!servidor) {
-      return inter.reply({ flags: 64, content: "Ainda não terminei de me instalar aqui. Tente de novo em um minuto." });
+      return inter.editReply({ content: "Ainda não terminei de me instalar aqui. Tente de novo em um minuto." });
     }
     /* Efêmero e de uma pessoa só: aqui dá para falar a língua dela.
        O palpite do Discord entra como no resto -- quem nunca escolheu idioma
        ainda assim lê o painel na língua do aparelho. */
-    await inter.deferReply({ flags: 64 });
     const meu = (await idiomaEscolhido(inter.user.id)) || idiomaDoAplicativo(inter.locale);
     const { embed, componentes } = await montarPainel(inter.guild, servidor, meu);
     return inter.editReply({ embeds: [embed], components: componentes });
@@ -9983,7 +10036,7 @@ async function comandoDeInteracao(inter) {
     const novo = inter.options.getString("language");
     if (!LINGUAS_MENU.some(([c]) => c === novo)) {
       return responder(inter, { title: "🤔 Idioma não reconhecido",
-        description: "Escolha uma das opções da lista." }, { idioma });
+        description: "Escolha uma das opções da lista." }, { idioma: await lingua() });
     }
     await inter.deferReply({ flags: 64 });
     await salvarIdiomaJogador(inter.user.id, novo);
@@ -10000,23 +10053,23 @@ async function comandoDeInteracao(inter) {
     await inter.deferReply({ flags: 64 });
     if (!texto) {
       return responder(inter, { title: "🤔 Mensagem vazia",
-        description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma });
+        description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma: await lingua() });
     }
-    const t = await traduzirLongo(texto, idioma, await motorDoGuild(inter.guildId));
+    const t = await traduzirLongo(texto, await lingua(), await motorDoGuild(inter.guildId));
     /* Traducao que volta igual ao original nao e' resposta: e' o texto de
        novo. Quem pediu conclui que o bot nao fez nada -- ou, pior, que ele
        disse que a mensagem ja estava na lingua dela. Dizer o que aconteceu, e
        onde se troca de idioma, custa uma frase. */
     if (t && t.trim() === texto.trim()) {
       return responder(inter, {
-        title: `🌐 Já está em ${nomeDoIdioma(idioma)}`,
+        title: `🌐 Já está em ${nomeDoIdioma(await lingua())}`,
         description: "Esta mensagem já está no idioma em que eu falo com você.\n\n" +
           "Se você lê em outra língua, troque com **/mylanguage** — eu passo a " +
           "traduzir tudo para ela.",
-      }, { idioma });
+      }, { idioma: await lingua() });
     }
     return responder(inter, t
-      ? { title: `🌐 ${nomeDoIdioma(idioma)}`, description: t.slice(0, 3800),
+      ? { title: `🌐 ${nomeDoIdioma(await lingua())}`, description: t.slice(0, 3800),
           footer: { text: "Quer mudar o idioma? Use /mylanguage" } }
       : { title: "❌ Não deu", description: "Não consegui traduzir agora." }, { idioma: "pt" });
   }
@@ -10024,17 +10077,17 @@ async function comandoDeInteracao(inter) {
   if (nome === "portal") {
     return responder(inter, { title: "🏰 Portal da Aliança",
       description: `Agenda no seu fuso, tutoriais dos eventos e ranking.\n\n${PORTAL}` },
-      { efemera: false, idioma });
+      { efemera: false, idioma: await lingua() });
   }
 
   if (nome === "player") {
     const fid = String(inter.options.getString("id") || "").trim();
     if (!/^\d{5,15}$/.test(fid)) {
       return responder(inter, { title: "🤔 ID estranho",
-        description: "O ID do jogo é só números. Veja no seu perfil dentro do jogo." }, { idioma });
+        description: "O ID do jogo é só números. Veja no seu perfil dentro do jogo." }, { idioma: await lingua() });
     }
     await inter.deferReply();
-    return responder(inter, await embedJogador(fid), { idioma });
+    return responder(inter, await embedJogador(fid), { idioma: await lingua() });
   }
 
   if (nome === "settings") {
@@ -10051,7 +10104,7 @@ async function comandoDeInteracao(inter) {
         : m === "subir" ? "Baixei o arquivo mas não consegui guardar. Tente de novo."
         : "Algo falhou. Tente de novo em instantes." };
     }
-    return responder(inter, embed, { idioma });
+    return responder(inter, embed, { idioma: await lingua() });
   }
 
   /* Daqui pra baixo precisa de alianca ligada. */
@@ -10061,13 +10114,13 @@ async function comandoDeInteracao(inter) {
       title: "🔗 Falta ligar este servidor à aliança",
       description: "Um oficial resolve aqui mesmo:\n\n`/settings server code:<código de oficial>`\n\n" +
         `O código está no [portal](${PORTAL}), em **Painel do oficial → Minha aliança**.`,
-    }, { idioma });
+    }, { idioma: await lingua() });
   }
   const tag = tagBonita(vinculo.aliancas || {});
 
   if (nome === "events") {
     await inter.deferReply();
-    return responder(inter, await embedEventos(vinculo.alianca_id, tag), { idioma });
+    return responder(inter, await embedEventos(vinculo.alianca_id, tag), { idioma: await lingua() });
   }
 
   if (nome === "ranking") {
@@ -10081,10 +10134,10 @@ async function comandoDeInteracao(inter) {
       try { embed = await rankingDoPortal(vinculo.alianca_id, tag); }
       catch { embed = { title: "❌ Algo falhou", description: "Não consegui montar o ranking agora." }; }
     }
-    return responder(inter, embed, { idioma });
+    return responder(inter, embed, { idioma: await lingua() });
   }
 
-  return responder(inter, { title: "🤷 Não conheço esse comando" }, { idioma });
+  return responder(inter, { title: "🤷 Não conheço esse comando" }, { idioma: await lingua() });
 }
 
 client.on("interactionCreate", async (inter) => {
