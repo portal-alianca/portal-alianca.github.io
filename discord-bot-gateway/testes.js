@@ -3281,11 +3281,15 @@ function conferirCartao(onde, embed, componentes = []) {
   /* ---- os cartões do painel do dono ---- */
   {
     const { embedDeUso, embedDeErros, embedDeSaude } = carregar([
-      "quandoFoi", "camposDeCota", "embedDeUso", "embedDeErros", "embedDeSaude"]);
+      "quandoFoi", "camposDeCota", "TETO_MEMORIA", "mensagensGuardadas",
+      "embedDeUso", "embedDeErros", "embedDeSaude"]);
 
     globalThis.INTERVALO_SINCRONIA = globalThis.INTERVALO_SINCRONIA ?? 60000;
     globalThis.duracaoPassada = globalThis.duracaoPassada ?? 60000;
-    globalThis.client = { guilds: { cache: new Map([["g1", {}]]) }, user: { id: "bot" } };
+    /* `channels.cache` entra porque o cartão de saúde conta as mensagens
+       guardadas -- é o número que o corte do makeCache existe para segurar. */
+    globalThis.client = { guilds: { cache: new Map([["g1", {}]]) }, user: { id: "bot" },
+      channels: { cache: new Map([["c1", { messages: { cache: { size: 7 } } }], ["c2", {}]]) } };
     globalThis.ultimaPassada = { quando: Date.now() - 60000, quanto: 1200, servidores: 1 };
     globalThis.tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
     globalThis.cotaDoDono = new Map();
@@ -4066,6 +4070,58 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e o prazo cabe folgado nos 3 segundos do Discord... ou melhor, não cabe " +
     "-- por isso ele é a rede de baixo, e não a de cima",
     /const PRAZO_BANCO = \d+;/.test(fonte));
+}
+
+/* ====== morrer de memória, e morrer em silêncio ======
+
+   "CYRON não respondeu a tempo" apareceu num botão da arena -- e o clique da
+   arena reconhece a interação na PRIMEIRA linha dele. Não havia demora minha
+   para cortar: o processo não estava lá para responder.
+
+   A máquina tem 256 MB. O discord.js guardava por padrão as últimas 200
+   mensagens de cada canal, com o conteúdo, e um servidor pago tem até 200
+   canais. Estourar não dá erro: o Fly mata e reinicia, o canal de erros fica
+   vazio, e quem clicou vê o aviso vermelho.
+
+   Estes testes prendem as três decisões: o corte, o teto escrito num lugar só,
+   e o rastro que um reinício passa a deixar. */
+{
+  const fly = readFileSync(`${aqui}/fly.toml`, "utf8");
+
+  /* O teto do cartão de saúde e o teto da máquina são a mesma verdade em dois
+     arquivos. Divergir significa o cartão dizendo "180 de 256" numa máquina de
+     512 -- número com cara de certo, que é o pior tipo de número errado. */
+  const noFly = Number((fly.match(/memory\s*=\s*"(\d+)mb"/i) || [])[1]);
+  const noCodigo = Number((fonte.match(/const TETO_MEMORIA = (\d+);/) || [])[1]);
+  verdade(`o fly.toml diz quanta memória a máquina tem (${noFly} MB)`, noFly > 0);
+  ok("e o cartão de saúde usa esse mesmo número", noCodigo, noFly);
+
+  /* O corte em si. Sem ele, tudo aqui em cima é comentário. */
+  verdade("as mensagens têm teto na memória", /MessageManager: \d+,/.test(fonte));
+  verdade("e uma vassoura passa nelas", /messages: \{ interval: \d+, lifetime: \d+ \}/.test(fonte));
+  verdade("os tópicos também são varridos", /threads: \{ interval: \d+, lifetime: \d+ \}/.test(fonte));
+
+  /* Cortar o cache de mensagem só é seguro porque ninguém lê dele. No dia em
+     que alguém escrever `messages.cache` para tomar uma decisão, o corte passa
+     a apagar dados usados -- e em silêncio, porque o valor volta vazio, não
+     quebrado. A conta de baixo é a do cartão de saúde, que só olha o tamanho. */
+  const leituras = fonte.split("\n")
+    .filter((l) => /messages\.cache/.test(l) && !/^\s*\*/.test(l) && !/cache\?\.size/.test(l));
+  ok("ninguém lê do cache de mensagens", leituras, []);
+
+  /* ---- o rastro do reinício ---- */
+  verdade("a batida é gravada de tempos em tempos", /setInterval\(bater, BATIDA\)/.test(fonte));
+  verdade("e ela é lida antes de ser sobrescrita",
+    fonte.indexOf("contarQueVoltei()") < fonte.indexOf("setInterval(bater, BATIDA)"));
+
+  const contar = fonte.slice(fonte.indexOf("async function contarQueVoltei"));
+  verdade("batida recente é lida como morte, e não como publicação",
+    /parado < 3 \* BATIDA/.test(contar));
+  verdade("o aviso de morte vai para o canal de erros",
+    /avisarNoPainel\(CANAL_ERROS/.test(contar.slice(0, 1400)));
+  /* Primeira vez não tem batida anterior. Sem este ramo, o primeiro reinício
+     depois de subir isto contaria uma morte que não houve. */
+  verdade("primeira vez não vira morte", /parado === null/.test(contar));
 }
 
 /* Crash não pode engolir o placar.
