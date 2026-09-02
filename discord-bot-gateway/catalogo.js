@@ -20,8 +20,17 @@
  * com o mesmo número, ou um buraco na contagem, seriam erro de digitação
  * impossível de ver. Mexer na ordem renumera, e isso é aceitável -- o número
  * serve para conversar ("o 4"), não é identidade. Identidade é a `chave`.
+ *
+ * DUAS LISTAS, e não uma. O campo `quem` separa o que o cliente recebe do
+ * que só existe para quem é dono do aplicativo. A primeira versão misturava
+ * os dois e vendia o canal 🐛-erros como recurso do cliente -- ele nunca
+ * chega em servidor de cliente nenhum, é do painel do dono. Prometer numa
+ * página de venda algo que a pessoa não vai encontrar é o pior tipo de erro
+ * que uma lista dessas pode ter, porque só é descoberto depois de instalar.
  */
 
+/* As categorias que o cliente vê. A do dono está logo abaixo, fora desta
+   lista de propósito: o que gera a página e o /help passa por aqui. */
 export const CATEGORIAS = [
   {
     chave: "traduzir",
@@ -70,8 +79,24 @@ export const CATEGORIAS = [
   },
 ];
 
+/* A sexta categoria, que não vai para a página de venda: o que só quem é dono
+   do aplicativo enxerga. Ela existe para o catálogo ser um INVENTÁRIO
+   honesto -- "tudo que o bot faz" inclui a parte que opera o negócio --, e
+   fica fora de CATEGORIAS para não haver como vazar por descuido. */
+export const CATEGORIA_DONO = {
+  chave: "dono",
+  emoji: "🔑",
+  nome: { pt: "Do dono", en: "Owner only" },
+  resumo: {
+    pt: "O painel de quem é dono do aplicativo. Nada disto aparece em servidor de cliente: mora num servidor só, o do painel.",
+    en: "The panel for whoever owns the application. None of it shows up in a customer's server: it lives in one server, the panel's.",
+  },
+};
+
 /* plano: "gratis" = está no plano grátis; "pago" = só no pago;
-   "ambos" = existe nos dois, com teto diferente. */
+   "ambos" = existe nos dois, com teto diferente.
+   quem:   "cliente" = o servidor que instala recebe; "dono" = só o painel
+           do dono. Sem valor, vale "cliente". */
 export const RECURSOS = [
   /* ---------------------------- traduzir ---------------------------- */
   {
@@ -357,18 +382,6 @@ export const RECURSOS = [
     prova: "cyron:remontar",
   },
   {
-    chave: "erros",
-    categoria: "mandar",
-    plano: "gratis",
-    nome: { pt: "Erros explicados, não códigos", en: "Errors explained, not codes" },
-    como: { pt: "Canal 🐛-erros", en: "The 🐛-erros channel" },
-    oque: {
-      pt: "Quando algo falha, o canal recebe um cartão dizendo o que aconteceu, se depende de você e qual é o conserto. “Missing Permissions” vira “falta a permissão X no canal Y”.",
-      en: "When something fails, the channel gets a card saying what happened, whether it needs you, and what the fix is. “Missing Permissions” becomes “permission X is missing on channel Y”.",
-    },
-    prova: "explicarErro",
-  },
-  {
     chave: "teto",
     categoria: "mandar",
     plano: "ambos",
@@ -391,18 +404,6 @@ export const RECURSOS = [
       en: "Paid days handed over as a code, no card involved. Good for trials, partnerships, and anyone who cannot pay in your currency — and redeeming again adds days instead of starting over.",
     },
     prova: "resgatarCodigo",
-  },
-  {
-    chave: "sobencomenda",
-    categoria: "mandar",
-    plano: "pago",
-    nome: { pt: "Comandos sob encomenda", en: "Commands made to order" },
-    como: { pt: "Falando comigo", en: "Ask me" },
-    oque: {
-      pt: "Um comando que só o seu servidor tem, com o cargo que pode usar e, se fizer sentido, um horário para ele acontecer sozinho. Não é um recurso que você configura — é um que eu escrevo para você.",
-      en: "A command only your server has, with the role allowed to use it and, if it makes sense, a time for it to happen by itself. Not a feature you configure — one I write for you.",
-    },
-    prova: "rodarComandosAgendados",
   },
 
   /* ----------------------------- confiar ---------------------------- */
@@ -442,12 +443,201 @@ export const RECURSOS = [
     },
     prova: "PLANOS",
   },
+
+  /* ------------------------------ do dono ---------------------------
+     Daqui para baixo, nada chega em servidor de cliente. Tudo mora no
+     servidor do painel, e a checagem de quem pode é no clique -- comando
+     escondido não é comando protegido. */
+  {
+    chave: "erros",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Erros explicados, não códigos", en: "Errors explained, not codes" },
+    como: { pt: "Canal 🐛-erros", en: "The 🐛-erros channel" },
+    oque: {
+      pt: "Quando algo falha, o canal recebe um cartão dizendo o que aconteceu, se depende de alguém e qual é o conserto. “Missing Permissions” vira “falta a permissão X no canal Y”, e o mesmo erro só volta uma vez por hora.",
+      en: "When something fails, the channel gets a card saying what happened, whether it needs a human, and what the fix is. “Missing Permissions” becomes “permission X is missing on channel Y”, and the same error only comes back once an hour.",
+    },
+    prova: "explicarErro",
+  },
+  {
+    chave: "painel-dono",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "O painel /admin", en: "The /admin panel" },
+    como: { pt: "/admin", en: "/admin" },
+    oque: {
+      pt: "Resumo, uso, saúde, busca, códigos, chaves e ajustes num cartão só. O comando some da lista de quem não é dono do aplicativo, e a recusa no clique continua existindo de qualquer jeito.",
+      en: "Summary, usage, health, search, codes, keys and settings on one card. The command disappears from the list for anyone who does not own the application, and the click still checks anyway.",
+    },
+    prova: "linhasDoAdmin",
+  },
+  {
+    chave: "resumo",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Quantos servidores, quantos pagam", en: "How many servers, how many pay" },
+    como: { pt: "/admin → 📊", en: "/admin → 📊" },
+    oque: {
+      pt: "Quantos instalaram, quantos estão no teste, quantos pagam e quantos saíram — a conta que decide se o produto está de pé.",
+      en: "How many installed, how many are on trial, how many pay and how many left — the tally that says whether the product is standing.",
+    },
+    prova: "embedDoResumo",
+  },
+  {
+    chave: "quem-usa",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Quem usa mais", en: "Who uses it most" },
+    como: { pt: "/admin → 🏆", en: "/admin → 🏆" },
+    oque: {
+      pt: "Os servidores que mais traduziram nos últimos 7 dias, com caracteres e traduções. É por aqui que se vê quem está prestes a estourar a cota e quem instalou e nunca usou.",
+      en: "The servers that translated the most in the last 7 days, with characters and translations. This is where you see who is about to blow their quota and who installed it and never used it.",
+    },
+    prova: "embedDeUso",
+  },
+  {
+    chave: "saude",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Saúde do bot", en: "The bot's health" },
+    como: { pt: "/admin → 🩺", en: "/admin → 🩺" },
+    oque: {
+      pt: "Cota de cada tradutor com barra, quem está de castigo, e quanto falta para virar o dia. Ver antes de a chave acabar é a diferença entre trocar de motor e descobrir pelo cliente.",
+      en: "Each translator's quota with a bar, who is benched, and how long until the day rolls over. Seeing it before a key runs out is the difference between switching engines and hearing it from a customer.",
+    },
+    prova: "embedDeSaude",
+  },
+  {
+    chave: "cartao-do-dia",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "O cartão do dia", en: "The daily card" },
+    como: { pt: "Canal 📊-diário", en: "The 📊-diário channel" },
+    oque: {
+      pt: "Todo dia, sozinho: traduções, caracteres, servidores novos e a variação em relação a ontem. O canal de erros conta o que quebrou; este conta o que funcionou.",
+      en: "Every day, on its own: translations, characters, new servers and how it moved against yesterday. The errors channel says what broke; this one says what worked.",
+    },
+    prova: "cartaoDoDia",
+  },
+  {
+    chave: "ficha",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "A ficha de cada cliente", en: "A card per customer" },
+    como: { pt: "Canal 📋-clientes", en: "The 📋-clientes channel" },
+    oque: {
+      pt: "Um tópico por servidor, com o que ele tem, o que gasta e como está — e os botões de dar 30 dias, mandar remontar ou tirar. A mensagem se edita no lugar, para não haver dez estados velhos e o vivo perdido no meio.",
+      en: "One thread per server with what it has, what it spends and how it is doing — plus buttons to grant 30 days, trigger a rebuild, or remove it. The message edits in place, so there are never ten stale states with the live one lost among them.",
+    },
+    prova: "cartaoDoCliente",
+  },
+  {
+    chave: "gerar-codigos",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Gerar códigos de ativação", en: "Generate activation codes" },
+    como: { pt: "/admin → 🎟️", en: "/admin → 🎟️" },
+    oque: {
+      pt: "Lotes de código com a quantidade de dias que você escolher, para dar em parceria, em teste ou para quem não consegue pagar por cartão.",
+      en: "Batches of codes worth however many days you choose, to hand out for partnerships, trials, or to anyone who cannot pay by card.",
+    },
+    prova: "gerarCodigos",
+  },
+  {
+    chave: "chaves-do-dono",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "As chaves dos tradutores", en: "The translator keys" },
+    como: { pt: "/admin → 🔑", en: "/admin → 🔑" },
+    oque: {
+      pt: "DeepL, Azure e os gratuitos da vez, guardados cifrados e nunca mostrados de volta na tela. São a bolsa comum que serve os servidores sem chave própria.",
+      en: "DeepL, Azure and whichever free ones are in play, stored encrypted and never shown back on screen. They are the shared purse that serves every server without its own key.",
+    },
+    prova: "salvarChaves",
+  },
+  {
+    chave: "ajustes",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Mudar de ideia sem novo deploy", en: "Change your mind without a deploy" },
+    como: { pt: "/admin → ⚙️", en: "/admin → ⚙️" },
+    oque: {
+      pt: "Preço, link de pagamento, dias de teste, donos e tradutores extras vivem numa tabela de chave e valor. Mexer neles é uma janela, e não uma publicação de código.",
+      en: "Price, payment link, trial days, owners and extra translators live in a key-value table. Changing them is a dialog, not a code release.",
+    },
+    prova: "salvarAjustes",
+  },
+  {
+    chave: "busca",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Procurar um servidor", en: "Find a server" },
+    como: { pt: "/admin → 🔎", en: "/admin → 🔎" },
+    oque: {
+      pt: "Pelo nome ou pelo id, para achar a ficha de quem escreveu pedindo ajuda sem ter que rolar a lista inteira de clientes.",
+      en: "By name or by id, to reach the card of whoever wrote asking for help without scrolling the whole customer list.",
+    },
+    prova: "procurarServidor",
+  },
+  {
+    chave: "avisos",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Servidor novo e pagamento avisam", en: "New servers and payments announce themselves" },
+    como: { pt: "Canais 📥-novos e 💳-pagamentos", en: "The 📥-novos and 💳-pagamentos channels" },
+    oque: {
+      pt: "Quem instalou, quem assinou, quem cancelou e quem venceu — cada um no seu canal, na hora em que acontece.",
+      en: "Who installed, who subscribed, who cancelled and whose plan lapsed — each in its own channel, the moment it happens.",
+    },
+    prova: "CANAL_PAGAMENTOS",
+  },
+  {
+    chave: "sobencomenda",
+    categoria: "dono",
+    quem: "dono",
+    plano: "gratis",
+    nome: { pt: "Comandos sob encomenda", en: "Commands made to order" },
+    como: { pt: "/admin → ➕", en: "/admin → ➕" },
+    oque: {
+      pt: "Um comando que só um servidor tem, com o cargo que pode usar e, se fizer sentido, um horário para acontecer sozinho. É código escrito na janela — por isso não é recurso de cliente: alguém precisa escrever.",
+      en: "A command only one server has, with the role allowed to use it and, if it makes sense, a time to fire on its own. It is code written in a dialog — which is why it is not a customer feature: somebody has to write it.",
+    },
+    prova: "rodarComandosAgendados",
+  },
 ];
 
-/* A posição na lista, começando em 1. */
+/* A posição na lista, começando em 1.
+
+   Conta só os do cliente: é o número que aparece na página e o que se usa
+   para conversar ("o 4"). Os do dono não entram na contagem porque não
+   entram na lista que alguém lê. */
 export function numeroDe(chave) {
-  const i = RECURSOS.findIndex((r) => r.chave === chave);
+  const i = doCliente().findIndex((r) => r.chave === chave);
   return i < 0 ? 0 : i + 1;
+}
+
+/* O que o servidor que instala recebe. Sem `quem`, vale cliente -- assim
+   esquecer o campo num item novo o mantém na página, que é o padrão certo:
+   o erro perigoso é o contrário, vender como do cliente algo que é do dono. */
+export function doCliente() {
+  return RECURSOS.filter((r) => (r.quem || "cliente") === "cliente");
+}
+
+export function doDono() {
+  return RECURSOS.filter((r) => r.quem === "dono");
 }
 
 export function recursosDa(categoria) {

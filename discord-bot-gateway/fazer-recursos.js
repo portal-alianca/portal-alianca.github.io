@@ -16,7 +16,12 @@
 import { writeFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import { CATEGORIAS, RECURSOS } from "./catalogo.js";
+import { CATEGORIAS, doCliente } from "./catalogo.js";
+
+/* Só o que o cliente recebe. A lista do dono existe no catálogo e NUNCA sai
+   daqui: página de venda que anuncia o painel do dono promete ao cliente uma
+   coisa que ele não vai encontrar. */
+const RECURSOS = doCliente();
 
 const aqui = dirname(fileURLToPath(import.meta.url));
 export const DESTINO = `${aqui}/../cyron/recursos.html`;
