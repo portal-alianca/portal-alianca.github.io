@@ -4895,6 +4895,77 @@ function linguaProvavel(texto) {
   return melhor;
 }
 
+/* Como aquele instante fica escrito, no fuso de quem está marcando.
+
+   Só serve para a lista de sugestões: ali eu não posso usar <t:unix:F>,
+   porque o Discord não desenha marcação dentro do autocompletar. É o único
+   lugar do recurso em que eu escrevo hora com as minhas mãos -- e existe
+   justamente para a pessoa VER o que eu entendi antes de confirmar. */
+/* `agora` entra por fora, como em todo o resto do recurso.
+
+   Eu tinha lido Date.now() aqui dentro, e com isso "hoje" só podia ser
+   testado no dia em que a bateria rodasse. É a segunda vez hoje que escrevo
+   esse mesmo defeito -- a primeira foi em botoesDoEvento. */
+function comoFicaNoFuso(ms, fusoMin = 0, agora = Date.now()) {
+  const d = new Date(ms + fusoMin * 60000);
+  const hoje = new Date(agora + fusoMin * 60000);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+
+  const dia = (x) => `${x.getUTCFullYear()}-${x.getUTCMonth()}-${x.getUTCDate()}`;
+  const amanha = new Date(hoje.getTime() + 86400000);
+  if (dia(d) === dia(hoje)) return `hoje ${hh}:${mi}`;
+  if (dia(d) === dia(amanha)) return `amanhã ${hh}:${mi}`;
+  return `${dd}/${mm} ${hh}:${mi}`;
+}
+
+/* As sugestões do "quando".
+
+   Isto existe porque o desenho anterior obrigava a pessoa a APRENDER uma
+   sintaxe para marcar um evento -- e depois adivinhar se eu tinha entendido.
+   Numa chamada de rally, ninguém tem paciência para isso, e com razão.
+
+   Agora o que ela digita vira uma lista com o horário JÁ RESOLVIDO ao lado:
+   "23/09 20:00 → 23/09 20:00". Ela vê o que eu entendi antes de confirmar, e
+   um fuso errado aparece na hora em vez de aparecer na chamada.
+
+   E o caso que mais irritou -- data sem hora -- deixa de ser recusa e vira
+   escolha: quem digita "23/09" recebe aquela data com horários prontos. */
+function sugestoesDeQuando(digitado, agora = Date.now(), fusoMin = 0) {
+  const t = String(digitado || "").trim();
+  const fora = [];
+  const vistos = new Set();
+
+  const por = (valor) => {
+    if (fora.length >= 25 || vistos.has(valor)) return;
+    const ms = quandoDoTexto(valor, agora, fusoMin);
+    if (!ms) return;
+    vistos.add(valor);
+    fora.push({ name: `${valor}  →  ${comoFicaNoFuso(ms, fusoMin, agora)}`, value: valor });
+  };
+
+  /* O que ela escreveu vem primeiro, quando dá para entender. */
+  if (t) por(t);
+
+  /* Data sem hora: a recusa que gerou a reclamação vira três opções prontas. */
+  if (/^\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?$/.test(t)) {
+    for (const h of ["20:00", "21:00", "12:00", "09:00"]) por(`${t} ${h}`);
+  } else if (/^\d{1,3}$/.test(t)) {
+    /* Número solto: as duas leituras possíveis, lado a lado. */
+    por(`${t}h`);
+    por(`${t}m`);
+  } else if (/^\d{1,2}:\d{2}$/.test(t)) {
+    /* Hora de relógio já resolve sozinha; ofereço a de amanhã também não,
+       porque quandoDoTexto já joga para amanhã quando a de hoje passou. */
+  }
+
+  /* E os atalhos de sempre, que cobrem quase toda chamada de rally. */
+  for (const p of ["30m", "1h", "2h", "3h", "6h", "12h", "24h"]) por(p);
+  return fora.slice(0, 25);
+}
+
 /* ---------------- eventos com hora ----------------
 
    O problema que isto resolve nao e' traducao, e' o vizinho dela.
@@ -5196,12 +5267,19 @@ async function criarEvento(inter) {
   const servidor = await servidorDoGuild(inter.guildId);
   if (!servidor) return inter.editReply({ content: "Ainda não terminei de me instalar aqui." });
 
-  const titulo = inter.fields.getTextInputValue("titulo").trim();
-  const bruto = inter.fields.getTextInputValue("quando").trim();
-  const detalhes = (inter.fields.getTextInputValue("detalhes") || "").trim();
-  const fusoBruto = (inter.fields.getTextInputValue("fuso") || "").trim();
+  const titulo = inter.options.getString("o-que").trim();
+  const bruto = inter.options.getString("quando").trim();
+  const detalhes = (inter.options.getString("detalhes") || "").trim();
+  const fusoBruto = (inter.options.getString("fuso") || "").trim();
+  /* Votação ligada por padrão: o evento existe para juntar gente, e a
+     pergunta "quem vai?" é a razão de ele ser um cartão e não um recado.
+     Quem não quer diz não na própria linha do comando. */
+  const votacao = inter.options.getBoolean("votacao") ?? true;
 
-  const fuso = fusoDoTexto(fusoBruto);
+  /* O fuso guardado deste oficial vale quando ele não escreve nenhum: depois
+     da primeira vez, marcar um evento é preencher duas coisas. */
+  const fuso = fusoBruto ? fusoDoTexto(fusoBruto)
+    : (Number((await ajustes())[`fuso:${inter.user.id}`]) || 0);
   if (fusoBruto && fuso === null) {
     return inter.editReply({ content:
       `🤔 Não entendi o fuso **${fusoBruto}**. Escreva como \`-3\`, \`+2\` ou \`+5:30\`.` });
@@ -5227,7 +5305,7 @@ async function criarEvento(inter) {
   const criado = await sbPost("cyron_evento", {
     servidor_id: servidor.id, guild_id: inter.guildId, titulo,
     detalhes: detalhes || null, quando: new Date(quando).toISOString(),
-    votacao: false, criado_por: inter.user.id,
+    votacao, criado_por: inter.user.id,
   }).catch((e) => {
     console.error("eventos: nao consegui criar:", e?.message || e);
     return null;
@@ -5246,8 +5324,8 @@ async function criarEvento(inter) {
     content: `📅 **${titulo}** marcado para <t:${s}:F> — <t:${s}:R>.\n` +
       "_Cada pessoa vê esse horário no fuso dela._",
     components: [{ type: 1, components: [
-      { type: 2, custom_id: `evento:votacao:${ev.id}`, style: 1, emoji: { name: "✋" },
-        label: "Adicionar votação de presença" },
+      { type: 2, custom_id: `evento:votacao:${ev.id}`, style: 2, emoji: { name: "✋" },
+        label: votacao ? "Tirar a votação" : "Adicionar votação" },
       { type: 2, custom_id: `evento:apagar:${ev.id}`, style: 4, emoji: { name: "🗑️" },
         label: "Apagar" },
     ] }],
@@ -7215,42 +7293,6 @@ async function atualizarUmCartao(guild) {
    Ele entra por janela, e nao por mensagem no canal, pelo mesmo motivo da
    chave de API: um codigo postado num canal e' um codigo que outra pessoa
    resgata primeiro. */
-/* A janela de criar evento.
-
-   O campo do fuso vem PREENCHIDO com o que este oficial usou da ultima vez.
-   Ele so' importa para hora de relogio, e depois da primeira vez ninguem
-   toca nele -- que e' o unico jeito de pedir fuso sem transformar cada
-   chamada de rally em formulario. */
-function janelaDoEvento(fusoLembrado = "") {
-  return {
-    custom_id: "evento:novo",
-    title: "Novo evento",
-    components: [
-      { type: 1, components: [{
-        type: 4, custom_id: "titulo", style: 1, required: true, max_length: 100,
-        label: "O quê", placeholder: "Urso · Bear Trap",
-      }] },
-      { type: 1, components: [{
-        type: 4, custom_id: "quando", style: 1, required: true, max_length: 40,
-        label: "Quando",
-        /* O exemplo ENSINA a diferença entre as duas famílias, porque é ela
-           que decide se o fuso entra na conta. */
-        placeholder: "3h · 90m · 20:30 · 16/09 20:30",
-      }] },
-      { type: 1, components: [{
-        type: 4, custom_id: "fuso", style: 1, required: false, max_length: 10,
-        label: "Seu fuso (só para hora de relógio)",
-        placeholder: "-3", value: fusoLembrado || undefined,
-      }] },
-      { type: 1, components: [{
-        type: 4, custom_id: "detalhes", style: 2, required: false, max_length: 800,
-        label: "Detalhes (opcional)",
-        placeholder: "Tropa de cavalaria, nível 5.",
-      }] },
-    ],
-  };
-}
-
 function janelaDoCodigo() {
   return {
     custom_id: "cyron:codigo",
@@ -9883,10 +9925,7 @@ async function comandoDeInteracao(inter) {
     if (!inter.guildId) {
       return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     }
-    /* A janela abre com o fuso que este oficial já usou: depois da primeira
-       vez, marcar um evento é digitar duas coisas. */
-    const lembrado = (await ajustes())[`fuso:${inter.user.id}`] || "";
-    return inter.showModal(janelaValida(janelaDoEvento(lembrado)));
+    return criarEvento(inter);
   }
 
   /* Os comandos que o dono escreveu vem DEPOIS dos meus, nao antes.
@@ -10076,7 +10115,6 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:palavras") return await salvarPalavras(inter);
       if (inter.customId === "cyron:codigo") return await resgatarCodigo(inter);
-      if (inter.customId === "evento:novo") return await criarEvento(inter);
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       if (inter.customId === "admin:chaves") return await salvarChaves(inter);
@@ -10093,6 +10131,17 @@ client.on("interactionCreate", async (inter) => {
     /* Autocompletar do nome do evento: sem isto o oficial teria que digitar
        "Urso (Bear Trap) 1" exatamente igual, acentos e parenteses inclusive. */
     if (inter.isAutocomplete()) {
+      /* O autocompletar precisa saber DE QUAL comando ele veio.
+
+         Havia um só, do jogo, e a lista de eventos do Kingshot respondia a
+         qualquer pedido. Com o /evento pedindo sugestão de horário, ele
+         receberia nomes de rally onde esperava "3h". */
+      if (inter.commandName === "evento") {
+        const fuso = Number((await ajustes())[`fuso:${inter.user.id}`]) || 0;
+        return inter.respond(
+          sugestoesDeQuando(String(inter.options.getFocused() || ""), Date.now(), fuso));
+      }
+
       const digitado = String(inter.options.getFocused() || "").toLowerCase();
       const evs = await rpc("discord_eventos_do_guild", { p_guild: inter.guildId }).catch(() => []);
       return inter.respond((evs || [])
@@ -11308,6 +11357,24 @@ const GLOBAIS_DO_CYRON = [
     description: "Marcar um evento com hora / Schedule an event",
     defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
     dmPermission: false,
+    /* Opcoes, e nao uma janela.
+
+       A janela pedia quatro campos e obrigava a decorar a sintaxe do
+       "quando" -- e so' dizia se tinha entendido DEPOIS de enviar. Aqui o
+       autocompletar mostra o horario ja resolvido enquanto se digita, e o
+       fuso vira um campo opcional que quase ninguem precisa abrir. */
+    options: [
+      { type: 3, name: "o-que", required: true, max_length: 100,
+        description: "O nome do evento. Ex: Urso · Bear Trap" },
+      { type: 3, name: "quando", required: true, autocomplete: true,
+        description: "3h · 90m · 20:30 · 23/09 20:30 — escolha uma sugestão" },
+      { type: 5, name: "votacao", required: false,
+        description: "Perguntar quem vai? (padrão: sim)" },
+      { type: 3, name: "detalhes", required: false, max_length: 800,
+        description: "O que mais precisa ser dito" },
+      { type: 3, name: "fuso", required: false, max_length: 10,
+        description: "Só para hora de relógio, se a sugestão vier errada. Ex: -3" },
+    ],
   },
   {
     /* De todo mundo, como o /help: o placar fixado e' bilingue por ser uma
