@@ -13,6 +13,9 @@
 
 import { Client, GatewayIntentBits, Partials, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits, WebhookClient, ChannelType, MessageType } from "discord.js";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+/* O catalogo do que eu faco. Mora fora daqui porque a pagina cyron/recursos.html
+   nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
+import { CATEGORIAS, RECURSOS, recursosDa } from "./catalogo.js";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -9668,6 +9671,20 @@ async function telaDosPlanos(idioma) {
    nao e' resposta nenhuma. Cinco temas cobrem o que de fato perguntam, e cada
    um tem uma resposta escrita -- honesto sobre o que eu sei fazer. */
 const TEMAS = {
+  /* O catalogo em cinco linhas, montado da MESMA lista que gera a pagina do
+     site -- se um recurso sair do catalogo.js, sai daqui junto.
+
+     Curto de proposito: acima de 400 caracteres a traducao e' feita e jogada
+     fora (nao cabe no cache), e este cartao seria retraduzido a cada clique,
+     para sempre. Os resumos de cada categoria ficam no site, onde nao ha
+     tradutor cobrando por leitura. */
+  tudo: {
+    rotulo: "Tudo que eu faço",
+    titulo: "🗂️ Tudo que eu faço",
+    texto: `São ${RECURSOS.length} funções, em ${CATEGORIAS.length} categorias:\n\n` +
+      CATEGORIAS.map((c) => `${c.emoji} **${c.nome.pt}** — ${recursosDa(c.chave).length}`).join("\n") +
+      "\n\nA lista inteira, com o que cada uma faz, está no botão aqui embaixo.",
+  },
   instalar: {
     rotulo: "Como instalar, passo a passo",
     /* Titulo e texto existem para o caso de alguem chegar aqui pelo caminho
@@ -9743,6 +9760,11 @@ async function telaDeAjuda(idioma, tema = null) {
       await traduzirLinha(menuDeTemas(), idioma),
       await traduzirLinha({ type: 1, components: [
         { type: 2, style: 2, custom_id: PASSO.inicio, emoji: { name: "↩️" }, label: "Voltar ao começo" },
+        /* O endereco vai no botao, e nao dentro do texto do cartao: o texto
+           passa pelo tradutor, e tradutor de maquina quebra URL. No botao, so'
+           o rotulo e' traduzido; o `url` ninguem toca. */
+        { type: 2, style: 5, emoji: { name: "🗂️" }, label: "Tudo que eu faço",
+          url: `${SITE_DO_CYRON}recursos.html` },
       ] }, idioma),
     ],
   };

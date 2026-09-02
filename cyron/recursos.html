@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — tudo que ele faz</title>
+<meta name="description" content="As 30 funções do CYRON, por categoria: traduzir, quem chega, viver junto, quem administra e confiança.">
+<meta property="og:title" content="CYRON — tudo que ele faz">
+<meta property="og:description" content="As 30 funções do CYRON, por categoria. 26 delas no plano grátis.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+
+<!-- ESTA PÁGINA É GERADA. Não edite à mão: quem manda é
+     discord-bot-gateway/catalogo.js, e o gerador é fazer-recursos.js.
+     Um teste compara este arquivo com o que o gerador produz agora. -->
+<style>
+:root{
+  --fundo:#0B0D11; --painel:#13161C; --painel-2:#1A1E26; --painel-3:#222833;
+  --borda:#232935; --borda-viva:#333B49;
+  --texto:#EDEFF3; --fraco:#98A1AE; --fraquinho:#6C7583;
+  --ambar:#F5A623; --ambar-claro:#FFC768; --verde:#5EBB83; --azul:#5865F2;
+  --r:16px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:1000px; margin:0 auto; padding:0 22px}
+h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
+
+.barra{position:sticky; top:0; z-index:30; background:rgba(11,13,17,.86); backdrop-filter:blur(12px); border-bottom:1px solid var(--borda)}
+.barra .env{display:flex; align-items:center; gap:14px; height:60px}
+.marca{font-weight:800; letter-spacing:.14em; font-size:15px; color:var(--texto)}
+.marca b{color:var(--ambar); font-weight:800}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:6px}
+.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px; white-space:nowrap}
+.barra nav a:hover{color:var(--texto); background:var(--painel-2); text-decoration:none}
+.barra nav a[aria-current]{color:var(--texto); background:var(--painel-2)}
+.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px; flex:0 0 auto}
+.idioma button{background:none; border:0; color:var(--fraco); font:700 12px/1 inherit; padding:8px 10px; cursor:pointer}
+.idioma button[aria-pressed="true"]{background:var(--ambar); color:#1a1206}
+@media (max-width:760px){
+  .barra .env{height:auto; padding:9px 16px 0; flex-wrap:wrap; gap:0 10px}
+  .barra nav{order:3; width:100%; margin:6px -16px 0; padding:0 16px 8px;
+    overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; gap:2px}
+  .barra nav::-webkit-scrollbar{display:none}
+  .barra nav a{padding:7px 10px; font-size:14px}
+  .idioma{margin-left:auto}
+}
+
+.topo{padding:70px 0 0; position:relative; overflow:hidden}
+.topo::before{content:""; position:absolute; inset:-40% 30% auto; height:460px;
+  background:radial-gradient(closest-side,rgba(245,166,35,.13),transparent 72%); pointer-events:none}
+.rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px; position:relative}
+.topo h1{font-size:clamp(30px,5.2vw,46px); font-weight:760; position:relative}
+.topo h1 em{font-style:normal; color:var(--ambar)}
+.abre{margin:20px 0 0; color:var(--fraco); max-width:660px; font-size:18px; position:relative}
+
+.contas{display:flex; gap:10px; flex-wrap:wrap; margin-top:26px; position:relative}
+.conta{background:var(--painel); border:1px solid var(--borda); border-radius:12px; padding:11px 15px; font-size:14px; color:var(--fraco)}
+.conta b{color:var(--texto); font-weight:700}
+
+/* ---------- os filtros ----------
+
+   Ficam grudados embaixo da barra: numa lista de 30 itens, filtrar e ter
+   que subir de volta para trocar o filtro é o mesmo que não ter filtro. */
+/* Opaco, e não translúcido como a barra de cima: aqui passa um <h2> de 30px
+   por baixo, e a 8% de transparência ele aparecia como um borrão atrás dos
+   filtros -- parecia defeito de renderização. */
+.filtros{position:sticky; top:60px; z-index:20; background:var(--fundo);
+  border-bottom:1px solid var(--borda); margin-top:40px; padding:14px 0}
+.filtros .env{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+/* O separador antes do filtro de plano: ele não é mais uma categoria, e sem
+   isso a fileira lia como se fosse. */
+.sep{width:1px; align-self:stretch; background:var(--borda-viva); margin:2px 4px}
+.busca{flex:1 1 190px; min-width:150px; display:flex; align-items:center; gap:8px;
+  background:var(--painel); border:1px solid var(--borda-viva); border-radius:10px; padding:0 12px}
+.busca input{flex:1; background:none; border:0; color:var(--texto); font:15px/1 inherit; padding:11px 0; outline:none; min-width:0}
+.busca input::placeholder{color:var(--fraquinho)}
+.chips{display:flex; gap:6px; flex-wrap:wrap}
+.chip{background:var(--painel); border:1px solid var(--borda-viva); color:var(--fraco);
+  border-radius:999px; padding:9px 13px; font:600 13.5px/1 inherit; cursor:pointer; white-space:nowrap}
+.chip:hover{color:var(--texto)}
+.chip[aria-pressed="true"]{background:var(--ambar); border-color:var(--ambar); color:#1a1206}
+@media (max-width:760px){
+  .filtros{top:auto; position:static}
+  .chips{width:100%; padding-bottom:2px}
+  /* No telefone os chips quebram em três fileiras, e o separador cai sozinho
+     no começo de uma delas -- vira um risco solto que não separa nada. */
+  .sep{display:none}
+}
+
+/* ---------- os grupos ---------- */
+main{padding:0 0 90px}
+/* A barra de cima mais os filtros somam ~190px de coisa grudada no topo. Sem
+   isto, clicar num link para #viver deixaria o título da categoria embaixo
+   deles -- a página pularia para o lugar certo e mostraria o errado. */
+.grupo{padding:56px 0 0; scroll-margin-top:200px}
+.grupo .cab{max-width:680px}
+.grupo h2{font-size:clamp(22px,3vw,30px); display:flex; align-items:center; gap:11px; flex-wrap:wrap}
+.grupo h2 .emoji{font-size:.95em}
+.grupo h2 em{font-style:normal; font-size:13px; font-weight:700; color:var(--fraquinho);
+  border:1px solid var(--borda-viva); border-radius:999px; padding:3px 9px; letter-spacing:.02em}
+.grupo .cab p{color:var(--fraco); margin:12px 0 0; font-size:16px}
+
+.recs{display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); margin-top:24px}
+@media (max-width:900px){ .recs{grid-template-columns:1fr} }
+
+.rec{display:flex; gap:15px; background:var(--painel); border:1px solid var(--borda);
+  border-radius:var(--r); padding:17px 19px}
+.rec .n{flex:0 0 34px; height:34px; border-radius:10px; background:var(--painel-3);
+  border:1px solid var(--borda-viva); color:var(--ambar);
+  display:flex; align-items:center; justify-content:center;
+  font:700 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
+.rec .corpo{min-width:0}
+.rec h3{font-size:17px; font-weight:700}
+.rec p{margin:8px 0 0; color:var(--fraco); font-size:15px; line-height:1.6}
+.selos{display:flex; gap:7px; flex-wrap:wrap; margin-top:12px; align-items:center}
+.selo{font-size:12px; font-weight:700; border-radius:999px; padding:4px 10px; border:1px solid transparent}
+.selo.gratis{color:var(--verde); border-color:rgba(94,187,131,.35); background:rgba(94,187,131,.09)}
+.selo.pago{color:var(--ambar-claro); border-color:rgba(245,166,35,.35); background:rgba(245,166,35,.09)}
+.selo.ambos{color:var(--fraco); border-color:var(--borda-viva); background:var(--painel-2)}
+.como{font-size:12.5px; color:var(--fraquinho); font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+.vazio{display:none; padding:70px 0; text-align:center; color:var(--fraco)}
+body[data-vazio] .vazio{display:block}
+.rec[hidden],.grupo[hidden]{display:none}
+
+/* ---------- fecho ---------- */
+.fecho{border-top:1px solid var(--borda); margin-top:70px; padding:64px 0; text-align:center}
+.fecho h2{font-size:clamp(23px,3.4vw,32px)}
+.fecho p{color:var(--fraco); margin:16px auto 0; max-width:540px}
+.bt{display:inline-flex; align-items:center; justify-content:center; gap:9px; padding:14px 24px;
+  border-radius:12px; font-weight:650; font-size:15.5px; border:1px solid transparent; cursor:pointer;
+  transition:transform .13s ease, filter .13s ease; margin-top:28px}
+.bt:hover{text-decoration:none; transform:translateY(-1px); filter:brightness(1.08)}
+.bt-1{background:var(--azul); color:#fff; box-shadow:0 8px 26px -12px rgba(88,101,242,.9)}
+
+footer{border-top:1px solid var(--borda); padding:28px 0; color:var(--fraquinho); font-size:14px}
+footer .env{display:flex; gap:18px; flex-wrap:wrap}
+footer nav{margin-left:auto; display:flex; gap:18px; flex-wrap:wrap}
+
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<b>RON</b></a>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./recursos.html" aria-current="page"><span data-pt>Tudo que ele faz</span><span data-en>Everything it does</span></a>
+      <a href="./#planos"><span data-pt>Planos</span><span data-en>Pricing</span></a>
+      <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
+    </nav>
+    <div class="idioma" role="group" aria-label="Idioma / Language">
+      <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+      <button type="button" data-troca="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<div class="topo">
+  <div class="env">
+    <div class="rotulo"><span data-pt>O catálogo</span><span data-en>The catalogue</span></div>
+    <h1>
+      <span data-pt>As <em>30 coisas</em> que o CYRON faz</span>
+      <span data-en>The <em>30 things</em> CYRON does</span>
+    </h1>
+    <p class="abre">
+      <span data-pt>Numeradas, por categoria, e com o plano de cada uma à mostra. Esta página nasce da mesma lista que o bot usa — se um recurso sair do código, ele sai daqui junto.</span>
+      <span data-en>Numbered, grouped, and with each one's plan in plain sight. This page is generated from the same list the bot itself uses — if a feature leaves the code, it leaves this page with it.</span>
+    </p>
+    <div class="contas">
+      <div class="conta"><b>30</b> <span data-pt>funções</span><span data-en>features</span></div>
+      <div class="conta"><b>26</b> <span data-pt>no plano grátis</span><span data-en>on the free plan</span></div>
+      <div class="conta"><b>20</b> <span data-pt>idiomas</span><span data-en>languages</span></div>
+      <div class="conta"><b>5</b> <span data-pt>categorias</span><span data-en>categories</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="filtros">
+  <div class="env">
+    <label class="busca">
+      <span aria-hidden="true">🔎</span>
+      <input type="search" id="busca" autocomplete="off"
+        data-pt-ph="Procurar: bandeira, evento, arena…" data-en-ph="Search: flag, event, arena…">
+    </label>
+    <div class="chips" role="group">
+      <button type="button" class="chip" data-cat="" aria-pressed="false"><span data-pt>Tudo</span><span data-en>All</span></button>
+      <button type="button" class="chip" data-cat="traduzir" aria-pressed="false">🌐 <span data-pt>Traduzir</span><span data-en>Translate</span></button>
+      <button type="button" class="chip" data-cat="chegar" aria-pressed="false">👋 <span data-pt>Quem chega</span><span data-en>Newcomers</span></button>
+      <button type="button" class="chip" data-cat="viver" aria-pressed="false">🎮 <span data-pt>Viver junto</span><span data-en>Living together</span></button>
+      <button type="button" class="chip" data-cat="mandar" aria-pressed="false">⚙️ <span data-pt>Quem administra</span><span data-en>Running it</span></button>
+      <button type="button" class="chip" data-cat="confiar" aria-pressed="false">🛡️ <span data-pt>Confiança</span><span data-en>Trust</span></button>
+      <span class="sep" aria-hidden="true"></span>
+      <button type="button" class="chip" data-plano="gratis" aria-pressed="false"><span data-pt>Só o que é grátis</span><span data-en>Free only</span></button>
+    </div>
+  </div>
+</div>
+
+<main>
+  <div class="env">
+  <section class="grupo" id="traduzir" data-cat="traduzir">
+    <div class="cab">
+      <h2><span class="emoji">🌐</span> <span data-pt>Traduzir</span><span data-en>Translate</span> <em>10</em></h2>
+      <p><span data-pt>O que o bot existe para fazer. Da tradução que uma pessoa pede até o servidor inteiro funcionando em vinte línguas ao mesmo tempo.</span><span data-en>What the bot exists to do. From a translation one person asks for, all the way to the whole server running in twenty languages at once.</span></p>
+    </div>
+    <div class="recs">
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="traducao por bandeira translate by flag a pessoa reage com a bandeira do pais dela e recebe aquela mensagem traduzida no privado. vale a bandeira que ela tem — 🇲🇽 conta, nao so 🇪🇸. se a caixa de mensagens estiver fechada, o bot responde na propria sala e apaga sozinho. someone reacts with their country's flag and gets that message translated in their dms. any flag counts — 🇲🇽 works, not just 🇪🇸. if their dms are closed, the bot answers in the room and deletes itself. reagir com 🇪🇸 react with 🇪🇸 bandeira">
+        <div class="n">1</div>
+        <div class="corpo">
+          <h3><span data-pt>Tradução por bandeira</span><span data-en>Translate by flag</span></h3>
+          <p><span data-pt>A pessoa reage com a bandeira do país dela e recebe aquela mensagem traduzida no privado. Vale a bandeira que ela tem — 🇲🇽 conta, não só 🇪🇸. Se a caixa de mensagens estiver fechada, o bot responde na própria sala e apaga sozinho.</span><span data-en>Someone reacts with their country's flag and gets that message translated in their DMs. Any flag counts — 🇲🇽 works, not just 🇪🇸. If their DMs are closed, the bot answers in the room and deletes itself.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Reagir com 🇪🇸</span><span data-en>React with 🇪🇸</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="botao de traducao translate button embaixo de um aviso fica um menu com as 20 linguas. cada um escolhe a sua e recebe a copia traduzida so para ele — o aviso original nao muda, e a sala nao enche. a menu with all 20 languages sits under an announcement. each person picks theirs and gets a translated copy for their eyes only — the original never changes, and the room stays clean. menu 🌐 embaixo da mensagem 🌐 menu under the message botao">
+        <div class="n">2</div>
+        <div class="corpo">
+          <h3><span data-pt>Botão de tradução</span><span data-en>Translate button</span></h3>
+          <p><span data-pt>Embaixo de um aviso fica um menu com as 20 línguas. Cada um escolhe a sua e recebe a cópia traduzida só para ele — o aviso original não muda, e a sala não enche.</span><span data-en>A menu with all 20 languages sits under an announcement. Each person picks theirs and gets a translated copy for their eyes only — the original never changes, and the room stays clean.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Menu 🌐 embaixo da mensagem</span><span data-en>🌐 menu under the message</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="tradutor por mensagem per-message translator ligado no painel, o bot abre um topico ao lado de cada mensagem do canal escolhido com o seletor de linguas dentro — e fecha o topico sozinho, para a barra lateral nao virar uma lista de topicos mortos. switched on in the panel, the bot opens a thread beside every message in the chosen channel with the language picker inside — then closes the thread itself, so your sidebar never becomes a graveyard. painel /cyron, um botao /cyron panel, one button topico">
+        <div class="n">3</div>
+        <div class="corpo">
+          <h3><span data-pt>Tradutor por mensagem</span><span data-en>Per-message translator</span></h3>
+          <p><span data-pt>Ligado no painel, o bot abre um tópico ao lado de cada mensagem do canal escolhido com o seletor de línguas dentro — e fecha o tópico sozinho, para a barra lateral não virar uma lista de tópicos mortos.</span><span data-en>Switched on in the panel, the bot opens a thread beside every message in the chosen channel with the language picker inside — then closes the thread itself, so your sidebar never becomes a graveyard.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Painel /cyron, um botão</span><span data-en>/cyron panel, one button</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="traduzir no privado translate in dms cole qualquer texto na conversa privada com o bot e ele oferece a traducao nas 20 linguas. sem comando, sem servidor, e ninguem mais ve. paste any text into a dm with the bot and it offers the translation in 20 languages. no command, no server, and nobody else sees it. mandar o texto para o bot send the bot any text privado">
+        <div class="n">4</div>
+        <div class="corpo">
+          <h3><span data-pt>Traduzir no privado</span><span data-en>Translate in DMs</span></h3>
+          <p><span data-pt>Cole qualquer texto na conversa privada com o bot e ele oferece a tradução nas 20 línguas. Sem comando, sem servidor, e ninguém mais vê.</span><span data-en>Paste any text into a DM with the bot and it offers the translation in 20 languages. No command, no server, and nobody else sees it.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Mandar o texto para o bot</span><span data-en>Send the bot any text</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="pago" data-cat="traduzir" data-busca="salas espelhadas por idioma mirrored rooms per language a mesma conversa acontecendo em varias salas, uma por lingua. voce escreve na sua e a sua fala aparece na dos outros ja traduzida, com o seu nome e a sua foto — inclusive as imagens e os arquivos que voce mandou junto. one conversation happening in several rooms, one per language. you type in yours and your line shows up in theirs already translated, with your name and your avatar — images and files you attached come along. sozinho, e so escrever on its own — just type espelho">
+        <div class="n">5</div>
+        <div class="corpo">
+          <h3><span data-pt>Salas espelhadas por idioma</span><span data-en>Mirrored rooms per language</span></h3>
+          <p><span data-pt>A mesma conversa acontecendo em várias salas, uma por língua. Você escreve na sua e a sua fala aparece na dos outros já traduzida, com o seu nome e a sua foto — inclusive as imagens e os arquivos que você mandou junto.</span><span data-en>One conversation happening in several rooms, one per language. You type in yours and your line shows up in theirs already translated, with your name and your avatar — images and files you attached come along.</span></p>
+          <div class="selos">
+            <span class="selo pago"><span data-pt>Plano pago</span><span data-en>Paid plan</span></span>
+            <span class="como"><span data-pt>Sozinho, é só escrever</span><span data-en>On its own — just type</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="pago" data-cat="traduzir" data-busca="copias dos seus canais copies of your channels anuncios, regras, eventos: voce marca ate 10 canais e cada um ganha uma copia por lingua, atualizada sozinha. quem le so em turco ve o mural da casa em turco. announcements, rules, events: you tick up to 10 channels and each one gets a copy per language, kept up to date on its own. someone who only reads turkish sees the house noticeboard in turkish. escolher os canais no painel pick the channels in the panel replica">
+        <div class="n">6</div>
+        <div class="corpo">
+          <h3><span data-pt>Cópias dos seus canais</span><span data-en>Copies of your channels</span></h3>
+          <p><span data-pt>Anúncios, regras, eventos: você marca até 10 canais e cada um ganha uma cópia por língua, atualizada sozinha. Quem lê só em turco vê o mural da casa em turco.</span><span data-en>Announcements, rules, events: you tick up to 10 channels and each one gets a copy per language, kept up to date on its own. Someone who only reads Turkish sees the house noticeboard in Turkish.</span></p>
+          <div class="selos">
+            <span class="selo pago"><span data-pt>Plano pago</span><span data-en>Paid plan</span></span>
+            <span class="como"><span data-pt>Escolher os canais no painel</span><span data-en>Pick the channels in the panel</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="pago" data-cat="traduzir" data-busca="uma ala inteira por lingua a whole wing per language categoria, cargo e permissoes de cada lingua montados e mantidos pelo bot. quem escolhe 🇰🇷 passa a ver a ala coreana e para de ver as outras — o servidor nao fica cinco vezes maior na barra lateral de ninguem. the category, the role and the permissions for each language, built and maintained by the bot. pick 🇰🇷 and you see the korean wing and stop seeing the rest — nobody's sidebar gets five times longer. montado na instalacao built during setup categoria">
+        <div class="n">7</div>
+        <div class="corpo">
+          <h3><span data-pt>Uma ala inteira por língua</span><span data-en>A whole wing per language</span></h3>
+          <p><span data-pt>Categoria, cargo e permissões de cada língua montados e mantidos pelo bot. Quem escolhe 🇰🇷 passa a ver a ala coreana e para de ver as outras — o servidor não fica cinco vezes maior na barra lateral de ninguém.</span><span data-en>The category, the role and the permissions for each language, built and maintained by the bot. Pick 🇰🇷 and you see the Korean wing and stop seeing the rest — nobody's sidebar gets five times longer.</span></p>
+          <div class="selos">
+            <span class="selo pago"><span data-pt>Plano pago</span><span data-en>Paid plan</span></span>
+            <span class="como"><span data-pt>Montado na instalação</span><span data-en>Built during setup</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="palavras que eu nao traduzo words i leave alone a lista da casa: apelidos, siglas da alianca, nomes de eventos. o tradutor recebe o texto com esses pedacos escondidos e devolve com eles intactos — ninguem vira “melhor” porque se chama best. the house list: nicknames, alliance tags, event names. the translator gets the text with those pieces hidden and hands them back untouched — nobody becomes “melhor” just because they are called best. painel /cyron → 📖 /cyron panel → 📖 palavras">
+        <div class="n">8</div>
+        <div class="corpo">
+          <h3><span data-pt>Palavras que eu não traduzo</span><span data-en>Words I leave alone</span></h3>
+          <p><span data-pt>A lista da casa: apelidos, siglas da aliança, nomes de eventos. O tradutor recebe o texto com esses pedaços escondidos e devolve com eles intactos — ninguém vira “Melhor” porque se chama Best.</span><span data-en>The house list: nicknames, alliance tags, event names. The translator gets the text with those pieces hidden and hands them back untouched — nobody becomes “Melhor” just because they are called Best.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Painel /cyron → 📖</span><span data-en>/cyron panel → 📖</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="ambos" data-cat="traduzir" data-busca="motor de traducao, com a sua chave your own translation engine deepl, azure ou os gratuitos, escolhidos por servidor. se voce tiver a sua propria chave, ela entra no painel e o servidor passa a gastar dela — guardada cifrada, e nunca mostrada de volta na tela. deepl, azure or the free ones, chosen per server. if you have your own key it goes in the panel and the server spends from it — stored encrypted, and never shown back on screen. painel /cyron → 🌐 /cyron panel → 🌐 motor">
+        <div class="n">9</div>
+        <div class="corpo">
+          <h3><span data-pt>Motor de tradução, com a sua chave</span><span data-en>Your own translation engine</span></h3>
+          <p><span data-pt>DeepL, Azure ou os gratuitos, escolhidos por servidor. Se você tiver a sua própria chave, ela entra no painel e o servidor passa a gastar dela — guardada cifrada, e nunca mostrada de volta na tela.</span><span data-en>DeepL, Azure or the free ones, chosen per server. If you have your own key it goes in the panel and the server spends from it — stored encrypted, and never shown back on screen.</span></p>
+          <div class="selos">
+            <span class="selo ambos"><span data-pt>Nos dois planos</span><span data-en>Both plans</span></span>
+            <span class="como"><span data-pt>Painel /cyron → 🌐</span><span data-en>/cyron panel → 🌐</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="traduzir" data-busca="a mesma frase nao se paga duas vezes the same line is never paid for twice toda traducao fica guardada por 30 dias. o segundo pedido da mesma frase e instantaneo e nao custa caractere nenhum — num servidor de verdade isso e a maior parte deles. every translation is kept for 30 days. the second request for the same line is instant and costs no characters at all — in a real server that is most of them. sozinho on its own cache">
+        <div class="n">10</div>
+        <div class="corpo">
+          <h3><span data-pt>A mesma frase não se paga duas vezes</span><span data-en>The same line is never paid for twice</span></h3>
+          <p><span data-pt>Toda tradução fica guardada por 30 dias. O segundo pedido da mesma frase é instantâneo e não custa caractere nenhum — num servidor de verdade isso é a maior parte deles.</span><span data-en>Every translation is kept for 30 days. The second request for the same line is instant and costs no characters at all — in a real server that is most of them.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Sozinho</span><span data-en>On its own</span></span>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+  <section class="grupo" id="chegar" data-cat="chegar">
+    <div class="cab">
+      <h2><span class="emoji">👋</span> <span data-pt>Quem chega</span><span data-en>Newcomers</span> <em>6</em></h2>
+      <p><span data-pt>Ninguém deveria precisar procurar onde se escolhe o idioma. O bot vai atrás, adivinha quando dá, e fala com cada pessoa na língua dela.</span><span data-en>Nobody should have to hunt for where you pick a language. The bot comes to you, guesses when it can, and speaks to each person in their own language.</span></p>
+    </div>
+    <div class="recs">
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="convite no privado ao entrar a dm the moment they join quem entra no servidor recebe na hora um cartao com as 20 bandeiras. nao precisa achar canal nenhum, e cada lingua aparece escrita nela mesma — deutsch, 한국어, العربية —, que e como a pessoa reconhece a dela. anyone who joins gets a card with the 20 flags right away. no channel to find, and each language is written in itself — deutsch, 한국어, العربية — which is how a person recognises their own. sozinho, quando alguem entra on its own, when someone joins convite">
+        <div class="n">11</div>
+        <div class="corpo">
+          <h3><span data-pt>Convite no privado ao entrar</span><span data-en>A DM the moment they join</span></h3>
+          <p><span data-pt>Quem entra no servidor recebe na hora um cartão com as 20 bandeiras. Não precisa achar canal nenhum, e cada língua aparece escrita nela mesma — Deutsch, 한국어, العربية —, que é como a pessoa reconhece a dela.</span><span data-en>Anyone who joins gets a card with the 20 flags right away. No channel to find, and each language is written in itself — Deutsch, 한국어, العربية — which is how a person recognises their own.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Sozinho, quando alguém entra</span><span data-en>On its own, when someone joins</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="o idioma adivinhado pelo que a pessoa escreve the language guessed from what they type quem escreveu e nunca escolheu bandeira recebe uma oferta discreta — ja na lingua que ele parece falar. na duvida o bot cala a boca: adivinhar errado e pior do que nao adivinhar. someone who typed but never picked a flag gets a quiet offer — already in the language they seem to speak. when in doubt the bot says nothing: a wrong guess is worse than no guess. sozinho, na primeira frase on its own, on their first line adivinhar">
+        <div class="n">12</div>
+        <div class="corpo">
+          <h3><span data-pt>O idioma adivinhado pelo que a pessoa escreve</span><span data-en>The language guessed from what they type</span></h3>
+          <p><span data-pt>Quem escreveu e nunca escolheu bandeira recebe uma oferta discreta — já na língua que ele parece falar. Na dúvida o bot cala a boca: adivinhar errado é pior do que não adivinhar.</span><span data-en>Someone who typed but never picked a flag gets a quiet offer — already in the language they seem to speak. When in doubt the bot says nothing: a wrong guess is worse than no guess.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Sozinho, na primeira frase</span><span data-en>On its own, on their first line</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="o bot fala com cada um na lingua dele the bot speaks to each person in their language nao e so o chat: os cartoes, os botoes, os menus e os avisos do proprio bot chegam na lingua de quem esta lendo. quem escolheu 🇻🇳 nao ve uma palavra de portugues. not just the chat: the bot's own cards, buttons, menus and notices arrive in the reader's language. someone who picked 🇻🇳 never sees a word of portuguese. sozinho, depois da escolha on its own, once they choose falacomvoce">
+        <div class="n">13</div>
+        <div class="corpo">
+          <h3><span data-pt>O bot fala com cada um na língua dele</span><span data-en>The bot speaks to each person in their language</span></h3>
+          <p><span data-pt>Não é só o chat: os cartões, os botões, os menus e os avisos do próprio bot chegam na língua de quem está lendo. Quem escolheu 🇻🇳 não vê uma palavra de português.</span><span data-en>Not just the chat: the bot's own cards, buttons, menus and notices arrive in the reader's language. Someone who picked 🇻🇳 never sees a word of Portuguese.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Sozinho, depois da escolha</span><span data-en>On its own, once they choose</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="/help, a porta que qualquer um acha /help, the door anyone can find um menu fechado com os assuntos que de fato perguntam, cada um com resposta escrita. sem campo livre: prometer um atendente que nao existe e pior do que dizer o que eu sei fazer. a closed menu of the questions people actually ask, each with a written answer. no free text box: promising a support agent that does not exist is worse than saying what i can do. /help /help help">
+        <div class="n">14</div>
+        <div class="corpo">
+          <h3><span data-pt>/help, a porta que qualquer um acha</span><span data-en>/help, the door anyone can find</span></h3>
+          <p><span data-pt>Um menu fechado com os assuntos que de fato perguntam, cada um com resposta escrita. Sem campo livre: prometer um atendente que não existe é pior do que dizer o que eu sei fazer.</span><span data-en>A closed menu of the questions people actually ask, each with a written answer. No free text box: promising a support agent that does not exist is worse than saying what I can do.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/help</span><span data-en>/help</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="/mylanguage /mylanguage trocar de lingua a qualquer momento, em qualquer servidor onde o bot esteja, quantas vezes quiser. a escolha e da pessoa e vai com ela. change language whenever you like, in any server the bot is in, as many times as you like. the choice belongs to the person and travels with them. /mylanguage /mylanguage mylanguage">
+        <div class="n">15</div>
+        <div class="corpo">
+          <h3><span data-pt>/mylanguage</span><span data-en>/mylanguage</span></h3>
+          <p><span data-pt>Trocar de língua a qualquer momento, em qualquer servidor onde o bot esteja, quantas vezes quiser. A escolha é da pessoa e vai com ela.</span><span data-en>Change language whenever you like, in any server the bot is in, as many times as you like. The choice belongs to the person and travels with them.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/mylanguage</span><span data-en>/mylanguage</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="chegar" data-busca="instalacao em cinco cartoes setup in five cards cinco passos, e tres acontecem sozinhos. cada cartao tem uma foto do que voce deveria estar vendo, e voce avanca no seu ritmo. five steps, and three happen by themselves. each card shows a picture of what you should be looking at, and you move at your own pace. /help → como instalar /help → how to install passos">
+        <div class="n">16</div>
+        <div class="corpo">
+          <h3><span data-pt>Instalação em cinco cartões</span><span data-en>Setup in five cards</span></h3>
+          <p><span data-pt>Cinco passos, e três acontecem sozinhos. Cada cartão tem uma foto do que você deveria estar vendo, e você avança no seu ritmo.</span><span data-en>Five steps, and three happen by themselves. Each card shows a picture of what you should be looking at, and you move at your own pace.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/help → Como instalar</span><span data-en>/help → How to install</span></span>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+  <section class="grupo" id="viver" data-cat="viver">
+    <div class="cab">
+      <h2><span class="emoji">🎮</span> <span data-pt>Viver junto</span><span data-en>Living together</span> <em>4</em></h2>
+      <p><span data-pt>Traduzir tira a barreira; isto dá motivo para atravessar. Jogo, horários que cada um lê no relógio dele, e a conta do que o servidor conseguiu na semana.</span><span data-en>Translation removes the wall; this gives people a reason to cross it. A game, times everyone reads on their own clock, and the tally of what the server pulled off this week.</span></p>
+    </div>
+    <div class="recs">
+      <article class="rec" data-plano="gratis" data-cat="viver" data-busca="arena das linguas language arena cada lingua do servidor e um time, e traduzir e o que da forca a ele. placar fixado, ataques entre times, e um handicap que deixa o time de tres pessoas capaz de derrubar o de trinta. every language in the server is a team, and translating is what makes it stronger. a pinned scoreboard, attacks between teams, and a handicap that lets a team of three take down a team of thirty. /arena /arena arena">
+        <div class="n">17</div>
+        <div class="corpo">
+          <h3><span data-pt>Arena das Línguas</span><span data-en>Language Arena</span></h3>
+          <p><span data-pt>Cada língua do servidor é um time, e traduzir é o que dá força a ele. Placar fixado, ataques entre times, e um handicap que deixa o time de três pessoas capaz de derrubar o de trinta.</span><span data-en>Every language in the server is a team, and translating is what makes it stronger. A pinned scoreboard, attacks between teams, and a handicap that lets a team of three take down a team of thirty.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/arena</span><span data-en>/arena</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="viver" data-busca="eventos na hora de cada um events in everyone's own time voce marca “20:30” uma vez e o brasil le 20:30, a alemanha le 01:30 e as filipinas leem 07:30 — cada um no relogio dele, sem o bot guardar o fuso de ninguem. o campo de horario sugere enquanto voce digita. you set “20:30” once and brazil reads 20:30, germany reads 01:30 and the philippines read 07:30 — each on their own clock, with the bot storing nobody's timezone. the time field suggests as you type. /evento /evento eventos">
+        <div class="n">18</div>
+        <div class="corpo">
+          <h3><span data-pt>Eventos na hora de cada um</span><span data-en>Events in everyone's own time</span></h3>
+          <p><span data-pt>Você marca “20:30” uma vez e o Brasil lê 20:30, a Alemanha lê 01:30 e as Filipinas leem 07:30 — cada um no relógio dele, sem o bot guardar o fuso de ninguém. O campo de horário sugere enquanto você digita.</span><span data-en>You set “20:30” once and Brazil reads 20:30, Germany reads 01:30 and the Philippines read 07:30 — each on their own clock, with the bot storing nobody's timezone. The time field suggests as you type.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/evento</span><span data-en>/evento</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="viver" data-busca="votacao de presenca attendance vote vou / nao vou, com a contagem a vista. quem convoca liga ou desliga a votacao por evento — nao e toda convocacao que se pergunta. in / out, with the count in plain sight. whoever calls the event turns the vote on or off per event — not every call is a question. botao no cartao do evento a button on the event card presenca">
+        <div class="n">19</div>
+        <div class="corpo">
+          <h3><span data-pt>Votação de presença</span><span data-en>Attendance vote</span></h3>
+          <p><span data-pt>Vou / não vou, com a contagem à vista. Quem convoca liga ou desliga a votação por evento — não é toda convocação que se pergunta.</span><span data-en>In / out, with the count in plain sight. Whoever calls the event turns the vote on or off per event — not every call is a question.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Botão no cartão do evento</span><span data-en>A button on the event card</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="viver" data-busca="recibo da semana the week's receipt quantas traducoes, para quantas pessoas, e se foi mais ou menos que a semana passada. semana sem traducao nenhuma nao vira cartao: um recibo dizendo “zero” e o bot lembrando que nao serviu para nada. how many translations, for how many people, and whether it beat last week. a week with no translations produces no card at all: a receipt saying “zero” is the bot reminding you it was useless. toda segunda, sozinho every monday, on its own recibo">
+        <div class="n">20</div>
+        <div class="corpo">
+          <h3><span data-pt>Recibo da semana</span><span data-en>The week's receipt</span></h3>
+          <p><span data-pt>Quantas traduções, para quantas pessoas, e se foi mais ou menos que a semana passada. Semana sem tradução nenhuma não vira cartão: um recibo dizendo “zero” é o bot lembrando que não serviu para nada.</span><span data-en>How many translations, for how many people, and whether it beat last week. A week with no translations produces no card at all: a receipt saying “zero” is the bot reminding you it was useless.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Toda segunda, sozinho</span><span data-en>Every Monday, on its own</span></span>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+  <section class="grupo" id="mandar" data-cat="mandar">
+    <div class="cab">
+      <h2><span class="emoji">⚙️</span> <span data-pt>Quem administra</span><span data-en>Running it</span> <em>7</em></h2>
+      <p><span data-pt>Um painel, botões, e nenhum arquivo de configuração. O que der errado aparece escrito em português, com o conserto ao lado.</span><span data-en>One panel, buttons, and no config file. Whatever breaks shows up in plain language, with the fix next to it.</span></p>
+    </div>
+    <div class="recs">
+      <article class="rec" data-plano="gratis" data-cat="mandar" data-busca="o painel /cyron the /cyron panel um cartao so, que se atualiza no lugar: o que esta ligado, o que falta, quantos canais existem e o que fazer a seguir. so quem gerencia o servidor ve o comando na lista. a single card that refreshes in place: what is on, what is missing, how many channels exist and what to do next. only people who manage the server even see the command. /cyron /cyron painel">
+        <div class="n">21</div>
+        <div class="corpo">
+          <h3><span data-pt>O painel /cyron</span><span data-en>The /cyron panel</span></h3>
+          <p><span data-pt>Um cartão só, que se atualiza no lugar: o que está ligado, o que falta, quantos canais existem e o que fazer a seguir. Só quem gerencia o servidor vê o comando na lista.</span><span data-en>A single card that refreshes in place: what is on, what is missing, how many channels exist and what to do next. Only people who manage the server even see the command.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>/cyron</span><span data-en>/cyron</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="mandar" data-busca="instalacao automatica ao entrar it installs itself on arrival o bot entra, cria o canal de configuracao, se apresenta e abre o painel. nao existe passo “agora rode este comando” antes de voce ver alguma coisa funcionando. the bot joins, creates its config channel, introduces itself and opens the panel. there is no “now run this command” before you see anything working. ao adicionar o bot when you add the bot instalacao">
+        <div class="n">22</div>
+        <div class="corpo">
+          <h3><span data-pt>Instalação automática ao entrar</span><span data-en>It installs itself on arrival</span></h3>
+          <p><span data-pt>O bot entra, cria o canal de configuração, se apresenta e abre o painel. Não existe passo “agora rode este comando” antes de você ver alguma coisa funcionando.</span><span data-en>The bot joins, creates its config channel, introduces itself and opens the panel. There is no “now run this command” before you see anything working.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Ao adicionar o bot</span><span data-en>When you add the bot</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="mandar" data-busca="reconstruir os canais rebuild the channels apagou uma sala sem querer, mexeu numa permissao, mudou o nome do canal de origem: um botao refaz o que faltar e conserta o que ficou torto, sem apagar conversa. deleted a room by accident, changed a permission, renamed a source channel: one button rebuilds what is missing and fixes what drifted, without deleting anyone's conversation. painel /cyron → 🔄 /cyron panel → 🔄 remontar">
+        <div class="n">23</div>
+        <div class="corpo">
+          <h3><span data-pt>Reconstruir os canais</span><span data-en>Rebuild the channels</span></h3>
+          <p><span data-pt>Apagou uma sala sem querer, mexeu numa permissão, mudou o nome do canal de origem: um botão refaz o que faltar e conserta o que ficou torto, sem apagar conversa.</span><span data-en>Deleted a room by accident, changed a permission, renamed a source channel: one button rebuilds what is missing and fixes what drifted, without deleting anyone's conversation.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Painel /cyron → 🔄</span><span data-en>/cyron panel → 🔄</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="mandar" data-busca="erros explicados, nao codigos errors explained, not codes quando algo falha, o canal recebe um cartao dizendo o que aconteceu, se depende de voce e qual e o conserto. “missing permissions” vira “falta a permissao x no canal y”. when something fails, the channel gets a card saying what happened, whether it needs you, and what the fix is. “missing permissions” becomes “permission x is missing on channel y”. canal 🐛-erros the 🐛-erros channel erros">
+        <div class="n">24</div>
+        <div class="corpo">
+          <h3><span data-pt>Erros explicados, não códigos</span><span data-en>Errors explained, not codes</span></h3>
+          <p><span data-pt>Quando algo falha, o canal recebe um cartão dizendo o que aconteceu, se depende de você e qual é o conserto. “Missing Permissions” vira “falta a permissão X no canal Y”.</span><span data-en>When something fails, the channel gets a card saying what happened, whether it needs you, and what the fix is. “Missing Permissions” becomes “permission X is missing on channel Y”.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Canal 🐛-erros</span><span data-en>The 🐛-erros channel</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="ambos" data-cat="mandar" data-busca="teto de canais respeitado the channel ceiling is respected o discord aceita 500 canais por servidor. o bot conta antes de criar, para quando fica apertado e avisa quem manda — em vez de deixar o servidor no limite e descobrir na hora errada. discord allows 500 channels per server. the bot counts before it builds, stops when it gets tight and tells whoever is in charge — instead of parking your server at the limit and finding out the hard way. sozinho, antes de criar on its own, before it builds teto">
+        <div class="n">25</div>
+        <div class="corpo">
+          <h3><span data-pt>Teto de canais respeitado</span><span data-en>The channel ceiling is respected</span></h3>
+          <p><span data-pt>O Discord aceita 500 canais por servidor. O bot conta antes de criar, para quando fica apertado e avisa quem manda — em vez de deixar o servidor no limite e descobrir na hora errada.</span><span data-en>Discord allows 500 channels per server. The bot counts before it builds, stops when it gets tight and tells whoever is in charge — instead of parking your server at the limit and finding out the hard way.</span></p>
+          <div class="selos">
+            <span class="selo ambos"><span data-pt>Nos dois planos</span><span data-en>Both plans</span></span>
+            <span class="como"><span data-pt>Sozinho, antes de criar</span><span data-en>On its own, before it builds</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="ambos" data-cat="mandar" data-busca="codigo de ativacao activation code dias de plano pago entregues por codigo, sem cartao. serve para teste, para parceria e para quem nao pode pagar em real — e resgatar de novo soma dias em vez de recomecar. paid days handed over as a code, no card involved. good for trials, partnerships, and anyone who cannot pay in your currency — and redeeming again adds days instead of starting over. painel /cyron → 🎟️ /cyron panel → 🎟️ codigo">
+        <div class="n">26</div>
+        <div class="corpo">
+          <h3><span data-pt>Código de ativação</span><span data-en>Activation code</span></h3>
+          <p><span data-pt>Dias de plano pago entregues por código, sem cartão. Serve para teste, para parceria e para quem não pode pagar em real — e resgatar de novo soma dias em vez de recomeçar.</span><span data-en>Paid days handed over as a code, no card involved. Good for trials, partnerships, and anyone who cannot pay in your currency — and redeeming again adds days instead of starting over.</span></p>
+          <div class="selos">
+            <span class="selo ambos"><span data-pt>Nos dois planos</span><span data-en>Both plans</span></span>
+            <span class="como"><span data-pt>Painel /cyron → 🎟️</span><span data-en>/cyron panel → 🎟️</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="pago" data-cat="mandar" data-busca="comandos sob encomenda commands made to order um comando que so o seu servidor tem, com o cargo que pode usar e, se fizer sentido, um horario para ele acontecer sozinho. nao e um recurso que voce configura — e um que eu escrevo para voce. a command only your server has, with the role allowed to use it and, if it makes sense, a time for it to happen by itself. not a feature you configure — one i write for you. falando comigo ask me sobencomenda">
+        <div class="n">27</div>
+        <div class="corpo">
+          <h3><span data-pt>Comandos sob encomenda</span><span data-en>Commands made to order</span></h3>
+          <p><span data-pt>Um comando que só o seu servidor tem, com o cargo que pode usar e, se fizer sentido, um horário para ele acontecer sozinho. Não é um recurso que você configura — é um que eu escrevo para você.</span><span data-en>A command only your server has, with the role allowed to use it and, if it makes sense, a time for it to happen by itself. Not a feature you configure — one I write for you.</span></p>
+          <div class="selos">
+            <span class="selo pago"><span data-pt>Plano pago</span><span data-en>Paid plan</span></span>
+            <span class="como"><span data-pt>Falando comigo</span><span data-en>Ask me</span></span>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+  <section class="grupo" id="confiar" data-cat="confiar">
+    <div class="cab">
+      <h2><span class="emoji">🛡️</span> <span data-pt>Confiança</span><span data-en>Trust</span> <em>3</em></h2>
+      <p><span data-pt>O que eu guardo, por quanto tempo, quanto custa e o que acontece quando o tradutor falha. Escrito antes de você perguntar.</span><span data-en>What I store, for how long, what it costs and what happens when the translator fails. Written down before you ask.</span></p>
+    </div>
+    <div class="recs">
+      <article class="rec" data-plano="gratis" data-cat="confiar" data-busca="o que eu guardo, e por quanto tempo what i store, and for how long cada tabela, o motivo dela e o prazo, numa pagina so — e o prazo e cumprido por uma varredura, nao por promessa. o que nao e guardado tambem esta escrito la: o fuso horario de ninguem, por exemplo. every table, why it exists and how long it lives, on one page — and the deadline is enforced by a sweep, not by a promise. what is not stored is written down too: nobody's timezone, for instance. cyron/privacidade.html cyron/privacidade.html privacidade">
+        <div class="n">28</div>
+        <div class="corpo">
+          <h3><span data-pt>O que eu guardo, e por quanto tempo</span><span data-en>What I store, and for how long</span></h3>
+          <p><span data-pt>Cada tabela, o motivo dela e o prazo, numa página só — e o prazo é cumprido por uma varredura, não por promessa. O que não é guardado também está escrito lá: o fuso horário de ninguém, por exemplo.</span><span data-en>Every table, why it exists and how long it lives, on one page — and the deadline is enforced by a sweep, not by a promise. What is not stored is written down too: nobody's timezone, for instance.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>cyron/privacidade.html</span><span data-en>cyron/privacidade.html</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="confiar" data-busca="um servidor nao gasta a cota do vizinho one server cannot spend its neighbour's quota as chaves gratuitas sao uma bolsa so para todos os servidores, entao cada um tem o seu teto por dia. tradutor que falha entra de castigo e o proximo assume — o servidor nao para porque um provedor caiu. the free keys are one shared purse for every server, so each one has its own daily ceiling. a translator that fails is benched and the next one takes over — your server does not stop because a provider went down. sozinho on its own cota">
+        <div class="n">29</div>
+        <div class="corpo">
+          <h3><span data-pt>Um servidor não gasta a cota do vizinho</span><span data-en>One server cannot spend its neighbour's quota</span></h3>
+          <p><span data-pt>As chaves gratuitas são uma bolsa só para todos os servidores, então cada um tem o seu teto por dia. Tradutor que falha entra de castigo e o próximo assume — o servidor não para porque um provedor caiu.</span><span data-en>The free keys are one shared purse for every server, so each one has its own daily ceiling. A translator that fails is benched and the next one takes over — your server does not stop because a provider went down.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Sozinho</span><span data-en>On its own</span></span>
+          </div>
+        </div>
+      </article>
+      <article class="rec" data-plano="gratis" data-cat="confiar" data-busca="o plano gratis nao vence the free plan does not expire bandeira, botao, tradutor por mensagem e o bot falando a lingua de cada um: de graca, sem limite de gente nem de lingua, sem data. o plano pago e o que constroi as salas — e essa a diferenca, e nao um numero maior. flags, the button, the per-message translator and the bot speaking everyone's language: free, with no member or language limit, and no expiry date. the paid plan is the one that builds rooms — that is the difference, not a bigger number. nao fazer nada do nothing sempre-gratis">
+        <div class="n">30</div>
+        <div class="corpo">
+          <h3><span data-pt>O plano grátis não vence</span><span data-en>The free plan does not expire</span></h3>
+          <p><span data-pt>Bandeira, botão, tradutor por mensagem e o bot falando a língua de cada um: de graça, sem limite de gente nem de língua, sem data. O plano pago é o que constrói as salas — é essa a diferença, e não um número maior.</span><span data-en>Flags, the button, the per-message translator and the bot speaking everyone's language: free, with no member or language limit, and no expiry date. The paid plan is the one that builds rooms — that is the difference, not a bigger number.</span></p>
+          <div class="selos">
+            <span class="selo gratis"><span data-pt>Grátis</span><span data-en>Free</span></span>
+            <span class="como"><span data-pt>Não fazer nada</span><span data-en>Do nothing</span></span>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+    <div class="vazio">
+      <p><span data-pt>Nada com esse nome. Tente “bandeira”, “evento” ou “sala”.</span><span data-en>Nothing by that name. Try “flag”, “event” or “room”.</span></p>
+    </div>
+  </div>
+</main>
+
+<div class="fecho">
+  <div class="env">
+    <h2><span data-pt>Põe no seu servidor e vê.</span><span data-en>Put it in your server and see.</span></h2>
+    <p>
+      <span data-pt>As 26 funções do plano grátis já funcionam no minuto em que ele entra. Nenhuma delas vence.</span>
+      <span data-en>The 26 free-plan features work the minute it joins. None of them expire.</span>
+    </p>
+    <a class="bt bt-1 convite" href="./"><span data-pt>Adicionar o CYRON</span><span data-en>Add CYRON</span></a>
+  </div>
+</div>
+
+<footer>
+  <div class="env">
+    <span>CYRON</span>
+    <nav>
+      <a href="./"><span data-pt>Início</span><span data-en>Home</span></a>
+      <a href="./privacidade.html"><span data-pt>Privacidade</span><span data-en>Privacy</span></a>
+      <a href="./termos.html"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+var CLIENT_ID = "1498142929041096856";
+var PERMISSOES = "327223209040";
+var CONVITE = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
+  "&permissions=" + PERMISSOES + "&scope=bot%20applications.commands";
+[].forEach.call(document.querySelectorAll(".convite"), function (a) { a.href = CONVITE; });
+
+/* ---- PT / EN ---- */
+function idioma(qual) {
+  document.documentElement.lang = qual === "en" ? "en" : "pt-BR";
+  [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.troca === qual));
+  });
+  /* O texto do campo de busca não é elemento, é atributo: o truque do CSS com
+     data-pt/data-en não alcança ele, e sem isto a busca continuaria pedindo
+     "Procurar: bandeira" para quem está lendo a página em inglês. */
+  var b = document.getElementById("busca");
+  if (b) b.placeholder = qual === "en" ? b.dataset.enPh : b.dataset.ptPh;
+  try { localStorage.setItem("cyron-idioma", qual); } catch (e) { /* aba anônima */ }
+}
+[].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+  b.addEventListener("click", function () { idioma(b.dataset.troca); });
+});
+(function () {
+  var guardado = null;
+  try { guardado = localStorage.getItem("cyron-idioma"); } catch (e) { /* idem */ }
+  if (guardado) return idioma(guardado);
+  var nav = (navigator.language || "pt").toLowerCase();
+  idioma(nav.indexOf("pt") === 0 ? "pt" : "en");
+})();
+
+/* ---- os filtros ----
+
+   Categoria e plano são independentes de propósito: "só o que é grátis"
+   continua valendo enquanto se passeia pelas categorias. Sem isso, escolher
+   uma categoria apagaria o filtro de plano sem avisar, e a lista mudaria por
+   um motivo que ninguém pediu. */
+var categoria = "";
+var sograte = false;
+var termo = "";
+
+function marcar(selector, atual) {
+  [].forEach.call(document.querySelectorAll(selector), function (b) {
+    b.setAttribute("aria-pressed", String(atual(b)));
+  });
+}
+
+function aplicar() {
+  var achou = 0;
+  [].forEach.call(document.querySelectorAll(".grupo"), function (g) {
+    var vivos = 0;
+    [].forEach.call(g.querySelectorAll(".rec"), function (r) {
+      var passa =
+        (!categoria || r.dataset.cat === categoria) &&
+        (!sograte || r.dataset.plano !== "pago") &&
+        (!termo || r.dataset.busca.indexOf(termo) >= 0);
+      r.hidden = !passa;
+      if (passa) vivos++;
+    });
+    g.hidden = vivos === 0;
+    achou += vivos;
+  });
+  if (achou) document.body.removeAttribute("data-vazio");
+  else document.body.setAttribute("data-vazio", "1");
+}
+
+[].forEach.call(document.querySelectorAll("[data-cat]"), function (b) {
+  if (b.tagName !== "BUTTON") return;
+  b.addEventListener("click", function () {
+    categoria = b.dataset.cat;
+    marcar(".chip[data-cat]", function (o) { return o.dataset.cat === categoria; });
+    aplicar();
+  });
+});
+[].forEach.call(document.querySelectorAll(".chip[data-plano]"), function (b) {
+  b.addEventListener("click", function () {
+    sograte = !sograte;
+    b.setAttribute("aria-pressed", String(sograte));
+    aplicar();
+  });
+});
+document.getElementById("busca").addEventListener("input", function (e) {
+  /* Minúsculas e sem acento dos dois lados: quem procura "traducao" tem que
+     achar "tradução", senão a busca só serve para quem já sabe escrever o
+     nome exato do recurso. */
+  termo = e.target.value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  aplicar();
+});
+
+marcar(".chip[data-cat]", function (o) { return o.dataset.cat === categoria; });
+</script>
+
+</body>
+</html>
