@@ -3526,6 +3526,115 @@ function conferirCartao(onde, embed, componentes = []) {
     /quando\s+timestamptz/i.test(ddl));
 }
 
+
+/* ============ adivinhar a língua de quem escreveu ============
+
+   Errar não quebra nada, mas gasta a ÚNICA oferta que eu tenho com aquela
+   pessoa. Então o teste persegue os dois lados: acertar o alemão e, mais
+   importante, CALAR quando não dá para ter certeza. */
+{
+  const { linguaProvavel } = carregar(["ESCRITAS", "MARCAS", "ACENTOS", "linguaProvavel"]);
+
+  /* ---- escrita que se identifica sozinha ---- */
+  ok("árabe", linguaProvavel("مرحبا كيف حالك اليوم يا اصدقاء"), "ar");
+  ok("russo", linguaProvavel("привет как дела сегодня друзья"), "ru");
+  /* Ucraniano é cirílico com letras que o russo não tem, e vem antes dele. */
+  ok("ucraniano não vira russo", linguaProvavel("привіт як справи їхній ґанок"), "uk");
+  ok("japonês pelo kana", linguaProvavel("こんにちは今日はどうですか"), "ja");
+  /* Japonês usa kana E han: se o han decidisse primeiro, viraria chinês. */
+  ok("japonês com kanji junto continua japonês", linguaProvavel("今日は元気ですか、みなさん"), "ja");
+  ok("chinês sem kana", linguaProvavel("大家好今天怎么样"), "zh-CN");
+  ok("coreano", linguaProvavel("안녕하세요 오늘 어떠세요"), "ko");
+  ok("tailandês", linguaProvavel("สวัสดีครับ วันนี้เป็นอย่างไร"), "th");
+  ok("hindi", linguaProvavel("नमस्ते आज आप कैसे हैं"), "hi");
+
+  /* ---- alfabeto latino ---- */
+  ok("alemão", linguaProvavel("hallo ich bin nicht sicher aber danke"), "de");
+  ok("português", linguaProvavel("gente não sei se você vai conseguir fazer isso"), "pt");
+  ok("espanhol", linguaProvavel("hola gracias pero ahora no puedo también"), "es");
+  ok("inglês", linguaProvavel("hey guys thanks for the help with this"), "en");
+  ok("francês", linguaProvavel("bonjour merci pour votre aide mais nous"), "fr");
+  ok("turco", linguaProvavel("merhaba teşekkür ederim ama değil için"), "tr");
+  ok("indonésio", linguaProvavel("terima kasih untuk yang sudah membantu saya"), "id");
+  ok("filipino", linguaProvavel("salamat po sa lahat ng tulong ninyo ang"), "tl");
+
+  /* ---- O QUE IMPORTA MAIS: calar quando não dá para ter certeza ----
+
+     Cada palpite errado queima a oferta única daquela pessoa. */
+  for (const mudo of [
+    "", "   ", "ok", "lol", "gg", "kkkk", "sim", "yes",
+    "ok pessoal vamos",                    // curto demais para decidir
+    "123 456 789 000",                     // número não é língua
+    "😂😂😂 🔥🔥",                            // emoji também não
+    "<@123456789> <#987654321>",           // menção some antes de contar
+    "https://exemplo.com/uma/url/comprida/aqui",
+    "`const x = para com que uma isso`",   // código não é conversa
+  ]) {
+    ok(`"${mudo.slice(0, 26)}" não vira palpite`, linguaProvavel(mudo), "");
+  }
+
+  /* Português e espanhol dividem meio dicionário: sem vantagem folgada, o
+     certo é calar em vez de chutar um dos dois. */
+  ok("frase que serve às duas línguas não decide",
+    linguaProvavel("no me gusta que para con una"), "");
+
+  /* ---- os acentos desempatam, mas não decidem sozinhos ---- */
+  verdade("um acento sozinho não basta", linguaProvavel("hoje ção") === "");
+  ok("mas ajuda quando há palavras junto",
+    linguaProvavel("não vou conseguir fazer isso aqui gente"), "pt");
+
+  /* ---- a lista não pode ter palavra que serve a duas línguas ----
+
+     "que" e "para" existem em português E espanhol: numa lista de marcas eles
+     não separam nada e só atrapalham o desempate. */
+  const { MARCAS } = carregar(["MARCAS"]);
+  const vistas = new Map();
+  for (const [cod, lista] of Object.entries(MARCAS)) {
+    for (const p of lista) vistas.set(p, [...(vistas.get(p) || []), cod]);
+  }
+  for (const [palavra, onde] of vistas) {
+    verdade(`"${palavra}" só marca uma língua (está em ${onde.join(", ")})`, onde.length === 1);
+  }
+}
+
+
+/* ============ quando eu não entendi, dizer O QUE FALTOU ============
+
+   O primeiro uso de verdade digitou "23/09" e levou a tabela inteira de
+   formatos de volta. A informação que resolvia — faltou a hora — estava lá,
+   diluída em quatro exemplos. Quase-acerto merece a frase que fecha a
+   distância. */
+{
+  const { porqueNaoEntendi, quandoDoTexto } = carregar(["porqueNaoEntendi", "quandoDoTexto"]);
+
+  /* O caso que aconteceu. */
+  verdade("23/09 diz que faltou a hora", /faltou a hora/i.test(porqueNaoEntendi("23/09")));
+  verdade("e mostra a correção pronta, com a data que a pessoa digitou",
+    porqueNaoEntendi("23/09").includes("23/09 20:30"));
+  ok("data com ano também", /faltou a hora/i.test(porqueNaoEntendi("23/09/26")), true);
+
+  /* A ambígua ensina as DUAS saídas, porque as duas são legítimas. */
+  const amb = porqueNaoEntendi("20h30");
+  verdade("20h30 mostra a saída de hora marcada", amb.includes("20:30"));
+  verdade("e a de duração", amb.includes("20h30m"));
+
+  ok("hora com ponto vira dois-pontos", /20:30/.test(porqueNaoEntendi("20.30")), true);
+  ok("hora com vírgula também", /20:30/.test(porqueNaoEntendi("20,30")), true);
+  verdade("número solto diz que faltou a unidade", /unidade/i.test(porqueNaoEntendi("3")));
+  verdade("e mostra as duas", porqueNaoEntendi("3").includes("3h") && porqueNaoEntendi("3").includes("3m"));
+
+  /* Sem palpite quando não é quase-acerto: frase inventada não ganha dica. */
+  for (const nada of ["", "amanhã", "sábado", "abc", "logo mais"]) {
+    ok(`"${nada}" não recebe dica inventada`, porqueNaoEntendi(nada), "");
+  }
+
+  /* A dica só existe para o que o parser REALMENTE recusa. Se um dia
+     "23/09" passar a ser aceito, esta dica vira mentira na tela. */
+  for (const recusado of ["23/09", "20h30", "20.30", "3"]) {
+    ok(`"${recusado}" é mesmo recusado pelo parser`, quandoDoTexto(recusado), null);
+  }
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
