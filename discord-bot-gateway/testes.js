@@ -32,6 +32,15 @@ globalThis.PermissionFlagsBits = PermissionFlagsBits;
 globalThis.ActionRowBuilder = ActionRowBuilder;
 globalThis.StringSelectMenuBuilder = StringSelectMenuBuilder;
 
+/* O catalogo do que o bot faz. E' um arquivo de dados -- nenhuma linha dele
+   abre conexao --, e o index.js o importa para montar o tema "Tudo que eu
+   faco". Sem ele no escopo, esse pedaco nao carrega. */
+import { CATEGORIAS, RECURSOS, recursosDa, numeroDe } from "./catalogo.js";
+import { pagina as paginaDeRecursos, DESTINO as HTML_RECURSOS } from "./fazer-recursos.js";
+globalThis.CATEGORIAS = CATEGORIAS;
+globalThis.RECURSOS = RECURSOS;
+globalThis.recursosDa = recursosDa;
+
 const aqui = dirname(fileURLToPath(import.meta.url));
 const fonte = readFileSync(`${aqui}/index.js`, "utf8");
 
@@ -3851,6 +3860,106 @@ function conferirCartao(onde, embed, componentes = []) {
      responderia nomes de rally onde o /evento espera "3h". */
   verdade("o autocompletar sabe de qual comando veio",
     /inter\.commandName === "evento"[^]{0,200}sugestoesDeQuando/.test(fonteEv2));
+}
+
+/* ====== o catálogo do que o bot faz ======
+
+   O catálogo é a lista de venda: é o que a pessoa lê antes de instalar. Uma
+   lista de recursos mente de dois jeitos, e os dois são silenciosos:
+
+   1. o recurso sai do código e continua na lista -- quem instalou por causa
+      daquela linha descobre sozinho que não existe;
+   2. a lista muda e a página não é regerada -- o site vende a versão de
+      anteontem, e ninguém percebe porque a página continua bonita.
+
+   Contra o primeiro, cada item traz uma `prova` que tem que aparecer no
+   index.js. Contra o segundo, o arquivo no disco é comparado com o que o
+   gerador produziria agora. */
+{
+  const chaves = RECURSOS.map((r) => r.chave);
+  ok("nenhuma chave repetida no catálogo", chaves.length, new Set(chaves).size);
+
+  const semProva = RECURSOS.filter((r) => !fonte.includes(r.prova));
+  ok("todo recurso do catálogo existe mesmo no bot", semProva.map((r) => `${r.chave} → ${r.prova}`), []);
+
+  const categorias = new Set(CATEGORIAS.map((c) => c.chave));
+  ok("todo recurso mora numa categoria que existe",
+    RECURSOS.filter((r) => !categorias.has(r.categoria)).map((r) => r.chave), []);
+  ok("nenhuma categoria vazia",
+    CATEGORIAS.filter((c) => recursosDa(c.chave).length === 0).map((c) => c.chave), []);
+
+  ok("todo plano é um dos três",
+    RECURSOS.filter((r) => !["gratis", "pago", "ambos"].includes(r.plano)).map((r) => r.chave), []);
+
+  /* PT e EN escritos à mão, os dois. Um campo vazio some da página em silêncio
+     -- e some justamente para o leitor de um dos dois idiomas, que é quem
+     nunca vai avisar. */
+  const buracos = [];
+  for (const r of RECURSOS) {
+    for (const campo of ["nome", "oque", "como"]) {
+      for (const l of ["pt", "en"]) {
+        if (!String(r[campo]?.[l] || "").trim()) buracos.push(`${r.chave}.${campo}.${l}`);
+      }
+    }
+  }
+  ok("nenhum texto do catálogo está faltando", buracos, []);
+
+  /* Descrição igual nos dois idiomas é PT copiado no lugar do EN. Nome e
+     "como" podem coincidir de verdade (/mylanguage é /mylanguage), a
+     descrição não. */
+  ok("nenhuma descrição ficou em português no lado inglês",
+    RECURSOS.filter((r) => r.oque.pt === r.oque.en).map((r) => r.chave), []);
+
+  ok("o número é a posição na lista", numeroDe(RECURSOS[0].chave), 1);
+  ok("e o último é o total", numeroDe(RECURSOS.at(-1).chave), RECURSOS.length);
+  ok("chave que não existe não tem número", numeroDe("nao-existe"), 0);
+
+  /* ---- a página gerada ---- */
+  const html = paginaDeRecursos();
+  ok("a página tem um cartão por recurso", (html.match(/<article class="rec"/g) || []).length, RECURSOS.length);
+  ok("e uma seção por categoria", (html.match(/<section class="grupo"/g) || []).length, CATEGORIAS.length);
+
+  const forasDaPagina = RECURSOS.filter((r) => !html.includes(`>${r.nome.pt}<`) || !html.includes(`>${r.nome.en}<`));
+  ok("todo recurso aparece na página nos dois idiomas", forasDaPagina.map((r) => r.chave), []);
+
+  /* A busca tira o acento do que se digita. Se o texto varrido guardasse o
+     acento, procurar "traducao" não acharia "tradução" -- e a busca só
+     serviria para quem já sabe escrever o nome exato do recurso. */
+  const comAcento = (html.match(/data-busca="([^"]*)"/g) || [])
+    .filter((a) => /[\u0300-\u036f\u00c0-\u00ff]/.test(a));
+  ok("o texto que a busca varre não tem acento", comAcento, []);
+
+  verdade("a página avisa que é gerada", /ESTA PÁGINA É GERADA/.test(html));
+  verdade("e o botão de convite carrega as permissões certas", html.includes("327223209040"));
+
+  /* O arquivo no disco é o que o GitHub Pages serve. Se ele estiver atrás do
+     catálogo, o site vende a versão de ontem. */
+  const noDisco = existsSync(HTML_RECURSOS) ? readFileSync(HTML_RECURSOS, "utf8") : "";
+  verdade("cyron/recursos.html está em dia (rode: node discord-bot-gateway/fazer-recursos.js)",
+    noDisco === html);
+
+  /* ---- a porta do catálogo dentro do Discord ---- */
+  verdade("o menu de ajuda tem o tema do catálogo", !!TEMAS.tudo);
+
+  /* Acima de 400 caracteres a tradução é feita e jogada fora, porque não cabe
+     no cache -- e o cartão passaria a ser retraduzido a cada clique, para
+     sempre. É custo que não aparece em teste nenhum, só na fatura. */
+  verdade(`o tema do catálogo cabe no cache (${TEMAS.tudo.texto.length} caracteres)`,
+    TEMAS.tudo.texto.length <= 400);
+
+  for (const c of CATEGORIAS) {
+    verdade(`o tema do catálogo cita ${c.nome.pt}`, TEMAS.tudo.texto.includes(c.nome.pt));
+  }
+  verdade("e diz o total certo", TEMAS.tudo.texto.includes(String(RECURSOS.length)));
+
+  /* O endereço vai no botão, e não dentro do texto: texto passa pelo tradutor,
+     e tradutor de máquina quebra URL. */
+  const fonteAjuda = fonte.slice(fonte.indexOf("async function telaDeAjuda"),
+    fonte.indexOf("async function telaDeAjuda") + 1600);
+  verdade("o catálogo é um botão de link na tela de ajuda",
+    /style: 5[^]{0,200}recursos\.html/.test(fonteAjuda));
+  verdade("e o endereço não está dentro de nenhum texto traduzido",
+    !/(title|description|texto):[^]{0,200}recursos\.html/.test(fonte));
 }
 
 /* Crash não pode engolir o placar.
