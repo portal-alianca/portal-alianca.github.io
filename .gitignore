@@ -14,3 +14,7 @@
 node_modules/
 .DS_Store
 *.log
+
+# O link para o node_modules da máquina, que eu recrio a cada sessão para
+# rodar a bateria. Ele entrou no repositório duas vezes por um "git add -A".
+discord-bot-gateway/node_modules
