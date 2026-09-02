@@ -3916,8 +3916,19 @@ function conferirCartao(onde, embed, componentes = []) {
 
   /* ---- a página gerada ---- */
   const html = paginaDeRecursos();
-  ok("a página tem um cartão por recurso", (html.match(/<article class="rec"/g) || []).length, RECURSOS.length);
+  ok("a página tem uma linha por recurso", (html.match(/<div class="item"/g) || []).length, RECURSOS.length);
   ok("e uma seção por categoria", (html.match(/<section class="grupo"/g) || []).length, CATEGORIAS.length);
+
+  /* Todo detalhe nasce fechado. Um `hidden` esquecido devolveria a página à
+     parede de texto -- que é exatamente o defeito que ela veio consertar. */
+  ok("todo detalhe começa fechado", (html.match(/<div class="detalhe" hidden>/g) || []).length, RECURSOS.length);
+  ok("e toda linha se anuncia fechada", (html.match(/aria-expanded="false"/g) || []).length, RECURSOS.length);
+
+  /* Só os do plano pago são marcados: 26 selos "Grátis" repetidos somem com
+     os quatro que importam. */
+  ok("só o plano pago ganha marca na linha",
+    (html.match(/<span class="pago">/g) || []).length,
+    RECURSOS.filter((r) => r.plano === "pago").length);
 
   const forasDaPagina = RECURSOS.filter((r) => !html.includes(`>${r.nome.pt}<`) || !html.includes(`>${r.nome.en}<`));
   ok("todo recurso aparece na página nos dois idiomas", forasDaPagina.map((r) => r.chave), []);
