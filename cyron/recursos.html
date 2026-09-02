@@ -69,9 +69,15 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 
    Ficam grudados embaixo da barra: numa lista de 30 itens, filtrar e ter
    que subir de volta para trocar o filtro é o mesmo que não ter filtro. */
-.filtros{position:sticky; top:60px; z-index:20; background:rgba(11,13,17,.92); backdrop-filter:blur(10px);
+/* Opaco, e não translúcido como a barra de cima: aqui passa um <h2> de 30px
+   por baixo, e a 8% de transparência ele aparecia como um borrão atrás dos
+   filtros -- parecia defeito de renderização. */
+.filtros{position:sticky; top:60px; z-index:20; background:var(--fundo);
   border-bottom:1px solid var(--borda); margin-top:40px; padding:14px 0}
 .filtros .env{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+/* O separador antes do filtro de plano: ele não é mais uma categoria, e sem
+   isso a fileira lia como se fosse. */
+.sep{width:1px; align-self:stretch; background:var(--borda-viva); margin:2px 4px}
 .busca{flex:1 1 190px; min-width:150px; display:flex; align-items:center; gap:8px;
   background:var(--painel); border:1px solid var(--borda-viva); border-radius:10px; padding:0 12px}
 .busca input{flex:1; background:none; border:0; color:var(--texto); font:15px/1 inherit; padding:11px 0; outline:none; min-width:0}
@@ -83,13 +89,18 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 .chip[aria-pressed="true"]{background:var(--ambar); border-color:var(--ambar); color:#1a1206}
 @media (max-width:760px){
   .filtros{top:auto; position:static}
-  .chips{width:100%; overflow-x:auto; scrollbar-width:none; padding-bottom:2px}
-  .chips::-webkit-scrollbar{display:none}
+  .chips{width:100%; padding-bottom:2px}
+  /* No telefone os chips quebram em três fileiras, e o separador cai sozinho
+     no começo de uma delas -- vira um risco solto que não separa nada. */
+  .sep{display:none}
 }
 
 /* ---------- os grupos ---------- */
 main{padding:0 0 90px}
-.grupo{padding:56px 0 0}
+/* A barra de cima mais os filtros somam ~190px de coisa grudada no topo. Sem
+   isto, clicar num link para #viver deixaria o título da categoria embaixo
+   deles -- a página pularia para o lugar certo e mostraria o errado. */
+.grupo{padding:56px 0 0; scroll-margin-top:200px}
 .grupo .cab{max-width:680px}
 .grupo h2{font-size:clamp(22px,3vw,30px); display:flex; align-items:center; gap:11px; flex-wrap:wrap}
 .grupo h2 .emoji{font-size:.95em}
@@ -191,8 +202,7 @@ html[lang="en"] [data-en]{display:revert}
       <button type="button" class="chip" data-cat="viver" aria-pressed="false">🎮 <span data-pt>Viver junto</span><span data-en>Living together</span></button>
       <button type="button" class="chip" data-cat="mandar" aria-pressed="false">⚙️ <span data-pt>Quem administra</span><span data-en>Running it</span></button>
       <button type="button" class="chip" data-cat="confiar" aria-pressed="false">🛡️ <span data-pt>Confiança</span><span data-en>Trust</span></button>
-    </div>
-    <div class="chips" role="group">
+      <span class="sep" aria-hidden="true"></span>
       <button type="button" class="chip" data-plano="gratis" aria-pressed="false"><span data-pt>Só o que é grátis</span><span data-en>Free only</span></button>
     </div>
   </div>
