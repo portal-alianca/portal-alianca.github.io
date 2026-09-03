@@ -59,6 +59,33 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl machine list || true
 
+      # A frase exata com que ele morre -- e SO' ela.
+      #
+      # O `fly logs` inteiro nao pode aparecer aqui: repositorio publico, e o
+      # log carrega nome de servidor de cliente, id de pessoa e corpo de
+      # resposta do banco. Mas as duas unicas mensagens de morte na partida
+      # sao escritas por mim, e nao tem dado de ninguem dentro:
+      #
+      #   FATAL: nao consegui entrar no Discord: <o que o Discord respondeu>
+      #   Faltou a variavel de ambiente <NOME>
+      #
+      # Entao o filtro e' uma lista fechada dessas duas, cortada em 200
+      # caracteres. Tudo o mais e' jogado fora antes de virar saida. Filtro
+      # frouxo aqui vazaria dado de cliente num lugar indexavel; por isso ele
+      # e' por prefixo exato, e nao por palavra solta.
+      - name: O que ele diz ao morrer
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          bruto=$(timeout 30 flyctl logs --no-tail 2>/dev/null || true)
+          echo "$bruto" \
+            | grep -E "(FATAL: nao consegui entrar no Discord|Faltou a variavel de ambiente)" \
+            | cut -c1-200 \
+            | sort -u \
+            | head -5 \
+            || echo "Nenhuma mensagem de morte na partida nos ultimos registros."
+
       # Quais segredos existem, e desde quando.
       #
       # `secrets list` mostra NOME, DIGEST e data -- nunca o valor. Isso separa
