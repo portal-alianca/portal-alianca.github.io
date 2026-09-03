@@ -11419,35 +11419,61 @@ async function listaDeComandos(guildId) {
    mesmo processo que os carrega, nao existe janela em que o Discord entrega
    pra ninguem -- quem apaga e' exatamente quem passa a atender.
 
-   Faco isso uma vez por partida e so' se ainda estiver setado. Se o PATCH
-   falhar, digo alto: o sintoma de falhar em silencio seria "todos os comandos
-   pararam" horas depois, sem nada obvio ligando uma coisa a outra. */
+   Faco isso ao subir E de hora em hora.
+
+   Era so' ao subir, e isso pressupunha que a URL so' pode aparecer enquanto eu
+   estou fora do ar. Nao e' verdade: ela e' um campo do Portal do
+   Desenvolvedor, na MESMA pagina onde se poe a politica de privacidade e os
+   termos. Quem for ali por outro motivo e salvar com aquele campo preenchido
+   derruba, naquele segundo, TODA interacao -- comando, botao e menu, em todos
+   os servidores -- e o bot continua postando cartao normalmente, porque postar
+   e' REST e nao depende do gateway.
+
+   O sintoma e' "nem uma funcao ta indo" com o bot aparentemente vivo. Sem esta
+   ronda ele so' se cura no proximo reinicio, que pode nao vir em dias.
+
+   Uma pergunta por hora, e PATCH so' se estiver setado. */
 const API = "https://discord.com/api/v10";
 
 async function soltarAsInteracoes() {
-  if (!umaVezPorProcesso("soltar-interacoes")) return;
   const cabecalho = { Authorization: `Bot ${TOKEN}`, "Content-Type": "application/json" };
   try {
-    const r = await fetch(`${API}/applications/@me`, { headers: cabecalho });
+    const r = await fetch(`${API}/applications/@me`, comPrazo({ headers: cabecalho }));
     if (!r.ok) throw new Error(`GET ${r.status} ${(await r.text()).slice(0, 200)}`);
     const app = await r.json();
 
-    if (!app.interactions_endpoint_url) {
-      console.log("interações: já chegam pelo gateway (nenhum endpoint HTTP configurado)");
-      return;
-    }
+    if (!app.interactions_endpoint_url) return;
 
     console.log(`interações: tirando a trava de HTTP (${app.interactions_endpoint_url})`);
-    const p = await fetch(`${API}/applications/@me`, {
+    const p = await fetch(`${API}/applications/@me`, comPrazo({
       method: "PATCH",
       headers: cabecalho,
       body: JSON.stringify({ interactions_endpoint_url: null }),
-    });
+    }));
     if (!p.ok) throw new Error(`PATCH ${p.status} ${(await p.text()).slice(0, 300)}`);
     console.log("interações: trava removida; comandos e botões agora vêm direto pro bot");
+
+    /* Isto merece cartao, e nao so' linha de log: enquanto a URL esteve la',
+       ninguem conseguiu clicar em nada. E' a falha mais cara que existe aqui,
+       e a unica que nao deixa rastro nenhum sozinha -- o bot parece vivo. */
+    await avisarNoPainel(CANAL_ERROS, {
+      embeds: [{
+        color: 0xE03E3E,
+        title: "🚨 Achei a trava de HTTP ligada — e tirei",
+        description:
+          "Enquanto o aplicativo tem um **Interactions Endpoint URL**, o Discord não " +
+          "entrega interação nenhuma pelo gateway: todo comando, botão e menu vira um " +
+          "POST para aquele endereço. Postar cartão continua funcionando, então o bot " +
+          "parece vivo — e **nada responde ao clique**.\n\n" +
+          `Estava apontando para \`${String(app.interactions_endpoint_url).slice(0, 150)}\`.\n\n` +
+          "Esse campo fica na mesma página do Portal do Desenvolvedor onde se põem a " +
+          "política de privacidade e os termos.",
+        timestamp: new Date().toISOString(),
+      }],
+    }).catch(() => {});
   } catch (e) {
     console.error("interações: NÃO consegui limpar o endpoint HTTP:", e?.message || e);
-    console.error("interações: os comandos continuam indo pra Edge Function. Nada quebrou, mas o bot segue cego pra botão.");
+    console.error("interações: enquanto isso, nenhum botão e nenhum comando chega até mim.");
   }
 }
 
@@ -11617,6 +11643,9 @@ let ultimaHora = 0;
 async function deHoraEmHora() {
   if (Date.now() - ultimaHora < 60 * 60 * 1000) return;
   ultimaHora = Date.now();
+  /* A trava de HTTP entra na ronda da hora: ela pode ser ligada a qualquer
+     momento no Portal, e enquanto estiver ligada nenhum clique chega aqui. */
+  await soltarAsInteracoes().catch((e) => console.error("interações: ronda falhou:", e?.message || e));
   await olharAsCotas().catch((e) => console.error("cota: passada falhou:", e?.message || e));
   await talvezOCartaoDoDia().catch((e) => console.error("diário: cartão falhou:", e?.message || e));
 }
