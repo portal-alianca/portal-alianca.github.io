@@ -1,0 +1,10 @@
+# O que NAO entra na imagem.
+#
+# node_modules e' reinstalado dentro da imagem pelo `npm install --omit=dev`
+# logo acima: copiar o de fora traria as dependencias de desenvolvimento e,
+# pior, binarios compilados para outro sistema.
+node_modules
+
+# Historia do git nao serve para rodar, e pesa.
+.git
+.gitignore
