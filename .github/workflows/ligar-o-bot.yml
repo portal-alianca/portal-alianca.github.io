@@ -1,0 +1,79 @@
+# Ligar a máquina do bot, e ficar olhando se ela FICA ligada.
+#
+# O passo de ligar que mora no deploy corre contra a própria substituição da
+# máquina: o flyd responde "machine getting replaced, refusing to start" e o
+# deploy termina verde com o bot parado. Aqui não há deploy nenhum em curso,
+# então o start acontece limpo.
+#
+# E ligar não é o fim: se o processo morre na partida, o Fly para a máquina de
+# novo em segundos. Por isso este workflow espera e olha DUAS vezes depois de
+# ligar. "Ligou" é uma coisa; "continua ligada meio minuto depois" é outra, e é
+# a segunda que responde se o bot está de pé.
+#
+# O histórico de eventos no fim mostra o código de saída, se houver. É a única
+# testemunha de uma morte na partida -- e ela some na próxima troca de imagem.
+#
+# Como sempre neste repositório público: estado e eventos, nunca `fly logs`.
+
+name: Ligar o bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ligar:
+    name: fly machine start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Conferir se o segredo existe
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Falta o secret FLY_API_TOKEN."
+            exit 1
+          fi
+
+      - name: Ligar, esperar, e olhar duas vezes
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -u
+          maquinas() {
+            flyctl machine list --json 2>/dev/null \
+              | python3 -c 'import json,sys; [print(m["id"], m.get("state")) for m in json.load(sys.stdin)]'
+          }
+
+          echo "== antes =="
+          maquinas
+
+          # Até três tentativas: a recusa por "getting replaced" é temporária, e
+          # desistir na primeira foi o que deixou a máquina parada no deploy.
+          for tentativa in 1 2 3; do
+            parados=$(maquinas | awk '$2 != "started" {print $1}')
+            [ -z "$parados" ] && break
+            for id in $parados; do
+              echo "-- tentativa $tentativa: ligando $id"
+              flyctl machine start "$id" || true
+            done
+            sleep 10
+          done
+
+          echo "== logo depois de ligar =="
+          maquinas
+
+          # Meio minuto é bem mais do que um processo leva para morrer na
+          # partida. Se ela ainda estiver de pé aqui, subiu de verdade.
+          sleep 30
+          echo "== trinta segundos depois =="
+          maquinas
+
+          echo "== historico, com o codigo de saida se houver =="
+          for id in $(maquinas | awk '{print $1}'); do
+            echo "----- $id -----"
+            flyctl machine status "$id" || true
+          done
