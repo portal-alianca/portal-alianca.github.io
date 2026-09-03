@@ -78,13 +78,30 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
-          bruto=$(timeout 30 flyctl logs --no-tail 2>/dev/null || true)
-          echo "$bruto" \
-            | grep -E "(FATAL: nao consegui entrar no Discord|Faltou a variavel de ambiente)" \
-            | cut -c1-200 \
-            | sort -u \
-            | head -5 \
-            || echo "Nenhuma mensagem de morte na partida nos ultimos registros."
+          # O `|| echo` da primeira versao estava preso ao `head`, que NUNCA
+          # falha -- entao o passo terminou sem imprimir uma linha e sem dizer
+          # que nao achou nada. Mesmo defeito do id da maquina, duas horas
+          # antes. Aqui a decisao e' explicita: guarda, conta, e fala.
+          timeout 40 flyctl logs --no-tail > /tmp/bruto.txt 2>/tmp/erro.txt || true
+          linhas=$(wc -l < /tmp/bruto.txt || echo 0)
+          echo "O log devolveu $linhas linha(s)."
+          if [ "$linhas" -eq 0 ]; then
+            echo "Nao consegui ler log nenhum. O flyctl disse:"
+            cut -c1-200 /tmp/erro.txt | head -5
+            exit 0
+          fi
+
+          # Lista fechada de linhas que NAO tem dado de ninguem dentro: as duas
+          # que eu escrevo ao morrer, e os erros que o proprio Node gera. Nome
+          # de servidor, id de pessoa e resposta do banco nunca casam com
+          # nenhuma delas, e e' por isso que isto pode aparecer num log publico.
+          achado=$(grep -E "(FATAL: nao consegui entrar no Discord|Faltou a variavel de ambiente|Error \[ERR_|SyntaxError|ReferenceError|TypeError: |Cannot find (module|package))" /tmp/bruto.txt \
+            | cut -c1-200 | sort -u | head -8 || true)
+          if [ -z "$achado" ]; then
+            echo "Nenhuma linha de morte conhecida no que eu li."
+          else
+            echo "$achado"
+          fi
 
       # Quais segredos existem, e desde quando.
       #
