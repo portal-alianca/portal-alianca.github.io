@@ -46,3 +46,43 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only
+
+      # Deploy verde com o bot desligado.
+      #
+      # `fly deploy` NAO liga uma maquina que ja estava parada: ele troca a
+      # imagem e respeita o estado em que a encontrou. Uma vez que a maquina
+      # pare -- por queda repetida, por parada na mao, pelo que for --, todo
+      # deploy seguinte passa verde atualizando um bot desligado, e o painel
+      # do GitHub jura que esta tudo certo.
+      #
+      # Foi exatamente isso: quatro deploys seguidos em verde, e o Discord
+      # dizendo "o aplicativo nao respondeu" em tudo, porque nao havia
+      # processo nenhum. O histórico da maquina mostrava `stopped/update` e
+      # nenhum `start` depois.
+      #
+      # `machine start` numa maquina ja ligada devolve erro; o `|| true` e' por
+      # isso, e nao para esconder falha.
+      - name: Ligar o que estiver parado
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          ids=$(flyctl machine list --json 2>/dev/null \
+            | python3 -c 'import json,sys; print(" ".join(m["id"] for m in json.load(sys.stdin) if m.get("state") != "started"))' \
+            || true)
+          if [ -z "$ids" ]; then
+            echo "Nenhuma maquina parada."
+          else
+            for id in $ids; do
+              echo "Ligando $id"
+              flyctl machine start "$id" || true
+            done
+          fi
+
+      # O estado final no log do deploy, sempre. Sem isto, "deu certo" e' uma
+      # inferencia; com isto, e' uma linha que se le.
+      - name: Como ficou
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl status || true
