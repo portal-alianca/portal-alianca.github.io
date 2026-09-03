@@ -4124,6 +4124,45 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("primeira vez não vira morte", /parado === null/.test(contar));
 }
 
+/* ====== a trava de HTTP ======
+
+   Enquanto o aplicativo tem um Interactions Endpoint URL configurado, o
+   Discord não entrega interação nenhuma pelo gateway: comando, botão e menu
+   viram POST para aquele endereço. Postar cartão continua funcionando, porque
+   postar é REST -- então o bot parece vivo e NADA responde ao clique.
+
+   A limpeza existia, mas rodava uma vez por partida. Isso pressupõe que a URL
+   só pode aparecer com o bot fora do ar, e não é verdade: o campo fica na
+   mesma página do Portal onde se põem a política de privacidade e os termos.
+   Quem salvar aquela página derruba tudo naquele segundo, e o bot só se cura
+   no próximo reinício -- que pode não vir em dias. */
+{
+  const i = fonte.indexOf("async function soltarAsInteracoes");
+  const corpo = fonte.slice(i, fimDoBloco(fonte.indexOf("{", i)));
+
+  verdade("a trava de HTTP é conferida mais de uma vez por partida",
+    !/umaVezPorProcesso\("soltar-interacoes"\)/.test(corpo));
+  verdade("e a conferência entra na ronda de hora em hora",
+    /soltarAsInteracoes\(\)[^]{0,120}deHoraEmHora|deHoraEmHora[^]{0,400}soltarAsInteracoes\(\)/
+      .test(fonte));
+  verdade("continua sendo conferida ao subir também",
+    /clientReady[^]{0,1600}soltarAsInteracoes\(\)/.test(fonte));
+
+  /* PATCH só quando há o que apagar: sem isto seria uma escrita por hora na
+     configuração do aplicativo, para sempre, sem motivo. */
+  verdade("só mexe se estiver setado", /if \(!app\.interactions_endpoint_url\) return;/.test(corpo));
+
+  /* Achar a trava ligada não pode virar uma linha de log que ninguém lê: é a
+     única falha aqui que não deixa rastro nenhum sozinha. */
+  verdade("achar a trava ligada vira cartão no canal de erros",
+    /avisarNoPainel\(CANAL_ERROS/.test(corpo));
+  verdade("e o cartão diz o endereço que estava lá",
+    /interactions_endpoint_url\)\.slice/.test(corpo));
+
+  /* Ela também não pode pendurar: é uma ida ao Discord dentro da ronda. */
+  ok("as duas idas ao Discord têm prazo", (corpo.match(/comPrazo\(/g) || []).length, 2);
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
