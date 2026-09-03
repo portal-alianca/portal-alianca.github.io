@@ -4163,6 +4163,56 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("as duas idas ao Discord têm prazo", (corpo.match(/comPrazo\(/g) || []).length, 2);
 }
 
+/* ====== o que o index.js importa tem que existir NA IMAGEM ======
+
+   Isto derrubou o bot por uma noite inteira, e nenhum teste viu.
+
+   Eu parti o código em dois arquivos -- index.js passou a importar
+   catalogo.js -- e o Dockerfile continuou com `COPY index.js ./`, uma lista
+   de um nome só. A imagem subiu sem o segundo arquivo e o Node morreu na
+   primeira linha:
+
+     Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/catalogo.js'
+
+   Por que nada pegou: o deploy passa verde porque constrói e envia a imagem,
+   não roda o processo. Os testes passam porque AQUI o arquivo existe -- eles
+   rodam no disco do repositório, não dentro da imagem. E no Discord o sintoma
+   foi "o aplicativo não respondeu", que parece lentidão.
+
+   A distância entre "o arquivo existe" e "o arquivo existe onde o bot roda"
+   é exatamente onde este defeito morou. Estes testes fecham essa distância
+   sem precisar construir imagem nenhuma. */
+{
+  const dockerfile = readFileSync(`${aqui}/Dockerfile`, "utf8");
+
+  /* Todo import relativo do index.js tem que ser um arquivo que existe. */
+  const importados = [...fonte.matchAll(/from\s+"(\.\/[^"]+)"/g)].map((m) => m[1]);
+  verdade("o index.js importa pelo menos um arquivo meu", importados.length > 0);
+  const sumidos = importados.filter((rel) => !existsSync(`${aqui}/${rel.slice(2)}`));
+  ok("todo arquivo que o index.js importa existe", sumidos, []);
+
+  /* E o Dockerfile não pode escolher arquivos a dedo: lista de nomes é uma
+     promessa que envelhece a cada arquivo novo, e envelheceu em silêncio. */
+  const copias = [...dockerfile.matchAll(/^COPY\s+(.+)$/gm)]
+    .map((m) => m[1].trim())
+    .filter((linha) => !linha.startsWith("package.json"));
+  verdade("o Dockerfile copia a pasta inteira, e não uma lista de arquivos",
+    copias.length === 1 && /^\.\s+\.\/?$/.test(copias[0]));
+
+  /* Copiar a pasta inteira só é seguro com o node_modules de fora: o de
+     dentro é reinstalado sem as dependências de desenvolvimento, e o de fora
+     traz binário compilado para outro sistema. */
+  const ignorados = readFileSync(`${aqui}/.dockerignore`, "utf8")
+    .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  verdade("o node_modules de fora fica fora da imagem", ignorados.includes("node_modules"));
+
+  /* O catálogo pelo nome, porque foi ele que faltou. Um teste que fala do
+     caso concreto sobrevive a refatoração melhor do que um que só fala da
+     regra. */
+  verdade("o catalogo.js entra na imagem",
+    existsSync(`${aqui}/catalogo.js`) && !ignorados.includes("catalogo.js"));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
