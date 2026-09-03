@@ -59,6 +59,21 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl machine list || true
 
+      # Quais segredos existem, e desde quando.
+      #
+      # `secrets list` mostra NOME, DIGEST e data -- nunca o valor. Isso separa
+      # as duas unicas saidas com codigo 1 que existem no bot: falta de
+      # variavel de ambiente (sai em menos de um segundo, sem tocar a rede) e
+      # login recusado pelo Discord (leva segundos, porque tenta conectar).
+      #
+      # A data tambem conta se alguem trocou um segredo recentemente, que e' a
+      # pergunta seguinte quando o login e' recusado.
+      - name: Quais segredos existem
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl secrets list || true
+
       # Por que a máquina parou.
       #
       # `status` diz que ela está parada; só o histórico de eventos diz por
