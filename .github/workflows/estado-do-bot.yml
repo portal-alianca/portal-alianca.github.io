@@ -73,7 +73,20 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
-          for id in $(flyctl machine list --json 2>/dev/null | grep -o '"id":"[a-z0-9]*"' | cut -d'"' -f4 | sort -u); do
-            echo "===== máquina $id ====="
+          # O id sai do JSON por um parser de JSON, e nao por grep: o flyctl
+          # imprime `"id": "abc"` com espaco depois dos dois-pontos, e a
+          # primeira versao disto -- um grep que exigia `"id":"abc"` -- nao
+          # achou nada e o passo terminou VERDE sem imprimir uma linha. Passo
+          # que falha em silencio e' pior que passo nenhum: aqui ele custou
+          # uma ida e volta inteira numa noite de bot caido.
+          ids=$(flyctl machine list --json 2>/dev/null \
+            | python3 -c 'import json,sys; print(" ".join(m["id"] for m in json.load(sys.stdin)))' \
+            || true)
+          if [ -z "$ids" ]; then
+            echo "Nao consegui listar as maquinas para pedir o historico."
+            exit 0
+          fi
+          for id in $ids; do
+            echo "===== maquina $id ====="
             flyctl machine status "$id" || true
           done
