@@ -37,6 +37,24 @@ jobs:
             exit 1
           fi
 
+      # Segredo gravado nao e' segredo aplicado.
+      #
+      # Quando a maquina esta parada, `fly secrets set` guarda o valor novo
+      # mas nao consegue entrega-lo -- o `secrets list` avisa com uma linha
+      # facil de nao ver: "There is 1 secret not deployed".
+      #
+      # Foi assim que uma troca de token correta nao consertou nada: o valor
+      # certo estava no Fly, e a maquina continuava subindo com o antigo,
+      # morrendo com codigo 1 a cada cinco segundos.
+      #
+      # Este comando aplica o que estiver pendente. Ele nao le nem pede valor
+      # nenhum -- so' manda o Fly entregar o que ja esta la'.
+      - name: Aplicar segredo que ficou pendente
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl secrets deploy || true
+
       - name: Ligar, esperar, e olhar duas vezes
         working-directory: discord-bot-gateway
         env:
