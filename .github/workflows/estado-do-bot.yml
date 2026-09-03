@@ -1,0 +1,60 @@
+# Perguntar ao Fly como está a máquina do bot -- sem publicar nada.
+#
+# Isto existe porque houve uma noite inteira de "nem uma função tá indo" sem
+# nenhuma forma de saber, daqui, se o processo estava de pé. O deploy tinha
+# passado, o código subia limpo, e mesmo assim nada respondia. Faltava um fato:
+# a máquina está rodando, ou está reiniciando em círculo?
+#
+# POR QUE SÓ O ESTADO, E NUNCA O LOG
+#
+# Este repositório é PÚBLICO, e log de Actions em repositório público é
+# público. O `fly logs` do bot carrega nome de servidor de cliente, id de
+# pessoa e corpo de resposta do banco -- exatamente o que a página de
+# privacidade promete não espalhar. Um comando a mais aqui, escrito com pressa
+# num dia de bot caído, vazaria dados de quem confiou no produto num lugar
+# indexável pelo Google e impossível de despublicar.
+#
+# `status` e `machine list` mostram id de máquina, região, imagem e estado.
+# Não há dado de ninguém neles. É a única coisa que este arquivo pode fazer, e
+# é de propósito.
+#
+# Roda só na mão: aba Actions -> "Estado da máquina do bot" -> Run workflow.
+# Não faz deploy, não reinicia nada, não muda nada.
+
+name: Estado da máquina do bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  estado:
+    name: fly status
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Conferir se o segredo existe
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Falta o secret FLY_API_TOKEN."
+            exit 1
+          fi
+
+      # `|| true` nos dois: uma máquina destruída faz o flyctl sair com erro, e
+      # é justamente esse o caso que se quer enxergar. Falhar o job aqui
+      # esconderia a resposta atrás de um X vermelho.
+      - name: Estado do app
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl status || true
+
+      - name: Máquinas, uma a uma
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl machine list || true
