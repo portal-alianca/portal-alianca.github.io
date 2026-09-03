@@ -58,3 +58,22 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl machine list || true
+
+      # Por que a máquina parou.
+      #
+      # `status` diz que ela está parada; só o histórico de eventos diz por
+      # quê -- e é a diferença entre "estourou a memória" e "o processo saiu
+      # sozinho no primeiro segundo", que pedem consertos opostos.
+      #
+      # O histórico é infraestrutura: código de saída, sinal, quem pediu a
+      # parada. Não há dado de cliente nele, e é por isso que ele pode
+      # aparecer aqui enquanto o `fly logs` não pode.
+      - name: Por que ela parou
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          for id in $(flyctl machine list --json 2>/dev/null | grep -o '"id":"[a-z0-9]*"' | cut -d'"' -f4 | sort -u); do
+            echo "===== máquina $id ====="
+            flyctl machine status "$id" || true
+          done
