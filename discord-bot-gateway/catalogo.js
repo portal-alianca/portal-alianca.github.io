@@ -160,6 +160,18 @@ export const RECURSOS = [
     prova: "espelharMensagem",
   },
   {
+    chave: "reacoes",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "As reações atravessam as salas", en: "Reactions cross the rooms" },
+    como: { pt: "Sozinho, é só reagir", en: "On its own — just react" },
+    oque: {
+      pt: "Um 👍 dado na sala em árabe aparece na sala em português, somado com os das outras. Quem escreveu fica sabendo que gostaram — antes, a reação morria na língua de quem reagiu, longe justamente de quem ela existia para alcançar.",
+      en: "A 👍 given in the Arabic room shows up in the Portuguese one, added to the rest. Whoever wrote the line finds out people liked it — before, the reaction died in the reactor's own language, away from the one person it existed to reach.",
+    },
+    prova: "atravessarReacoes",
+  },
+  {
     chave: "replica",
     categoria: "traduzir",
     plano: "pago",

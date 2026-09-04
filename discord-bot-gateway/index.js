@@ -1870,6 +1870,219 @@ async function procurarFamilia(msgId) {
   }
 }
 
+/* ---------------- as reacoes atravessam as linguas ----------------
+
+   Uma reacao e' o gesto mais barato que existe numa conversa, e o espelho a
+   partia em sete: quem reagia em #chat-ar era visto so' por quem lia arabe. O
+   autor, que escreveu em #chat-pt, nunca ficava sabendo -- e ele e' justamente
+   quem a reacao existe para alcancar.
+
+   O que da' para fazer difere entre as copias e o original, e a diferenca nao
+   e' escolha minha:
+
+   - As COPIAS sao mensagens de webhook. Da' para edita-las, entao elas ganham
+     a soma de verdade no rodape: "👍 5 · 🔥 2", juntando todas as salas.
+   - A ORIGINAL e' mensagem de gente. Bot nao edita mensagem de ninguem, e nao
+     existe API para reagir no lugar de outra pessoa. O unico sinal possivel
+     ali e' o proprio bot reagir -- e por isso ele so' faz isso com emoji que
+     NINGUEM daquela sala usou. Se alguem ali ja' reagiu 👍, a reacao dele ja'
+     aparece, e somar a minha em cima inflaria a conta.
+
+   E' sinal, nao contagem. Assumido. */
+const MAX_REACOES_NO_PE = 6;
+
+/* O rodape que cada copia esta' mostrando agora.
+
+   Existe por causa de uma colisao entre dois recursos que nao se conhecem: a
+   fala seguinte da mesma pessoa e' EMENDADA no cartao de cima, e o montar()
+   que reescreve esse cartao nao sabe de reacao nenhuma -- ele devolveria o
+   embed sem rodape e apagaria a soma. O sintoma seria o pior tipo: a contagem
+   aparece, a pessoa escreve mais uma linha, e a contagem some sozinha.
+
+   Guardo so' na memoria, e por isso o pior caso de um reinicio e' o rodape
+   voltar na proxima reacao daquela fala -- que e' exatamente o que
+   acontecia antes de existir rodape. */
+const peDoCartao = new Map(); // id da copia -> a linha que esta' no rodape dela
+const MAX_PES_LEMBRADOS = 2000;
+
+function guardarPe(msgId, linha) {
+  if (linha) peDoCartao.set(msgId, linha);
+  else peDoCartao.delete(msgId);
+  while (peDoCartao.size > MAX_PES_LEMBRADOS) {
+    peDoCartao.delete(peDoCartao.keys().next().value);
+  }
+}
+
+/* Soma as reacoes de todas as salas, do mais usado para o menos.
+
+   Pura de proposito: e' aritmetica com empate a desempatar e um teto, e
+   conferir isso subindo bot custaria oito pessoas reagindo em cinco salas. */
+function somarReacoes(porSala) {
+  const total = new Map();
+  for (const sala of porSala || []) {
+    for (const { chave, quantos } of sala || []) {
+      if (!chave || !(quantos > 0)) continue;
+      total.set(chave, (total.get(chave) || 0) + quantos);
+    }
+  }
+  return [...total.entries()]
+    /* Empate desempatado pelo proprio emoji: sem isso a ordem do rodape
+       mudaria a cada edicao, e o cartao piscaria sozinho. */
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .slice(0, MAX_REACOES_NO_PE)
+    .map(([chave, quantos]) => ({ chave, quantos }));
+}
+
+/* O rodape do embed nao desenha emoji do servidor.
+
+   A `chave` e' o identificador com que se REAGE -- `<:pepe:123>` --, e ela
+   precisa dessa forma para o `react()` funcionar na original. No rodape, que
+   e' texto puro e nao desenha emoji de servidor nem markdown, ela apareceria
+   crua: "<:pepe:123> 3". Emoji do Unicode passa liso porque e' so' um
+   caractere; o do servidor vira lixo visual no meio da soma.
+
+   Entao o rodape mostra `:pepe: 3`, que tambem e' texto mas se le como emoji
+   e nao como codigo. E' o melhor que o rodape permite, e a alternativa --
+   esconder as reacoes de emoji proprio -- apagaria justamente as que mais
+   dizem alguma coisa num servidor com cara propria. */
+function comoSeLe(chave) {
+  const proprio = /^<a?:(\w+):\d+>$/.exec(String(chave || ""));
+  return proprio ? `:${proprio[1]}:` : String(chave || "");
+}
+
+function linhaDeReacoes(totais) {
+  return (totais || []).map((t) => `${comoSeLe(t.chave)} ${t.quantos}`).join("  ·  ");
+}
+
+/* O que uma mensagem contribui para a soma.
+
+   Duas coisas ficam de fora, por motivos diferentes:
+
+   - A reacao do proprio bot: ela e' o espelho de outra sala, e conta-la seria
+     contar a mesma pessoa duas vezes.
+   - Bandeira: neste produto bandeira e' BOTAO, nao opiniao. Quem poe 🇧🇷 esta
+     pedindo uma traducao no privado, e o bot tira a bandeira em seguida.
+     Espalhar isso pelas sete salas como se fosse gesto de conversa mostraria,
+     por alguns segundos, uma reacao que ninguem quis dar. */
+function reacoesDaMensagem(msg) {
+  const fora = [];
+  for (const [, r] of msg?.reactions?.cache || []) {
+    if (idiomaDaBandeira(r.emoji?.name)) continue;
+    const quantos = (r.count || 0) - (r.me ? 1 : 0);
+    if (quantos > 0) fora.push({ chave: r.emoji?.toString?.() || String(r.emoji?.name || ""), quantos });
+  }
+  return fora;
+}
+
+/* Uma passada por familia, e nao uma por reacao.
+
+   Cinco pessoas reagindo na mesma fala em dez segundos sao cinco eventos e
+   UMA edicao. Sem isto, uma mensagem popular viraria uma rajada de edicoes em
+   sete salas -- e o Discord limita edicao por canal. */
+const REACAO_ESPERA = 4000;
+const reacoesPendentes = new Map(); // primeiro id da familia -> timer
+
+function marcarParaSomar(familia) {
+  const chave = [...familia.values()][0];
+  if (!chave || reacoesPendentes.has(chave)) return;
+  reacoesPendentes.set(chave, setTimeout(() => {
+    reacoesPendentes.delete(chave);
+    atravessarReacoes(familia).catch((e) =>
+      console.error("reacoes: nao consegui somar:", e?.message || e));
+  }, REACAO_ESPERA));
+}
+
+async function atravessarReacoes(familia) {
+  const vivas = [];
+  for (const [canalId, msgId] of familia) {
+    const canal = await client.channels.fetch(canalId).catch(() => null);
+    const m = canal ? await canal.messages.fetch(msgId).catch(() => null) : null;
+    if (m) vivas.push(m);
+  }
+  if (!vivas.length) return;
+
+  const totais = somarReacoes(vivas.map(reacoesDaMensagem));
+  const linha = linhaDeReacoes(totais);
+
+  /* As copias levam a soma no rodape. O rodape estava livre: a assinatura mora
+     no corpo, porque la' o Discord desenha link e no rodape nao. */
+  const copias = vivas.filter((m) => m.webhookId);
+  if (copias.length) {
+    const guildId = vivas[0]?.guild?.id;
+    const servidor = guildId ? await servidorDoGuild(guildId).catch(() => null) : null;
+    const salas = servidor ? await canaisEspelho(servidor.id).catch(() => []) : [];
+    const enderecos = new Map(salas.map((s) => [s.canal_id, s.webhook]));
+    for (const m of copias) {
+      const url = enderecos.get(m.channelId);
+      const embed = m.embeds?.[0];
+      if (!url || !embed) continue;
+      /* Sem edicao quando nada mudou: o Discord marca a mensagem como editada,
+         e um cartao que diz "editado" sem ter mudado uma letra faz quem le
+         desconfiar do que esta lendo. */
+      if ((embed.footer?.text || "") === linha) { guardarPe(m.id, linha); continue; }
+      const deu = await clienteDoWebhook(url).editMessage(m.id, {
+        embeds: [{ ...embed.toJSON(), footer: linha ? { text: linha } : undefined }],
+      }).catch((e) => {
+        console.error("reacoes: nao consegui pintar o rodape:", e?.message || e);
+        return null;
+      });
+      /* So' anoto o que o Discord aceitou: guardar uma linha que a edicao
+         recusou faria a emenda seguinte repintar um rodape que nunca existiu. */
+      if (deu) guardarPe(m.id, linha);
+    }
+  }
+
+  /* Na original, so' o que a sala dela nao tem. */
+  const original = vivas.find((m) => !m.webhookId);
+  if (!original) return;
+  const daCasa = new Set(reacoesDaMensagem(original).map((r) => r.chave));
+  const minhas = new Map();
+  for (const [, r] of original.reactions?.cache || []) {
+    if (r.me) minhas.set(r.emoji?.toString?.() || String(r.emoji?.name || ""), r);
+  }
+  for (const { chave } of totais) {
+    if (daCasa.has(chave) || minhas.has(chave)) continue;
+    await original.react(chave).catch(() => { /* emoji de outro servidor nao vai */ });
+  }
+  /* E tira as minhas que sobraram: quem desreagiu la' desreage aqui. */
+  for (const [chave, r] of minhas) {
+    if (totais.some((t) => t.chave === chave) && !daCasa.has(chave)) continue;
+    await r.users.remove(client.user.id).catch(() => {});
+  }
+}
+
+/* Reagir e desreagir chegam no mesmo lugar: os dois mudam a soma.
+
+   Este e' um dos eventos mais frequentes de um servidor grande, e por isso
+   ele decide na memoria e sai. Nada de consulta ao banco aqui -- e' a mesma
+   regra da bandeira, uma linha acima: 👍 e 😂 nao podem custar consulta.
+   Fala que a memoria ja' esqueceu simplesmente nao cruza, e o pior caso e' o
+   comportamento de antes deste recurso existir. */
+async function reacaoMudou(reacao, quem) {
+  try {
+    /* A minha propria reacao nao entra: ela E' o espelho. Confiro tambem pelo
+       id porque, com Partials.User, um `quem` parcial pode chegar sem o campo
+       `bot` preenchido -- e ai eu estaria escutando o meu proprio eco. */
+    if (!quem || quem.bot || quem.id === client.user?.id) return;
+
+    /* Bandeira e' pedido de traducao, nao reacao: sai antes de tudo, como no
+       outro escutador. */
+    if (idiomaDaBandeira(reacao.emoji?.name)) return;
+
+    const msgId = reacao.message?.id;
+    if (!msgId) return;
+    /* `familia.size < 2` e' fala sem copia: nao ha' o que atravessar. */
+    const familia = ondeMoraAFala.get(msgId);
+    if (!familia || familia.size < 2) return;
+
+    marcarParaSomar(familia);
+  } catch (e) {
+    console.error("reacoes: nao consegui anotar:", e?.message || e);
+  }
+}
+client.on("messageReactionAdd", reacaoMudou);
+client.on("messageReactionRemove", reacaoMudou);
+
 /* A quem a mensagem responde.
 
    Responder e' metade de uma conversa: sem isso, do outro lado chega um "Sim"
@@ -2170,7 +2383,13 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
          caminho por onde uma mensagem sumiria calada. Cai pro envio normal. */
       try {
         const cabecalhoQueFica = cabecalho || velho.cabecalho;
-        await webhook.editMessage(velho.id, { embeds: [montar(juntas, cabecalhoQueFica)] });
+        /* O rodape das reacoes volta junto. Ele nao nasce no montar() -- que
+           so' conhece texto, cabecalho e assinatura --, entao sem esta linha
+           a emenda apagaria a soma que ja' estava no cartao. */
+        const pe = peDoCartao.get(velho.id);
+        await webhook.editMessage(velho.id, {
+          embeds: [{ ...montar(juntas, cabecalhoQueFica), ...(pe ? { footer: { text: pe } } : {}) }],
+        });
         cartoes.set(destino.canal_id, { id: velho.id, linhas, cabecalho: cabecalhoQueFica, traduzido: velho.traduzido });
         /* A fala nova passa a morar no cartao de cima: quem responder a ela
            tem que cair onde o texto dela esta', que agora e' ali.
@@ -7550,6 +7769,31 @@ const EXPLICA_ERRO = [
       "Ninguém fica sem tradução — no máximo ela chega um pouco pior nesses dois minutos.",
     fazer: "Nada. Só vale olhar se aparecer muitas vezes no mesmo dia, e sempre com o mesmo " +
       "motor: aí é o serviço, e não a rede.",
+  },
+  {
+    /* Sem esta regra, a linha da tabela que falta chegava CRUA no canal --
+       conferido, e nao suposto: o 404 do PostgREST nao casa com "supabase
+       5\d\d" nem com "fetch failed", entao nenhuma regra a reivindicava. Ela
+       aparecia como bloco de JSON, todo dia, para sempre, e quem le aprende a
+       passar o olho por cima do canal inteiro.
+
+       Vem ANTES da regra do banco por precaucao, e nao por conserto: no dia em
+       que o PostgREST devolver o mesmo PGRST205 dentro de um 5xx, a regra
+       generica o chamaria de "o banco piscou" -- que manda esperar passar, e
+       isso nunca passa. Uma tabela que nao existe nao e' um problema de rede.
+
+       O PGRST205 e' preciso: ele nao diz "deu errado", diz "esta tabela nao
+       existe neste banco". Nao ha o que interpretar. */
+    quando: /PGRST205|Could not find the table/i,
+    titulo: "Falta criar uma tabela no banco",
+    precisaDeVoce: true,
+    oque: "Uma parte do bot pediu uma tabela que não existe neste Supabase. Não é falha de rede " +
+      "nem coisa que passa sozinha: o arquivo de migração foi escrito e nunca foi rodado.\n\n" +
+      "O que depende dessa tabela fica quieto — o resto do bot continua normal. Se for a dos " +
+      "eventos, o `/evento` recusa; se for a do placar, a arena fica sem a coluna dela.",
+    fazer: "Abrir o **SQL Editor** do Supabase e colar o arquivo que está em " +
+      "`supabase/migracoes/` com o nome da tabela que aparece no erro. É um copiar e colar, " +
+      "uma vez só, e o bot volta a usar aquilo na varredura seguinte.",
   },
   {
     quando: /supabase 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network|EAI_AGAIN/i,

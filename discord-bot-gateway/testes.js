@@ -358,6 +358,60 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("e um tempo esgotado longe do tradutor não é adivinhado",
     titulo("herois", "algo muito, muito longo aqui no meio de uma frase enorme que separa " +
       "as duas palavras: aborted due to timeout"), null);
+
+  /* ---- tabela que nunca existiu não é "o banco piscou" ----
+
+     Esta é a linha que chegou no canal de erros todo dia, por semanas:
+
+       retencao: NAO consegui apagar ... (cyron_evento): supabase 404 ao apagar
+       cyron_evento?criado_em=lt....: {"code":"PGRST205", ... "message":"Could
+       not find the table 'public.cyron_evento'"}
+
+     Ela não era explicada errado: não era explicada de jeito nenhum. O 404 do
+     PostgREST não casa com "supabase 5xx" nem com "fetch failed", então
+     nenhuma regra a reivindicava e ela caía no cartão do "não sei explicar" --
+     um bloco de JSON, todo dia, para sempre. Isso treina quem lê a passar o
+     olho pelo canal inteiro, e aí o canal deixa de servir para o erro
+     seguinte, que é de verdade.
+
+     PGRST205 não é ambíguo: o PostgREST não diz "deu errado", diz "esta tabela
+     não existe neste banco". A migração foi escrita e nunca foi rodada. */
+  const semTabela = explicarErro("retencao",
+    "NAO consegui apagar os eventos (cyron_evento): supabase 404 ao apagar " +
+    'cyron_evento?criado_em=lt.2026-08-05: {"code":"PGRST205","details":null,' +
+    '"hint":"Perhaps you meant the table \'public.cyron_arena\'",' +
+    '"message":"Could not find the table \'public.cyron_evento\'"}') || {};
+  verdade("a tabela que falta tem explicação agora", !!semTabela.titulo);
+  /* Isto é o coração da regra: alguém precisa abrir o Supabase e colar o
+     arquivo. Marcar como `false` devolveria o erro ao balde do "passa
+     sozinho". */
+  ok("e ela diz que depende de você", semTabela.precisaDeVoce, true);
+  verdade("e aponta onde está o arquivo para colar", /migra/i.test(semTabela.fazer || ""));
+
+  /* A frase curta, sem o corpo JSON: o PostgREST às vezes chega só assim. */
+  verdade("a frase sozinha também é reconhecida",
+    !!titulo("arena", "supabase 404: Could not find the table 'public.cyron_traducoes_por_idioma'"));
+
+  /* ---- e ela tem que vencer a regra do banco, não empatar ----
+
+     Hoje as duas não se cruzam: o PostgREST devolve 404, e a regra do banco
+     quer 5xx. Mas basta o PostgREST responder 503 com o mesmo PGRST205 dentro
+     para as duas casarem a mesma linha -- e aí ganha quem vier primeiro no
+     arquivo. "O banco de dados piscou" manda esperar passar, e uma tabela que
+     não existe não passa.
+
+     Este teste prende a ORDEM, e não o texto: mover a regra para depois da do
+     banco faz ele falhar, que é o único jeito de essa decisão sobreviver a
+     alguém reorganizando a lista daqui a um ano. */
+  ok("PGRST205 dentro de um 5xx continua sendo tabela faltando",
+    titulo("retencao", 'supabase 503 ao apagar: {"code":"PGRST205",' +
+      '"message":"Could not find the table public.cyron_evento"}'),
+    semTabela.titulo);
+
+  /* E o resto do banco continua do banco: a regra nova não pode virar o novo
+     balde que rouba tudo. */
+  ok("um erro de rede sem PGRST205 não vira tabela faltando",
+    titulo("espelho", "passada curta falhou: fetch failed"), "O banco de dados piscou");
 }
 
 /* ============ o anúncio da Arena, lido em qualquer língua ============
@@ -934,9 +988,13 @@ function conferirCartao(onde, embed, componentes = []) {
    quente do produto roda de ponta a ponta contra um Discord de brinquedo, e
    se confere o que apareceu na sala do outro idioma. */
 {
+  /* `peDoCartao` entra aqui porque a emenda consulta o rodapé das reações para
+     devolvê-lo ao cartão. Sem ele no escopo a emenda estoura, cai no envio
+     normal, e o sintoma vira "um cartão por fala" -- longe da causa. */
   const { espelharMensagem, ultimaFalaDaSala } = carregar([
     "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
     "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
+    "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -4269,6 +4327,215 @@ function conferirCartao(onde, embed, componentes = []) {
     /replace\(\/@\(everyone\|here\)/.test(corpo));
   verdade("e isso acontece depois de a lista de marcados ser montada",
     corpo.indexOf("const marcados =") < corpo.indexOf("const avisaTodos ="));
+}
+
+/* ====== a reação atravessa as línguas ======
+
+   Quem reage em #chat-ar era visto só por quem lê árabe. O autor, que escreveu
+   em #chat-pt, nunca ficava sabendo -- e é ele quem a reação existe para
+   alcançar.
+
+   O que dá para fazer difere entre a cópia e a original, e a diferença não é
+   escolha: cópia é mensagem de webhook e pode ser editada; original é mensagem
+   de gente, e bot não edita mensagem de ninguém. Por isso a soma vai no rodapé
+   das cópias e, na original, o único sinal possível é o próprio bot reagir.
+
+   Conferir isto subindo bot custaria oito pessoas reagindo em cinco salas ao
+   mesmo tempo. Por isso a aritmética é pura e mora aqui. */
+{
+  const { somarReacoes, linhaDeReacoes, reacoesDaMensagem, guardarPe,
+          MAX_REACOES_NO_PE, MAX_PES_LEMBRADOS, peDoCartao } =
+    carregar(["MAX_REACOES_NO_PE", "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
+              "somarReacoes", "comoSeLe", "linhaDeReacoes", "IDIOMA_DO_PAIS",
+              "paisDaBandeira", "idiomaDaBandeira", "reacoesDaMensagem"]);
+
+  /* ---- a soma ---- */
+  ok("sem sala nenhuma, soma vazia", somarReacoes([]), []);
+  ok("indefinido não estoura", somarReacoes(undefined), []);
+
+  ok("uma sala só passa direto",
+    somarReacoes([[{ chave: "👍", quantos: 3 }]]),
+    [{ chave: "👍", quantos: 3 }]);
+
+  /* O caso que o recurso existe para resolver: o mesmo emoji em salas
+     diferentes é UMA contagem, e não duas linhas. */
+  ok("o mesmo emoji em duas salas vira uma conta só",
+    somarReacoes([[{ chave: "👍", quantos: 2 }], [{ chave: "👍", quantos: 3 }]]),
+    [{ chave: "👍", quantos: 5 }]);
+
+  ok("o mais usado vem primeiro",
+    somarReacoes([[{ chave: "🔥", quantos: 1 }, { chave: "👍", quantos: 4 }]]),
+    [{ chave: "👍", quantos: 4 }, { chave: "🔥", quantos: 1 }]);
+
+  /* Empate desempatado pelo próprio emoji. Sem isto a ordem do rodapé mudaria
+     a cada edição e o cartão piscaria sozinho -- defeito que ninguém
+     reportaria como defeito, só como "esse bot é estranho". */
+  const empate = [[{ chave: "🔥", quantos: 2 }, { chave: "👍", quantos: 2 }]];
+  ok("empate sai sempre na mesma ordem", somarReacoes(empate), somarReacoes(empate));
+
+  /* Quantidade zero ou negativa não vira linha: `count - r.me` pode dar zero
+     quando a única reação daquela sala é a do próprio bot. */
+  ok("reação que sobrou zero não aparece",
+    somarReacoes([[{ chave: "👍", quantos: 0 }, { chave: "🔥", quantos: 1 }]]),
+    [{ chave: "🔥", quantos: 1 }]);
+  ok("emoji sem chave não aparece",
+    somarReacoes([[{ chave: "", quantos: 5 }]]), []);
+
+  /* O teto. Um rodapé com quarenta emojis não é informação, é ruído -- e o
+     Discord tem limite de 2048 no rodapé. */
+  const muitas = "abcdefghij".split("").map((c, i) => ({ chave: c, quantos: 20 - i }));
+  ok(`no máximo ${MAX_REACOES_NO_PE} no rodapé`, somarReacoes([muitas]).length, MAX_REACOES_NO_PE);
+
+  /* ---- a linha ---- */
+  ok("nada some", linhaDeReacoes([]), "");
+  ok("indefinido também", linhaDeReacoes(undefined), "");
+  ok("uma reação", linhaDeReacoes([{ chave: "👍", quantos: 5 }]), "👍 5");
+  ok("duas, separadas por ponto",
+    linhaDeReacoes([{ chave: "👍", quantos: 5 }, { chave: "🔥", quantos: 2 }]),
+    "👍 5  ·  🔥 2");
+  /* O rodapé do Discord recusa acima de 2048 e derruba a mensagem inteira. */
+  verdade("a linha cheia cabe no rodapé",
+    linhaDeReacoes(somarReacoes([muitas])).length <= 2048);
+
+  /* Emoji do servidor no rodapé.
+
+     A `chave` é o identificador com que se REAGE (`<:pepe:123>`), e ela precisa
+     dessa forma para o `react()` funcionar na original. Mas o rodapé do embed
+     é texto puro: não desenha emoji de servidor nem markdown, e a chave crua
+     apareceria como "<:pepe:123> 3" no meio da soma. */
+  ok("emoji do Unicode passa inteiro", linhaDeReacoes([{ chave: "🔥", quantos: 2 }]), "🔥 2");
+  ok("emoji do servidor vira o nome dele",
+    linhaDeReacoes([{ chave: "<:pepe:123456789>", quantos: 4 }]), ":pepe: 4");
+  /* O `a:` do animado é a diferença que quebraria a regra se ela fosse escrita
+     só para o estático -- e emoji animado é o que mais aparece em servidor que
+     tem Nitro. Nome de emoji no Discord é `[A-Za-z0-9_]`, então `\w` cobre
+     todos os que podem existir. */
+  ok("emoji animado também", linhaDeReacoes([{ chave: "<a:dance:99>", quantos: 1 }]), ":dance: 1");
+  /* Texto que só PARECE emoji de servidor continua inteiro: cortar aqui seria
+     inventar um nome que ninguém escreveu. */
+  ok("meia sintaxe não é emoji", linhaDeReacoes([{ chave: "<:pepe>", quantos: 1 }]), "<:pepe> 1");
+  verdade("nenhum sinal de código sobra na linha",
+    !/[<>]/.test(linhaDeReacoes([{ chave: "<:pepe:1>", quantos: 1 }, { chave: "👍", quantos: 2 }])));
+
+  /* ---- o que uma mensagem contribui ---- */
+  const falsa = (lista) => ({ reactions: { cache: new Map(lista.map((r, i) => [i, r])) } });
+  const emoji = (nome) => ({ name: nome, toString: () => nome });
+
+  ok("mensagem sem reação não contribui", reacoesDaMensagem(falsa([])), []);
+  ok("mensagem nenhuma não estoura", reacoesDaMensagem(undefined), []);
+  ok("uma reação de gente conta",
+    reacoesDaMensagem(falsa([{ emoji: emoji("👍"), count: 3, me: false }])),
+    [{ chave: "👍", quantos: 3 }]);
+
+  /* A reação do próprio bot sai fora: ela É o espelho de outra sala, e
+     contá-la seria contar a mesma pessoa duas vezes -- a soma cresceria
+     sozinha a cada passada. */
+  ok("a reação do próprio bot não conta",
+    reacoesDaMensagem(falsa([{ emoji: emoji("👍"), count: 3, me: true }])),
+    [{ chave: "👍", quantos: 2 }]);
+  ok("reação que era só do bot some",
+    reacoesDaMensagem(falsa([{ emoji: emoji("👍"), count: 1, me: true }])), []);
+
+  /* Bandeira aqui é BOTÃO, não opinião: quem põe 🇧🇷 está pedindo tradução no
+     privado, e o bot a remove em seguida. Espalhá-la pelas sete salas mostraria
+     por alguns segundos uma reação que ninguém quis dar. */
+  ok("bandeira não é reação, é pedido de tradução",
+    reacoesDaMensagem(falsa([{ emoji: emoji("🇧🇷"), count: 1, me: false },
+                             { emoji: emoji("👍"), count: 2, me: false }])),
+    [{ chave: "👍", quantos: 2 }]);
+  ok("bandeira branca não é bandeira de idioma, então conta",
+    reacoesDaMensagem(falsa([{ emoji: emoji("🏳️"), count: 2, me: false }])),
+    [{ chave: "🏳️", quantos: 2 }]);
+
+  /* ---- o rodapé lembrado ---- */
+  peDoCartao.clear();
+  guardarPe("m1", "👍 5");
+  ok("o rodapé fica guardado", peDoCartao.get("m1"), "👍 5");
+  /* Linha vazia APAGA em vez de guardar "": senão a emenda seguinte repintaria
+     um rodapé vazio, que o Discord aceita e desenha como uma faixa em branco. */
+  guardarPe("m1", "");
+  ok("rodapé vazio apaga em vez de guardar vazio", peDoCartao.has("m1"), false);
+
+  peDoCartao.clear();
+  for (let i = 0; i < MAX_PES_LEMBRADOS + 50; i++) guardarPe(`m${i}`, "👍 1");
+  ok("a memória do rodapé tem teto", peDoCartao.size, MAX_PES_LEMBRADOS);
+  verdade("e o mais velho é o que sai", !peDoCartao.has("m0"));
+  verdade("o mais novo fica", peDoCartao.has(`m${MAX_PES_LEMBRADOS + 49}`));
+}
+
+/* As decisões da reação que não cabem numa função pura.
+
+   São quatro, e cada uma é um defeito de produção esperando acontecer se
+   alguém "simplificar" o trecho depois. */
+{
+  /* Pelo extrator, e não por `slice` até a próxima linha conhecida: a primeira
+     versão disto terminava o recorte no `client.on("messageReactionRemove")`,
+     e apagar essa linha -- justamente o defeito que se quer pegar -- fazia o
+     recorte engolir o arquivo inteiro. O teste certo falhava junto com três
+     errados, e a saída apontava para longe da causa. */
+  const escutador = pedaco("reacaoMudou");
+
+  /* Reagir e desreagir mudam a soma do mesmo jeito. Ligar só o `Add` daria o
+     defeito mais irritante possível: a conta sobe e nunca desce. */
+  verdade("reagir é escutado", /client\.on\("messageReactionAdd", reacaoMudou\)/.test(fonte));
+  verdade("desreagir também", /client\.on\("messageReactionRemove", reacaoMudou\)/.test(fonte));
+
+  /* Reação é dos eventos mais frequentes de um servidor grande. Uma consulta
+     aqui seria uma consulta por 👍 -- a mesma regra que já vale para a
+     bandeira, uma função acima. */
+  verdade("a família é achada na memória", /ondeMoraAFala\.get\(msgId\)/.test(escutador));
+  verdade("e nada de banco no caminho da reação",
+    !/procurarFamilia|await sb\(/.test(escutador));
+
+  /* O eco. O bot reage na original; essa reação volta como evento. Sem o
+     corte, ele se escutaria em círculo. O `bot` sozinho não basta: com
+     Partials.User um `quem` parcial pode chegar sem o campo preenchido. */
+  verdade("a própria reação do bot não reabre a conta",
+    /quem\.bot \|\| quem\.id === client\.user\?\.id/.test(escutador));
+
+  /* Bandeira sai antes de qualquer coisa, como no outro escutador. */
+  verdade("bandeira não entra na soma", /idiomaDaBandeira\(reacao\.emoji\?\.name\)/.test(escutador));
+
+  const soma = pedaco("atravessarReacoes");
+
+  /* Cinco pessoas reagindo em dez segundos são cinco eventos e UMA edição. Sem
+     isto, uma fala popular vira rajada de edições em sete salas -- e o Discord
+     limita edição por canal. */
+  verdade("uma rajada de reações vira uma edição só",
+    /setTimeout\(/.test(pedaco("marcarParaSomar")));
+  verdade("e a mesma família não entra na fila duas vezes",
+    /reacoesPendentes\.has\(chave\)/.test(pedaco("marcarParaSomar")));
+
+  /* Editar sem mudança marca a mensagem como "editada". Um cartão que diz
+     editado sem ter mudado uma letra faz quem lê desconfiar do que está
+     lendo. */
+  verdade("não edito quando a linha é a mesma",
+    /embed\.footer\?\.text \|\| ""\) === linha/.test(soma));
+
+  /* A soma vai no RODAPÉ, e não na descrição: a descrição é onde mora a
+     assinatura clicável, porque o Discord não desenha link no rodapé. Trocar
+     os dois de lugar mataria a assinatura. */
+  verdade("a soma mora no rodapé", /footer: linha \? \{ text: linha \}/.test(soma));
+
+  /* Bot não edita mensagem de gente, e não existe API para reagir no lugar de
+     outra pessoa. Na original, o único sinal possível é o próprio bot reagir
+     -- e só com emoji que ninguém daquela sala usou, senão a conta de lá
+     infla. */
+  verdade("a original é reconhecida por não ser de webhook", /!m\.webhookId/.test(soma));
+  verdade("e ali eu só reajo com o que a sala não tem",
+    /if \(daCasa\.has\(chave\) \|\| minhas\.has\(chave\)\) continue;/.test(soma));
+  verdade("e desfaço a minha quando ela deixa de fazer sentido",
+    /r\.users\.remove\(client\.user\.id\)/.test(soma));
+
+  /* A colisão entre dois recursos que não se conhecem: a fala seguinte da
+     mesma pessoa é emendada no cartão de cima, e o montar() não sabe de reação
+     nenhuma. Sem esta linha, a contagem aparece e some sozinha quando a pessoa
+     escreve mais uma frase. */
+  const espelho = pedaco("espelharMensagem");
+  verdade("a emenda devolve o rodapé das reações",
+    /const pe = peDoCartao\.get\(velho\.id\);/.test(espelho));
+  verdade("e o põe de volta no embed emendado",
+    /\.\.\.\(pe \? \{ footer: \{ text: pe \} \} : \{\}\)/.test(espelho));
 }
 
 /* Crash não pode engolir o placar.
