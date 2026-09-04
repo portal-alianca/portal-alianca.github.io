@@ -904,6 +904,13 @@ function conferirCartao(onde, embed, componentes = []) {
     !emendaNaFalaAnterior(antes, fala({ marcados: ["mirian"] })));
   verdade("fala com anexo: cartão novo, senão o arquivo fica sem dono",
     !emendaNaFalaAnterior(antes, fala({ arquivos: [{ name: "a.png" }] })));
+  /* Mesmo motivo do <@id>, e pior: editar uma mensagem para incluir o aviso
+     não toca sino em ninguém. Emendar entregaria a convocação e engoliria a
+     convocação -- e convocação que não convoca é o defeito inteiro. */
+  verdade("fala que chama todo mundo: cartão novo, senão a convocação não convoca",
+    !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@everyone" })));
+  verdade("e o @here vale o mesmo",
+    !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@here" })));
 
   /* E a metade que se decide sala por sala. */
   const velho = { id: "cartao1", linhas: ["oi"] };
@@ -4211,6 +4218,57 @@ function conferirCartao(onde, embed, componentes = []) {
      regra. */
   verdade("o catalogo.js entra na imagem",
     existsSync(`${aqui}/catalogo.js`) && !ignorados.includes("catalogo.js"));
+}
+
+/* ====== a menção que não tocava sino ======
+
+   "O @todos não funciona." Funcionava menos ainda do que parecia: NENHUMA
+   menção tocava sino numa sala espelhada, nem a de quem foi marcado por nome.
+
+   Duas coisas barravam, e cada uma sozinha já bastava:
+
+   1. `allowedMentions: { parse: [] }` recusava @everyone e cargo.
+   2. Mais fundo: o texto da fala vai dentro de um EMBED, e menção dentro de
+      embed não avisa ninguém no Discord. Ela é desenhada como menção e não
+      toca sino. Isso valia também para o `<@id>` que a lista `marcados`
+      tentava salvar -- o código tinha a intenção certa e o lugar errado.
+
+   E a convocação nem chegava como convocação: "@everyone" não está nos
+   pedaços intocáveis, então ia para o tradutor e voltava "@todos", "@alle",
+   "@الجميع" -- texto, em língua nenhuma que o Discord entenda.
+
+   O conserto é o `content`, fora do embed, que é o único lugar onde o sino
+   toca. Estes testes prendem os três pedaços do conserto. */
+{
+  const i = fonte.indexOf("async function espelharMensagem");
+  const corpo = fonte.slice(i, fimDoBloco(fonte.indexOf("{", i)));
+
+  /* O sino mora no content. Sem isto, todo o resto é decoração. */
+  verdade("o espelho manda as menções no content", /content: chamados \|\| undefined/.test(corpo));
+  verdade("e o content é só as menções, montadas numa linha",
+    /const chamados = \[avisaTodos, \.\.\.marcados\.map/.test(corpo));
+
+  /* Não é escalada de permissão: `mentions.everyone` já é o veredito do
+     Discord sobre se aquela pessoa PODIA chamar todo mundo. O espelho repete
+     o que aconteceu, não decide. */
+  verdade("o aviso geral sai do que o Discord já decidiu",
+    /msg\.mentions\.everyone/.test(corpo));
+  verdade("@here e @everyone são distinguidos", /@here\\b/.test(corpo));
+  verdade("e o allowedMentions só libera everyone quando houve everyone",
+    /parse: avisaTodos \? \["everyone"\] : \[\]/.test(corpo));
+
+  /* Cargo continua fora, e por um motivo que não é medo: os cargos daqui são
+     os das salas por idioma. Repetir o cargo da sala de origem chamaria o
+     público errado. */
+  verdade("cargo continua fora do espelho", !/parse: \[[^\]]*"roles"/.test(corpo));
+
+  /* A palavra sai do corpo antes de traduzir: com o aviso de verdade no
+     content, deixá-la no cartão daria a mesma convocação duas vezes, e a
+     segunda seria falsa e traduzida. */
+  verdade("o @everyone sai do texto que vai para o tradutor",
+    /replace\(\/@\(everyone\|here\)/.test(corpo));
+  verdade("e isso acontece depois de a lista de marcados ser montada",
+    corpo.indexOf("const marcados =") < corpo.indexOf("const avisaTodos ="));
 }
 
 /* Crash não pode engolir o placar.
