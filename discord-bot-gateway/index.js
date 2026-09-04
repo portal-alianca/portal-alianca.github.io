@@ -1820,12 +1820,16 @@ const LIMITE_DO_CARTAO = 3800; // o embed aceita 4096; sobra pra assinatura
    Puras de proposito: sao sete condicoes, duas delas com consequencia
    invisivel (sino que nao toca, ordem que mente), e a funcao que as usava
    e' a mais quente do produto -- nao da' pra conferir isso subindo bot. */
-function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos }) {
+function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos }) {
   return !!anterior
     && anterior.autor === autor
     && agora - anterior.quando < JANELA_DE_GRUPO
     && !respondeAlguem
     && !marcados.length
+    /* @everyone tem o mesmo problema do <@id>, e maior: editar uma mensagem
+       para incluir o aviso nao toca sino em ninguem. Emendar seria entregar a
+       convocacao e engolir a convocacao. */
+    && !avisaTodos
     && !arquivos.length;
 }
 
@@ -1934,6 +1938,41 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
   const marcados = [...msg.mentions.users.keys()].filter((id) =>
     id !== msg.author.id && new RegExp(`<@!?${id}>`).test(texto || ""));
 
+  /* O @everyone das salas espelhadas nao tocava sino em ninguem.
+     
+     Duas coisas o barravam, e as duas sozinhas ja' bastavam:
+     
+     1. `allowedMentions: { parse: [] }` recusava @everyone e cargo.
+     2. Mais fundo: o texto da fala vai dentro de um EMBED, e mencao dentro de
+        embed nao avisa ninguem no Discord -- ela e' desenhada como mencao e
+        nao toca sino. Isso valia tambem para o <@id> de quem foi marcado por
+        nome, que a lista `marcados` acima tentava salvar sem conseguir.
+     
+     Resultado: o lider escrevia "@everyone rally em 10 min" e ninguem que le
+     numa sala espelhada era avisado. A convocacao chegava como TEXTO -- e
+     traduzida, porque "@everyone" nao esta na lista dos pedacos intocaveis,
+     entao virava "@todos", "@alle", "@الجميع": mencao nenhuma, em lingua
+     nenhuma.
+     
+     O conserto e' mandar as mencoes no `content`, fora do embed, que e' o
+     unico lugar onde o Discord toca sino.
+     
+     E nao e' escalada de permissao: `msg.mentions.everyone` so' e' verdadeiro
+     quando o aviso FUNCIONOU no original -- o Discord ja' conferiu ali se
+     aquela pessoa podia. O espelho repete o que aconteceu; nao decide. */
+  const avisaTodos = msg.mentions.everyone
+    ? (/@here\b/.test(msg.content || "") ? "@here" : "@everyone")
+    : "";
+
+  /* Fora do corpo antes de traduzir: o aviso de verdade vai no content, e
+     deixar a palavra tambem no cartao daria a mesma convocacao duas vezes --
+     uma delas falsa, e traduzida. */
+  if (avisaTodos) texto = String(texto || "").replace(/@(everyone|here)\b/g, "").replace(/\s{2,}/g, " ").trim();
+
+  /* As mencoes, e nada mais. Uma linha curta em cima do cartao: o resto da
+     fala continua sendo o cartao, que e' o desenho do produto. */
+  const chamados = [avisaTodos, ...marcados.map((id) => `<@${id}>`)].filter(Boolean).join(" ");
+
   /* Da' pra emendar esta fala na anterior?
 
      As tres primeiras condicoes sao o que o leitor espera de um bloco: mesma
@@ -1955,6 +1994,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     respondeAlguem: !!msg.reference,
     marcados,
     arquivos,
+    avisaTodos,
   });
 
   /* A familia desta fala: onde ela mora em cada sala. Quem responder a ela
@@ -2153,9 +2193,15 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         username: nome,
         avatarURL: foto,
         files: arquivos,
+        /* As mencoes vivem AQUI, e nao no embed: e' a unica parte da mensagem
+           em que o Discord toca sino. Vazio vira undefined -- content vazio o
+           Discord recusa. */
+        content: chamados || undefined,
         embeds: [montar(linhaNova, cabecalho)],
-        /* Cargo e @everyone continuam barrados: so' quem foi marcado por nome. */
-        allowedMentions: { parse: [], users: marcados },
+        /* Cargo continua barrado: os cargos daqui sao os das salas por idioma,
+           e repetir um cargo da sala de origem chamaria o publico errado.
+           @everyone passa quando -- e so' quando -- passou no original. */
+        allowedMentions: { parse: avisaTodos ? ["everyone"] : [], users: marcados },
       });
       if (posta?.id) {
         cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], cabecalho, traduzido: traduziuAqui });
