@@ -1777,6 +1777,20 @@ const MAX_FALAS_LEMBRADAS = 6000;
 
 function lembrarFala(familia, canalId, msgId, familiaId, servidorId) {
   if (!canalId || !msgId) return;
+  /* De que SALA veio a mensagem humana desta familia.
+
+     E' o que separa a original das copias, e sem isso apagar uma copia
+     apagaria a fala da pessoa em todas as salas -- um moderador limpando a
+     sala turca levaria junto o original em portugues.
+
+     A SALA, e nao o id: numa fala emendada a segunda e a terceira frase
+     entram na familia da primeira, entao um cracha por id apontaria so' para
+     a primeira e as outras duas pareceriam copias. As tres foram escritas na
+     mesma sala, e nenhuma copia mora la'.
+
+     A chamada da origem vem antes das copias no espelho, entao o primeiro
+     `canalId` que passa por aqui e' sempre o da casa. */
+  if (familiaId && !familia.canalDaOriginal) familia.canalDaOriginal = canalId;
   familia.set(canalId, msgId);
   ondeMoraAFala.set(msgId, familia);
   if (familiaId) {
@@ -1862,6 +1876,11 @@ async function procurarFamilia(msgId) {
       `discord_fala_espelhada?familia_id=eq.${encodeURIComponent(familiaId)}&select=canal_id,msg_id`) || [];
     if (!irmas.length) return null;
     const familia = new Map(irmas.map((i) => [i.canal_id, i.msg_id]));
+    /* A sala da original sai da propria tabela: e' a linha cujo `msg_id` e' o
+       proprio `familia_id`. As linhas voltam em ordem qualquer, entao chutar
+       pela primeira nao serviria -- e daqui sai a diferenca entre apagar uma
+       copia e apagar a fala de alguem. */
+    familia.canalDaOriginal = irmas.find((i) => i.msg_id === familiaId)?.canal_id || null;
     /* Volta pra memoria: quem respondeu uma vez costuma responder de novo. */
     for (const i of irmas) ondeMoraAFala.set(i.msg_id, familia);
     return familia;
@@ -2083,6 +2102,244 @@ async function reacaoMudou(reacao, quem) {
 client.on("messageReactionAdd", reacaoMudou);
 client.on("messageReactionRemove", reacaoMudou);
 
+/* ---------------- apagar e corrigir atravessam tambem ----------------
+
+   O espelho sabia fazer uma coisa so': repetir. Uma fala saia daqui e virava
+   sete copias, e dali em diante as sete eram pedra. Isso deixava tres buracos,
+   e o terceiro e' o que perde cliente:
+
+   1. Alguem escreve uma besteira, se arrepende, apaga em dois segundos. A
+      besteira continua nas outras seis salas, com o nome e a foto da pessoa,
+      para sempre. Ela ACHA que apagou.
+   2. Um moderador apaga. Some de uma sala, sobrevive em seis -- e a sala onde
+      ele estava olhando e' justamente a unica que ficou limpa.
+   3. O lider corrige o horario do evento. A correcao nao atravessa: o horario
+      certo fica em portugues e o errado em seis linguas, sem nada dizendo
+      qual e' qual.
+
+   O 3 e' o pior num servidor de alianca, porque ninguem descobre -- os dois
+   lados leem uma frase que parece inteira.
+
+   A ferramenta ja existia: a familia da fala, que as respostas e as reacoes
+   usam. Faltava usa-la para mais dois eventos.
+
+   O QUE E' DIFICIL AQUI nao e' o evento, e' o CARTAO EMENDADO. Tres falas
+   seguidas da mesma pessoa moram no mesmo cartao. Apagar a do meio nao pode
+   apagar o cartao -- levaria as outras duas junto. Entao o cartao precisa
+   lembrar QUAL pedaco dele veio de qual mensagem, e e' isso que `falasNoCartao`
+   guarda. */
+const falasNoCartao = new Map(); // id da copia -> [{ msgId, texto }] na ordem em que aparecem
+const MAX_CARTOES_LEMBRADOS = 3000;
+
+function guardarFalas(copiaId, falas) {
+  if (!copiaId) return;
+  if (falas?.length) falasNoCartao.set(copiaId, falas);
+  else falasNoCartao.delete(copiaId);
+  while (falasNoCartao.size > MAX_CARTOES_LEMBRADOS) {
+    falasNoCartao.delete(falasNoCartao.keys().next().value);
+  }
+}
+
+/* A assinatura fica colada no fim da descricao, e nao e' minha para reescrever.
+
+   Remontar o cartao do zero exigiria refazer nome, link e selo de origem --
+   tres coisas que ja' estao certas dentro do embed e que eu erraria ao tentar
+   deduzir de novo (o selo depende de aquela sala ter traduzido, e isso eu nao
+   sei mais depois que a fala passou).
+
+   Entao o corte e' pelo `\n-# [`, que e' onde o montar() gruda a assinatura. O
+   corpo e' meu, a assinatura e' dele, e eu troco so' a minha metade. */
+const MARCA_DA_ASSINATURA = "\n-# [";
+
+function caudaDoCartao(descricao) {
+  const i = String(descricao || "").lastIndexOf(MARCA_DA_ASSINATURA);
+  return i < 0 ? "" : String(descricao).slice(i);
+}
+
+function remontarCartao(descricao, falas) {
+  const corpo = (falas || []).map((f) => f.texto).join("\n");
+  return corpo.slice(0, LIMITE_DO_CARTAO) + caudaDoCartao(descricao);
+}
+
+/* Os enderecos de webhook daquele servidor, uma vez por operacao. */
+async function enderecosDoEspelho(guildId) {
+  const servidor = guildId ? await servidorDoGuild(guildId).catch(() => null) : null;
+  if (!servidor) return { servidor: null, enderecos: new Map(), salas: [] };
+  const salas = await canaisEspelho(servidor.id).catch(() => []);
+  return { servidor, enderecos: new Map(salas.map((s) => [s.canal_id, s.webhook])), salas };
+}
+
+/* A copia e' minha, a original e' de gente. So' a segunda manda.
+
+   Pela SALA, e nao pelo id: numa fala emendada a segunda e a terceira frase
+   entram na familia da primeira, entao um cracha por id chamaria as duas de
+   copia e apagar a do meio nao faria nada. */
+function eACopia(familia, msgId, canalId) {
+  const casa = familia?.canalDaOriginal;
+  /* Sem o cracha -- familia de uma memoria antiga --, o desempate e' saber se
+     aquele id e' um cartao meu. Menos exato, e melhor do que nada. */
+  return casa ? canalId !== casa : falasNoCartao.has(msgId);
+}
+
+async function apagarNasOutrasSalas(msgId, canalId, guildId) {
+  const familia = ondeMoraAFala.get(msgId) || await procurarFamilia(msgId);
+  if (!familia || familia.size < 2 || eACopia(familia, msgId, canalId)) return;
+
+  const { enderecos } = await enderecosDoEspelho(guildId);
+  if (!enderecos.size) return;
+
+  for (const [sala, copiaId] of familia) {
+    if (copiaId === msgId) continue; // a original, que ja' foi
+    const url = enderecos.get(sala);
+    if (!url) continue;
+
+    const falas = falasNoCartao.get(copiaId);
+    const sobram = (falas || []).filter((f) => f.msgId !== msgId);
+
+    /* O cartao carrega mais de uma fala: reescreve sem esta, e nao apaga. */
+    if (falas && sobram.length && sobram.length < falas.length) {
+      const canal = await client.channels.fetch(sala).catch(() => null);
+      const copia = canal ? await canal.messages.fetch(copiaId).catch(() => null) : null;
+      const embed = copia?.embeds?.[0];
+      if (!embed) continue;
+      await clienteDoWebhook(url).editMessage(copiaId, {
+        embeds: [{ ...embed.toJSON(), description: remontarCartao(embed.description, sobram) }],
+      }).catch((e) => console.error("espelho: nao consegui tirar a fala do cartao:", e?.message || e));
+      guardarFalas(copiaId, sobram);
+      continue;
+    }
+
+    /* Cartao de uma fala so' -- ou cartao que a memoria ja' esqueceu.
+
+       O caso esquecido merece explicacao, porque ele apaga mais do que devia:
+       se o bot reiniciou, eu nao sei se aquele cartao levava uma fala ou tres,
+       e apago o cartao inteiro.
+
+       Escolhi errar para este lado de proposito. Todo pedaco de um cartao
+       emendado e' da MESMA pessoa -- emendar exige mesmo autor --, entao o
+       estrago maximo e' levar junto duas frases de quem acabou de apagar uma
+       frase sua. Do outro lado, o erro seria deixar de pe, em seis salas, algo
+       que alguem apagou -- que e' o buraco que este recurso existe para
+       fechar, e que nao tem conserto depois. */
+    await clienteDoWebhook(url).deleteMessage(copiaId)
+      .catch(() => { /* ja' apagada, ou o cartao morreu antes */ });
+    guardarFalas(copiaId, null);
+    peDoCartao.delete(copiaId);
+  }
+}
+
+/* A correcao atravessa: retraduz e troca so' o pedaco daquela fala.
+
+   Custa o mesmo que a fala custou quando foi escrita -- uma traducao por
+   idioma. E' caro para um evento raro, e barato comparado a alternativa, que
+   e' seis salas lendo o horario errado. */
+async function corrigirNasOutrasSalas(msg) {
+  const familia = ondeMoraAFala.get(msg.id) || await procurarFamilia(msg.id);
+  if (!familia || familia.size < 2 || eACopia(familia, msg.id, msg.channelId)) return;
+
+  const { servidor, enderecos, salas } = await enderecosDoEspelho(msg.guildId);
+  if (!servidor || !enderecos.size) return;
+
+  const origem = salas.find((s) => s.canal_id === msg.channelId);
+  if (!origem) return;
+
+  /* Mesma limpeza do envio: o aviso geral sai do corpo, porque no cartao ele
+     seria uma convocacao falsa e traduzida. */
+  const texto = String(msg.content || "").replace(/@(everyone|here)\b/g, "").replace(/\s{2,}/g, " ").trim();
+  if (!texto) return; // fala que virou so' anexo: nao ha' texto novo para levar
+
+  const termos = termosDoServidor(servidor);
+  const motor = motorDe(servidor);
+  const alvos = [...new Set(salas
+    .filter((s) => s.canal_id !== origem.canal_id && s.idioma !== origem.idioma)
+    .map((s) => s.idioma))];
+
+  /* Mesma regra do envio: o que nao vale traduzir atravessa como esta'. */
+  const vale = !porQueNaoTraduzir(texto, TEXTO_MAXIMO, 2);
+  const { marcado, pecas } = vale ? protegerDoTradutor(texto, termos) : { marcado: "", pecas: [] };
+  const traduzido = new Map();
+  for (const idioma of (vale ? alvos : [])) {
+    const saiu = await traduzirLongo(marcado, idioma, motor);
+    traduzido.set(idioma, saiu ? devolverPecas(saiu, pecas) : texto);
+  }
+
+  for (const [sala, copiaId] of familia) {
+    if (copiaId === msg.id) continue;
+    const url = enderecos.get(sala);
+    const falas = falasNoCartao.get(copiaId);
+    /* Sem o registro eu nao sei qual pedaco do cartao e' desta fala, e
+       reescrever o cartao inteiro apagaria as falas vizinhas. Depois de um
+       reinicio a correcao simplesmente nao atravessa -- que e' como era antes
+       deste recurso existir. Deixar como estava nao estraga nada; adivinhar
+       estragaria. */
+    if (!url || !falas?.some((f) => f.msgId === msg.id)) continue;
+
+    const daSala = salas.find((s) => s.canal_id === sala);
+    const novo = traduzido.get(daSala?.idioma) ?? texto;
+    const atualizadas = falas.map((f) => (f.msgId === msg.id ? { ...f, texto: novo } : f));
+
+    const canal = await client.channels.fetch(sala).catch(() => null);
+    const copia = canal ? await canal.messages.fetch(copiaId).catch(() => null) : null;
+    const embed = copia?.embeds?.[0];
+    if (!embed) continue;
+
+    const descricao = remontarCartao(embed.description, atualizadas);
+    /* Correcao que nao mudou nada naquela lingua nao vira edicao: o tradutor
+       devolve a mesma frase com frequencia (trocar "vc" por "voce" some na
+       traducao), e um "editado" sem mudanca nenhuma so' faz quem le voltar
+       para conferir o que mudou. */
+    if (descricao === embed.description) { guardarFalas(copiaId, atualizadas); continue; }
+    await clienteDoWebhook(url).editMessage(copiaId, {
+      embeds: [{ ...embed.toJSON(), description: descricao }],
+    }).catch((e) => console.error("espelho: nao consegui corrigir a copia:", e?.message || e));
+    guardarFalas(copiaId, atualizadas);
+  }
+}
+
+client.on("messageDelete", async (msg) => {
+  try {
+    if (!msg?.id || !msg.guildId) return;
+    await apagarNasOutrasSalas(msg.id, msg.channelId, msg.guildId);
+  } catch (e) {
+    console.error("espelho: nao consegui apagar nas outras salas:", e?.message || e);
+  }
+});
+
+/* A limpeza em massa e' o caso de moderacao, e e' o que mais importa aqui:
+   quem apaga trinta mensagens de um spammer nao vai apagar as mesmas trinta
+   em mais seis salas na mao. Uma a uma, em serie, porque sao seis edicoes ou
+   remocoes por mensagem e o Discord conta cada uma. */
+client.on("messageDeleteBulk", async (mensagens) => {
+  for (const msg of mensagens.values()) {
+    try {
+      if (!msg?.id || !msg.guildId) continue;
+      await apagarNasOutrasSalas(msg.id, msg.channelId, msg.guildId);
+    } catch (e) {
+      console.error("espelho: nao consegui apagar em massa:", e?.message || e);
+    }
+  }
+});
+
+client.on("messageUpdate", async (velha, nova) => {
+  try {
+    /* `editedTimestamp` e' o unico sinal que separa correcao de barulho.
+
+       O Discord dispara messageUpdate quando o link de uma mensagem termina de
+       carregar a pre-visualizacao, quando alguem fixa, quando um embed muda --
+       nada disso e' a pessoa corrigindo a frase. Sem esta linha, cada link
+       colado numa sala espelhada custaria seis traducoes, para sempre, e
+       calado. */
+    if (!nova?.editedTimestamp || !nova.guildId || nova.webhookId) return;
+    if (velha && !velha.partial && velha.content === nova.content) return;
+
+    const cheia = nova.partial ? await nova.fetch().catch(() => null) : nova;
+    if (!cheia || cheia.author?.bot) return;
+    await corrigirNasOutrasSalas(cheia);
+  } catch (e) {
+    console.error("espelho: nao consegui levar a correcao:", e?.message || e);
+  }
+});
+
 /* A quem a mensagem responde.
 
    Responder e' metade de uma conversa: sem isso, do outro lado chega um "Sim"
@@ -2113,7 +2370,50 @@ function termosDoServidor(servidor) {
   return String(servidor?.glossario || "").split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
 }
 
+/* Figurinha e enquete nao tem texto, e por isso nao atravessavam NADA.
+
+   O espelho monta o cartao a partir do `content`. Figurinha nao e' content e
+   nao e' anexo -- e' uma terceira coisa --, entao uma figurinha sozinha caia
+   no `if (!linhaNova && !arquivos.length) continue` e a sala do outro lado
+   simplesmente nao recebia mensagem. Nao chegava vazia: nao chegava. Num
+   servidor de jogo isso e' metade da conversa, e o buraco era invisivel dos
+   dois lados -- quem mandou viu a figurinha na sala dele.
+
+   As de formato LOTTIE (as do proprio Discord) ficam de fora da imagem: a URL
+   delas e' um .json de animacao, que o embed nao desenha. Sobra o nome, que e'
+   pouco e e' honesto -- melhor "🎨 wumpus" do que um quadrado quebrado. */
+function figurinhaDe(msg) {
+  const f = msg?.stickers?.first?.();
+  if (!f) return null;
+  const desenhavel = f.format !== 3; // 3 = LOTTIE, animacao em JSON
+  return { nome: String(f.name || "").slice(0, 80), url: desenhavel ? (f.url || "") : "" };
+}
+
+/* A enquete atravessa como TEXTO, e nao como enquete.
+
+   Webhook ate' consegue criar enquete, e seria a coisa errada: sete enquetes
+   separadas, com os votos partidos em sete. A pergunta com dez votos viraria
+   sete perguntas com um ou dois cada, e ninguem saberia qual e' o resultado.
+
+   Entao a pergunta e as opcoes vao traduzidas, e o link leva a pessoa a votar
+   na enquete de verdade -- uma so', na sala de origem, com todos os votos
+   juntos. */
+function textoDaEnquete(msg) {
+  const p = msg?.poll;
+  if (!p) return "";
+  const pergunta = String(p.question?.text || "").trim();
+  const opcoes = [...(p.answers?.values?.() || [])]
+    .map((a) => String(a.text || "").trim()).filter(Boolean);
+  if (!pergunta && !opcoes.length) return "";
+  return [pergunta && `📊 ${pergunta}`, ...opcoes.map((o) => `• ${o}`)].filter(Boolean).join("\n");
+}
+
 async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null, termos = []) {
+  /* Enquete vira o corpo da fala quando nao ha' texto nenhum. Se a pessoa
+     escreveu algo junto, o que ela escreveu vem primeiro. */
+  const enquete = textoDaEnquete(msg);
+  if (enquete) texto = [String(texto || "").trim(), enquete].filter(Boolean).join("\n");
+  const figurinha = figurinhaDe(msg);
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -2206,7 +2506,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     agora: Date.now(),
     respondeAlguem: !!msg.reference,
     marcados,
-    arquivos,
+    /* Figurinha entra aqui junto com o anexo, e pelo mesmo motivo: a imagem
+       vive presa AO CARTAO, e emendar deixaria o texto novo no cartao de cima
+       com a figurinha antiga do lado. Um cartao com duas figurinhas nao existe
+       -- o embed desenha uma imagem so'. */
+    arquivos: figurinha ? [...arquivos, figurinha] : arquivos,
     avisaTodos,
   });
 
@@ -2315,8 +2619,16 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
        o Discord nao desenha link nenhum -- o nome apareceria morto, e a
        assinatura existe justamente pra ser tocada. */
-    const linhaNova = [corpo, ...anexos].filter(Boolean).join("\n");
-    if (!linhaNova && !arquivos.length) continue;
+    /* O link de votar sai DEPOIS da traducao, de proposito: `[rotulo](url)` no
+       meio do texto que vai pro tradutor volta com o colchete no lugar errado
+       com frequencia, e o link morre. O rotulo fica bilingue, como os outros
+       do produto. */
+    const votar = msg.poll && msg.url ? `[📊 Votar / Vote](${msg.url})` : "";
+    const linhaNova = [corpo, ...anexos, votar].filter(Boolean).join("\n");
+    /* Figurinha sozinha nao tem texto nem anexo, e era exatamente por isto que
+       ela nao atravessava: caia neste `continue` e a sala do outro lado nao
+       recebia nada. */
+    if (!linhaNova && !arquivos.length && !figurinha) continue;
 
     const cabecalho = respondendo ? {
       ...respondendo,
@@ -2339,6 +2651,13 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     const salaDestino = msg.guild.channels.cache.get(destino.canal_id);
     const linhas = velho ? [...velho.linhas, linhaNova] : [linhaNova];
     const juntas = linhas.join("\n");
+    /* As mesmas linhas, com o cracha de qual mensagem trouxe cada uma.
+
+       Andam coladas com `linhas` -- as duas nascem do mesmo `velho` -- porque
+       apagar ou corrigir uma fala emendada precisa saber qual PEDACO do cartao
+       e' dela. Sem isto, apagar a segunda de tres frases apagaria as tres. */
+    const falas = velho ? [...velho.falas, { msgId: msg.id, texto: linhaNova }]
+                        : [{ msgId: msg.id, texto: linhaNova }];
     /* Se esta sala nao pediu traducao (mesmo idioma da origem), o estado e' o
        da fala anterior -- senao toda fala na propria lingua abriria cartao. */
     const traduziuAqui = idiomas.includes(destino.idioma) ? traduzidoMesmo.has(destino.idioma) : null;
@@ -2369,7 +2688,12 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     const montar = (corpoDoCartao, cabecalhoDoCartao) => ({
       color: cor,
       ...(cabecalhoDoCartao ? { author: cabecalhoDoCartao } : {}),
-      description: `${corpoDoCartao.slice(0, LIMITE_DO_CARTAO)}` +
+      /* A figurinha e' a fala inteira quando vem sozinha, entao ela e' a
+         IMAGEM do cartao e nao um anexo pendurado embaixo. O nome entra no
+         corpo so' quando nao ha' imagem para desenhar (as do Discord, em
+         LOTTIE) -- sem ele o cartao sairia completamente vazio. */
+      ...(figurinha?.url ? { image: { url: figurinha.url } } : {}),
+      description: `${(corpoDoCartao || (figurinha ? `🎨 ${figurinha.nome}` : "")).slice(0, LIMITE_DO_CARTAO)}` +
         `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
         (selo ? ` · ${selo}` : ""),
     });
@@ -2390,7 +2714,8 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         await webhook.editMessage(velho.id, {
           embeds: [{ ...montar(juntas, cabecalhoQueFica), ...(pe ? { footer: { text: pe } } : {}) }],
         });
-        cartoes.set(destino.canal_id, { id: velho.id, linhas, cabecalho: cabecalhoQueFica, traduzido: velho.traduzido });
+        cartoes.set(destino.canal_id, { id: velho.id, linhas, falas, cabecalho: cabecalhoQueFica, traduzido: velho.traduzido });
+        guardarFalas(velho.id, falas);
         /* A fala nova passa a morar no cartao de cima: quem responder a ela
            tem que cair onde o texto dela esta', que agora e' ali.
 
@@ -2423,7 +2748,8 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         allowedMentions: { parse: avisaTodos ? ["everyone"] : [], users: marcados },
       });
       if (posta?.id) {
-        cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], cabecalho, traduzido: traduziuAqui });
+        cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], falas, cabecalho, traduzido: traduziuAqui });
+        guardarFalas(posta.id, falas);
         lembrarFala(familia, destino.canal_id, posta.id, familiaId, servidorId);
       }
     } catch (e) {

@@ -995,6 +995,8 @@ function conferirCartao(onde, embed, componentes = []) {
     "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
     "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
+    "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
+    "figurinhaDe", "textoDaEnquete",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1074,6 +1076,23 @@ function conferirCartao(onde, embed, componentes = []) {
       /I'm about to go in\nI was tweaking my translation system\n😅/.test(emIngles.embed.description));
     verdade("a assinatura aparece uma vez só",
       emIngles.embed.description.split("discord.com/users/").length - 1 === 1);
+  }
+
+  /* Figurinha abre cartão novo pelo mesmo motivo do anexo: a imagem vive presa
+     AO CARTÃO, e emendar deixaria o texto novo no cartão de cima com a
+     figurinha antiga do lado. Um cartão com duas figurinhas não existe — o
+     embed desenha uma imagem só. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "olha isso");
+    await falar(mundo, "", { stickers: { first: () => ({ name: "kek", format: 1, url: "http://f/kek.png" }) } });
+
+    ok("fala com figurinha sai em cartão novo", mundo.quantas(), 4);
+    const comImagem = [...mundo.mensagens.values()].filter((m) => m.embed.image);
+    ok("e a imagem aparece uma vez em cada sala", comImagem.length, 2);
+    verdade("o cartão de cima continua sem imagem nenhuma",
+      [...mundo.mensagens.values()].some((m) => !m.embed.image && /olha isso/.test(m.embed.description)));
   }
 
   /* Marcar alguém abre cartão novo: editar não toca sino em ninguém. */
@@ -4536,6 +4555,451 @@ function conferirCartao(onde, embed, componentes = []) {
     /const pe = peDoCartao\.get\(velho\.id\);/.test(espelho));
   verdade("e o põe de volta no embed emendado",
     /\.\.\.\(pe \? \{ footer: \{ text: pe \} \} : \{\}\)/.test(espelho));
+}
+
+/* ====== apagar e corrigir atravessam as salas ======
+
+   O espelho só sabia repetir: a fala saía daqui, virava sete cópias, e dali em
+   diante as sete eram pedra. Três buracos, e o terceiro é o que perde cliente:
+
+   1. Alguém apaga uma besteira em dois segundos — e ela fica de pé nas outras
+      seis salas, com o nome e a foto da pessoa. Ela ACHA que apagou.
+   2. Um moderador limpa a sala dele. Some de uma, sobrevive em seis.
+   3. O líder corrige o horário do evento e a correção não atravessa: o certo
+      em português, o errado em seis línguas, sem nada dizendo qual é qual.
+
+   O difícil aqui não é o evento, é o CARTÃO EMENDADO: três falas seguidas da
+   mesma pessoa moram no mesmo cartão, e apagar a do meio não pode levar as
+   outras duas. */
+{
+  const { caudaDoCartao, remontarCartao, guardarFalas, eACopia, falasNoCartao,
+          MAX_CARTOES_LEMBRADOS, apagarNasOutrasSalas } =
+    carregar(["LIMITE_DO_CARTAO", "MARCA_DA_ASSINATURA", "caudaDoCartao", "remontarCartao",
+              "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas", "peDoCartao",
+              "MAX_PES_LEMBRADOS", "guardarPe", "eACopia", "enderecosDoEspelho",
+              "apagarNasOutrasSalas"]);
+
+  /* ---- a assinatura não é minha para reescrever ----
+
+     Remontar o cartão do zero exigiria refazer nome, link e selo de origem —
+     três coisas que já estão certas dentro do embed e que eu erraria ao tentar
+     deduzir de novo (o selo depende de aquela sala ter traduzido, e isso não se
+     sabe mais depois que a fala passou). */
+  const ASSINA = "\n-# [Tiago](https://discord.com/users/1) · 🇧🇷 → 🇬🇧";
+  ok("a cauda do cartão é a assinatura inteira", caudaDoCartao("oi" + ASSINA), ASSINA);
+  ok("cartão sem assinatura não inventa uma", caudaDoCartao("oi"), "");
+  ok("descrição vazia não estoura", caudaDoCartao(undefined), "");
+  /* Se a própria fala contiver algo parecido, vale a ÚLTIMA: a assinatura é
+     sempre o que o montar() grudou por último. */
+  ok("vale a última, e não a primeira",
+    caudaDoCartao("olha isso:\n-# [nao](x)" + ASSINA), ASSINA);
+
+  const falas = (ids) => ids.map((i) => ({ msgId: i, texto: `fala ${i}` }));
+  ok("remontar junta as falas e devolve a assinatura",
+    remontarCartao("qualquer coisa" + ASSINA, falas(["a", "b"])),
+    "fala a\nfala b" + ASSINA);
+  ok("cartão que ficou sem falas vira só a assinatura",
+    remontarCartao("x" + ASSINA, []), ASSINA);
+
+  /* ---- a cópia não manda ----
+
+     Sem esta pergunta, apagar o cartão na sala turca apagaria a fala da pessoa
+     em todas as outras. Não é o que ninguém espera de "apagar uma mensagem
+     traduzida". */
+  const familiaCom = (casa) => { const f = new Map(); f.canalDaOriginal = casa; return f; };
+  verdade("a original manda", !eACopia(familiaCom("pt"), "o1", "pt"));
+  verdade("a cópia não manda", eACopia(familiaCom("pt"), "cEn", "en"));
+  /* O crachá é a SALA, e não o id, e este teste é o motivo.
+
+     Numa fala emendada a segunda e a terceira frase entram na família da
+     primeira. Um crachá por id apontaria só para a primeira, chamaria as
+     outras duas de cópia, e apagar a do meio não faria nada. */
+  verdade("a segunda frase de um cartão emendado ainda é original",
+    !eACopia(familiaCom("pt"), "o2", "pt"));
+
+  /* Sem o crachá (família de uma memória antiga), o desempate é saber se
+     aquele id é um cartão meu. */
+  falasNoCartao.clear();
+  guardarFalas("copiaConhecida", falas(["a"]));
+  verdade("sem crachá, um cartão meu ainda é reconhecido como cópia",
+    eACopia(new Map(), "copiaConhecida", "en"));
+  verdade("e um id desconhecido é tratado como original",
+    !eACopia(new Map(), "sei-la", "pt"));
+
+  /* ---- o teto da memória de cartões ---- */
+  falasNoCartao.clear();
+  for (let i = 0; i < MAX_CARTOES_LEMBRADOS + 20; i++) guardarFalas(`c${i}`, falas([`f${i}`]));
+  ok("a memória dos cartões tem teto", falasNoCartao.size, MAX_CARTOES_LEMBRADOS);
+  verdade("e o mais velho sai primeiro", !falasNoCartao.has("c0"));
+  guardarFalas("c1", []);
+  verdade("cartão sem falas é esquecido em vez de guardado vazio", !falasNoCartao.has("c1"));
+
+  /* ---- e agora apagando de verdade, contra um Discord de brinquedo ---- */
+  const montarSalas = () => {
+    const copias = new Map([
+      ["en", { id: "cEn", embed: { description: "" } }],
+      ["es", { id: "cEs", embed: { description: "" } }],
+    ]);
+    const apagadas = [];
+    globalThis.client = {
+      channels: {
+        fetch: async () => ({
+          messages: {
+            fetch: async (id) => {
+              const c = [...copias.values()].find((x) => x.id === id);
+              return c ? { id, embeds: [{ ...c.embed, toJSON: () => ({ ...c.embed }) }] } : null;
+            },
+          },
+        }),
+      },
+    };
+    globalThis.clienteDoWebhook = () => ({
+      editMessage: async (id, o) => {
+        const c = [...copias.values()].find((x) => x.id === id);
+        if (!c) throw new Error("apagada");
+        c.embed = o.embeds[0];
+      },
+      deleteMessage: async (id) => {
+        const chave = [...copias.entries()].find(([, x]) => x.id === id)?.[0];
+        if (!chave) throw new Error("apagada");
+        copias.delete(chave);
+        apagadas.push(id);
+      },
+    });
+    globalThis.servidorDoGuild = async () => ({ id: "s1" });
+    globalThis.canaisEspelho = async () => [
+      { canal_id: "pt", idioma: "pt", webhook: "pt" },
+      { canal_id: "en", idioma: "en", webhook: "en" },
+      { canal_id: "es", idioma: "es", webhook: "es" },
+    ];
+    globalThis.procurarFamilia = async () => null;
+    globalThis.ondeMoraAFala = new Map();
+    return { copias, apagadas };
+  };
+  const familiaDeTres = () => {
+    const f = familiaCom("pt");
+    f.set("pt", "o1"); f.set("en", "cEn"); f.set("es", "cEs");
+    return f;
+  };
+
+  /* Uma fala só no cartão: some inteiro. É o caso comum. */
+  {
+    const mundo = montarSalas();
+    globalThis.ondeMoraAFala.set("o1", familiaDeTres());
+    falasNoCartao.clear();
+    guardarFalas("cEn", [{ msgId: "o1", texto: "hello" }]);
+    guardarFalas("cEs", [{ msgId: "o1", texto: "hola" }]);
+
+    await apagarNasOutrasSalas("o1", "pt", "g1");
+    ok("apagar a fala apaga as duas cópias", mundo.apagadas.sort(), ["cEn", "cEs"]);
+    verdade("e o bot esquece os cartões que apagou", !falasNoCartao.has("cEn"));
+  }
+
+  /* Três falas no mesmo cartão: apagar a do meio REESCREVE. É o caso que faz
+     este recurso ser difícil, e o único que precisa existir. */
+  {
+    const mundo = montarSalas();
+    const familia = familiaDeTres();
+    /* As três falas emendadas compartilham a MESMA família — é assim que o
+       espelho monta um cartão emendado. */
+    for (const id of ["o1", "o2", "o3"]) globalThis.ondeMoraAFala.set(id, familia);
+    falasNoCartao.clear();
+    const trio = [{ msgId: "o1", texto: "um" }, { msgId: "o2", texto: "dois" },
+                  { msgId: "o3", texto: "três" }];
+    guardarFalas("cEn", trio.map((f) => ({ ...f })));
+    guardarFalas("cEs", trio.map((f) => ({ ...f })));
+    for (const sala of ["en", "es"]) {
+      mundo.copias.get(sala).embed = { description: "um\ndois\ntrês" + ASSINA };
+    }
+
+    await apagarNasOutrasSalas("o2", "pt", "g1");
+    /* Lido com `?.` e um valor de aviso porque a falha esperada aqui é o
+       cartão SUMIR: sem isso a asserção estoura em vez de falhar, e um crash
+       leva o placar inteiro junto -- a saída fica vazia e quem lê conclui que
+       a bateria não rodou. */
+    const emIngles = mundo.copias.get("en")?.embed?.description ?? "(o cartão foi apagado)";
+    ok("cartão emendado não é apagado", mundo.apagadas, []);
+    ok("a fala do meio sai e as outras duas ficam", emIngles, "um\ntrês" + ASSINA);
+    ok("e a assinatura continua inteira", caudaDoCartao(emIngles), ASSINA);
+    ok("o cartão passa a lembrar só as duas que sobraram",
+      (falasNoCartao.get("cEn") || []).map((f) => f.msgId), ["o1", "o3"]);
+  }
+
+  /* Apagar a CÓPIA não pode apagar a fala de ninguém. */
+  {
+    const mundo = montarSalas();
+    globalThis.ondeMoraAFala.set("cEn", familiaDeTres());
+    falasNoCartao.clear();
+    await apagarNasOutrasSalas("cEn", "en", "g1");
+    ok("apagar a cópia não apaga nada mais", mundo.apagadas, []);
+    ok("e as duas cópias continuam de pé", mundo.copias.size, 2);
+  }
+
+  /* Fala sem espelho (família de um) não mexe em nada. */
+  {
+    const mundo = montarSalas();
+    const sozinha = familiaCom("pt");
+    sozinha.set("pt", "o9");
+    globalThis.ondeMoraAFala.set("o9", sozinha);
+    await apagarNasOutrasSalas("o9", "pt", "g1");
+    ok("fala sem cópia não faz nada", mundo.apagadas, []);
+  }
+}
+
+/* As decisões de apagar e corrigir que não cabem numa função pura. */
+{
+  /* O extrator conhece `function` e `const`, e um escutador não é nenhum dos
+     dois. Aqui o recorte vai do `client.on(` até o `\n});` que o fecha —
+     apagar o escutador faz o recorte sair VAZIO, e os testes abaixo falham em
+     vez de passarem sobre o arquivo inteiro. */
+  const trecho = (abre) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    const j = fonte.indexOf("\n});", i);
+    return fonte.slice(i, j < 0 ? i + 4000 : j);
+  };
+  const update = trecho('client.on("messageUpdate"');
+
+  verdade("apagar é escutado", /client\.on\("messageDelete"/.test(fonte));
+  /* Limpeza em massa é O caso de moderação: quem apaga trinta mensagens de um
+     spammer não vai apagar as mesmas trinta em mais seis salas na mão. */
+  verdade("a limpeza em massa também", /client\.on\("messageDeleteBulk"/.test(fonte));
+  verdade("corrigir é escutado", /client\.on\("messageUpdate"/.test(fonte));
+
+  /* A armadilha de custo deste recurso inteiro.
+
+     O Discord dispara messageUpdate quando o link de uma mensagem termina de
+     carregar a pré-visualização, quando alguém fixa, quando um embed muda —
+     nada disso é a pessoa corrigindo a frase. Sem este corte, cada link colado
+     numa sala espelhada custaria seis traduções, para sempre, e calado. */
+  verdade("link carregando pré-visualização não conta como correção",
+    /!nova\?\.editedTimestamp/.test(update));
+  verdade("e texto que não mudou também não",
+    /velha\.content === nova\.content/.test(update));
+  /* A minha própria cópia voltaria como edição e eu me corrigiria em círculo. */
+  verdade("a cópia do webhook não entra pela porta da correção",
+    /nova\.webhookId/.test(update));
+
+  const apagar = pedaco("apagarNasOutrasSalas");
+  const corrigir = pedaco("corrigirNasOutrasSalas");
+  /* As duas fazem a mesma pergunta antes de mexer em qualquer coisa: quem
+     manda é a original — e quem decide isso é a SALA, não o id. */
+  for (const [nome, corpo] of [["apagar", apagar], ["corrigir", corrigir]]) {
+    verdade(`${nome}: a cópia não manda`,
+      /eACopia\(familia, [^)]*, (canalId|msg\.channelId)\)/.test(corpo));
+    verdade(`${nome}: fala sem espelho não faz nada`, /familia\.size < 2/.test(corpo));
+  }
+  /* Reescrever em vez de apagar é a diferença entre o recurso e um estrago. */
+  verdade("cartão emendado é reescrito, não apagado",
+    /sobram\.length && sobram\.length < falas\.length/.test(apagar));
+  /* Sem registro do cartão, corrigir NÃO adivinha: reescrever o cartão inteiro
+     apagaria as falas vizinhas. Não atravessar é como era antes; adivinhar
+     estragaria. */
+  verdade("correção sem registro do cartão não adivinha",
+    /!falas\?\.some\(\(f\) => f\.msgId === msg\.id\)/.test(corrigir));
+  /* Correção que não mudou nada naquela língua não vira "editado". */
+  verdade("não edito a cópia quando a descrição é a mesma",
+    /descricao === embed\.description/.test(corrigir));
+
+  /* O crachá vem dos dois lados: da memória e do banco. Se um dos dois
+     esquecer de pôr, apagar uma cópia volta a apagar a fala da pessoa. */
+  verdade("a memória marca de que sala veio a original",
+    /familia\.canalDaOriginal = canalId/.test(pedaco("lembrarFala")));
+  verdade("e o banco também", /familia\.canalDaOriginal =/.test(pedaco("procurarFamilia")));
+
+  /* O cartão só sabe qual pedaço é de quem porque `falas` anda colado com
+     `linhas`. Se alguém acrescentar uma linha sem o crachá, apagar a segunda
+     de três frases volta a apagar as três. */
+  const espelho = pedaco("espelharMensagem");
+  verdade("o cartão guarda de qual fala veio cada pedaço",
+    /const falas = velho \? \[\.\.\.velho\.falas, \{ msgId: msg\.id/.test(espelho));
+  verdade("e isso é gravado nos dois caminhos (cartão novo e emenda)",
+    (espelho.match(/guardarFalas\(/g) || []).length >= 2);
+}
+
+/* ====== figurinha e enquete também atravessam ======
+
+   O espelho monta o cartão a partir do `content`. Figurinha não é content e
+   não é anexo — é uma terceira coisa —, então uma figurinha sozinha caía no
+   `continue` que descarta fala vazia e a sala do outro lado simplesmente não
+   recebia mensagem. Não chegava vazia: NÃO CHEGAVA. Num servidor de jogo isso
+   é metade da conversa, e o buraco era invisível dos dois lados — quem mandou
+   viu a figurinha na sala dele e foi embora. */
+{
+  const { figurinhaDe, textoDaEnquete } = carregar(["figurinhaDe", "textoDaEnquete"]);
+
+  /* ---- figurinha ---- */
+  const comFigurinha = (f) => ({ stickers: { first: () => f } });
+  ok("mensagem sem figurinha não inventa uma", figurinhaDe(comFigurinha(null)), null);
+  ok("mensagem nenhuma não estoura", figurinhaDe(undefined), null);
+  ok("figurinha PNG vira nome e imagem",
+    figurinhaDe(comFigurinha({ name: "kek", format: 1, url: "http://f/kek.png" })),
+    { nome: "kek", url: "http://f/kek.png" });
+  /* Formato 3 é LOTTIE — as figurinhas do próprio Discord. A URL delas é um
+     .json de animação, que o embed não desenha: pendurar isso como imagem
+     daria um quadrado quebrado, que é pior do que só o nome. */
+  ok("figurinha do Discord (LOTTIE) fica só com o nome",
+    figurinhaDe(comFigurinha({ name: "wumpus", format: 3, url: "http://f/w.json" })),
+    { nome: "wumpus", url: "" });
+  ok("nome gigante é cortado",
+    figurinhaDe(comFigurinha({ name: "x".repeat(200), format: 1, url: "u" })).nome.length, 80);
+
+  /* ---- enquete ---- */
+  const enquete = (pergunta, ...opcoes) => ({
+    poll: { question: { text: pergunta }, answers: new Map(opcoes.map((t, i) => [i, { text: t }])) },
+  });
+  ok("mensagem sem enquete não vira texto", textoDaEnquete({}), "");
+  ok("enquete vazia também não", textoDaEnquete(enquete("", )), "");
+  ok("a pergunta e as opções viram uma lista",
+    textoDaEnquete(enquete("Rally hoje?", "Sim", "Não")),
+    "📊 Rally hoje?\n• Sim\n• Não");
+  ok("opção em branco não vira marcador solto",
+    textoDaEnquete(enquete("E aí?", "Sim", "  ")), "📊 E aí?\n• Sim");
+}
+
+/* ---- e as duas passando pelo espelho de verdade ----
+
+   Os testes puros acima confirmam a leitura; este confirma que ela CHEGA do
+   outro lado, que é onde o defeito morava. */
+{
+  const { espelharMensagem, ultimaFalaDaSala } = carregar([
+    "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
+    "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
+    "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
+    "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
+    "figurinhaDe", "textoDaEnquete",
+    "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
+
+  const salas = new Map([["en", { lastMessageId: null }]]);
+  const lista = [{ canal_id: "pt", idioma: "pt", webhook: "pt" },
+                 { canal_id: "en", idioma: "en", webhook: "en" }];
+  const origem = { canal_id: "pt", idioma: "pt" };
+
+  const mandar = async (extra, texto = "") => {
+    const postas = [];
+    globalThis.clienteDoWebhook = () => ({
+      send: async (o) => { postas.push(o); return { id: `m${postas.length}` }; },
+      editMessage: async () => { throw new Error("nao deveria emendar"); },
+    });
+    ultimaFalaDaSala.clear();
+    await espelharMensagem({
+      id: "o1",
+      author: { id: "tiago", username: "Tiago", displayAvatarURL: () => "http://foto" },
+      member: { displayName: "Tiago" },
+      attachments: { size: 0 },
+      mentions: { users: new Map() },
+      reference: null,
+      channel: { id: "pt" },
+      guild: { id: "g", channels: { cache: salas } },
+      url: "http://discord/g/pt/o1",
+      ...extra,
+    }, lista, origem, texto);
+    return postas;
+  };
+
+  /* O caso do defeito: figurinha sozinha não chegava em sala nenhuma. */
+  {
+    const postas = await mandar({ stickers: { first: () => ({ name: "kek", format: 1, url: "http://f/kek.png" }) } });
+    ok("figurinha sozinha chega do outro lado", postas.length, 1);
+    ok("e chega como imagem do cartão", postas[0]?.embeds?.[0]?.image?.url, "http://f/kek.png");
+    /* Sem isto o cartão sairia com a descrição vazia, e o Discord recusa o
+       embed inteiro — a fala sumiria pelo outro caminho. */
+    verdade("e o cartão nunca fica sem descrição",
+      (postas[0]?.embeds?.[0]?.description || "").trim().length > 0);
+  }
+
+  /* A do Discord não tem imagem para desenhar: sobra o nome, e ele precisa
+     aparecer, senão o cartão sai vazio. */
+  {
+    const postas = await mandar({ stickers: { first: () => ({ name: "wumpus", format: 3, url: "http://f/w.json" }) } });
+    ok("figurinha do Discord chega mesmo assim", postas.length, 1);
+    verdade("sem imagem quebrada pendurada", !postas[0]?.embeds?.[0]?.image);
+    verdade("e com o nome no corpo", /wumpus/.test(postas[0]?.embeds?.[0]?.description || ""));
+  }
+
+  /* Enquete: a pergunta atravessa, e o link leva a votar na única enquete que
+     existe. Sete enquetes separadas partiriam os votos em sete. */
+  {
+    const postas = await mandar({
+      stickers: { first: () => null },
+      poll: { question: { text: "Rally hoje?" }, answers: new Map([[0, { text: "Sim" }]]) },
+    });
+    ok("enquete chega do outro lado", postas.length, 1);
+    const corpo = postas[0]?.embeds?.[0]?.description || "";
+    verdade("com a pergunta", /Rally hoje\?/.test(corpo));
+    verdade("e com as opções", /• Sim/.test(corpo));
+    /* O link sai DEPOIS da tradução: `[rótulo](url)` no meio do texto que vai
+       pro tradutor volta com o colchete fora do lugar e o link morre. */
+    verdade("e com o caminho de volta para votar",
+      /\[📊 Votar \/ Vote\]\(http:\/\/discord\/g\/pt\/o1\)/.test(corpo));
+  }
+}
+
+/* ====== os links do site levam a algum lugar ======
+
+   Este teste existe por um defeito que eu mesmo acabei de cometer: os cinco
+   passos saíram de index.html para passos.html, e o link `#passos` da barra
+   continuou apontando para uma âncora que não existia mais. Clicar não fazia
+   nada — nem erro, nem página errada, nada. É o pior tipo de link quebrado,
+   porque não parece quebrado: parece um site que não responde.
+
+   Mover uma seção de página é justamente o tipo de mudança que se faz sem
+   reler os cinco lugares que apontavam para ela. Então a conferência fica
+   aqui, e não na minha memória. */
+{
+  const paginas = ["index", "passos", "recursos", "painel", "privacidade", "termos"]
+    .map((n) => ({ nome: `${n}.html`, caminho: `${aqui}/../cyron/${n}.html` }))
+    .filter((p) => existsSync(p.caminho))
+    .map((p) => ({ ...p, html: readFileSync(p.caminho, "utf8") }));
+
+  verdade("as páginas do site estão onde eu penso que estão", paginas.length >= 5);
+  const idsDe = (html) => new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const porNome = new Map(paginas.map((p) => [p.nome, p]));
+
+  const mortos = [];
+  for (const pag of paginas) {
+    const meus = idsDe(pag.html);
+    for (const [, href] of pag.html.matchAll(/href="([^"]+)"/g)) {
+      /* `#` sozinho é o convite do Discord, montado pelo JS a partir do
+         CLIENT_ID: escrever a URL à mão em quatro botões era como um deles
+         acabava com a permissão errada. */
+      if (href === "#" || /^(https?:|mailto:|data:)/.test(href)) continue;
+      /* href montado dentro de JS (`href="' + CONVITE + '"`) não é endereço
+         nenhum: é código que vira endereço no navegador. O painel monta os
+         dele assim, e lê-los como link daria quatro falsos alarmes. */
+      if (/\$\{|' \+ |\+ '/.test(href)) continue;
+
+      /* Âncora na própria página. */
+      if (href.startsWith("#")) {
+        if (!meus.has(href.slice(1))) mortos.push(`${pag.nome} → ${href}`);
+        continue;
+      }
+      /* Âncora noutra página (`./#planos` é a home). */
+      const [alvo, ancora] = href.replace(/^\.\//, "").split("#");
+      const destino = alvo ? porNome.get(alvo) : porNome.get("index.html");
+      if (alvo && !destino) {
+        /* Arquivo fora da lista (uma imagem, a pasta de cima): só confiro que
+           ele existe no disco. */
+        if (!existsSync(`${aqui}/../cyron/${alvo}`)) mortos.push(`${pag.nome} → ${href}`);
+        continue;
+      }
+      if (ancora && destino && !idsDe(destino.html).has(ancora)) mortos.push(`${pag.nome} → ${href}`);
+    }
+  }
+  ok("nenhum link do site aponta para o vazio", mortos, []);
+
+  /* E a seção que mudou de casa, presa pelo nome: os passos moram em
+     passos.html, e a home só guarda a porta. Se alguém trouxer os cinco passos
+     de volta para a home, a página volta a ter onze telas e este teste avisa. */
+  const home = porNome.get("index.html")?.html || "";
+  const passos = porNome.get("passos.html")?.html || "";
+  /* Conta a MARCAÇÃO, e não a palavra: o CSS de `.passo-foto` continua nas
+     duas páginas (elas carregam a mesma folha embutida), então procurar o
+     nome solto acharia a regra de estilo e o teste passaria sempre. */
+  const fotos = (html) => (html.match(/<figure class="passo-foto"/g) || []).length;
+  verdade("os cinco passos moram na página deles", fotos(passos) >= 5);
+  verdade("e a home só guarda a porta para eles",
+    fotos(home) === 0 && /href="\.\/passos\.html"/.test(home));
 }
 
 /* Crash não pode engolir o placar.

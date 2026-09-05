@@ -172,6 +172,30 @@ export const RECURSOS = [
     prova: "atravessarReacoes",
   },
   {
+    chave: "apagar-corrigir",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Apagar e corrigir atravessam", en: "Deletes and edits carry across" },
+    como: { pt: "Sozinho, é só apagar ou editar", en: "On its own — just delete or edit" },
+    oque: {
+      pt: "Apagou, some das outras salas também — inclusive numa limpeza de moderação. Corrigiu o horário do evento, a correção chega traduzida em todas. Antes a cópia era pedra: quem apagava achava que tinha apagado, e o horário certo ficava numa língua só.",
+      en: "Delete it and it goes from the other rooms too — moderation purges included. Fix the event time and the fix lands translated everywhere. Before, copies were set in stone: you thought you had deleted it, and the right time lived in one language only.",
+    },
+    prova: "apagarNasOutrasSalas",
+  },
+  {
+    chave: "figurinha-enquete",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Figurinha e enquete também passam", en: "Stickers and polls come through too" },
+    como: { pt: "Sozinho, é só mandar", en: "On its own — just send it" },
+    oque: {
+      pt: "Figurinha aparece nas outras salas como imagem, com o nome de quem mandou. Enquete chega com a pergunta e as opções traduzidas, e um botão que leva à enquete de verdade — uma só, com todos os votos juntos, em vez de sete enquetes com os votos partidos.",
+      en: "A sticker shows up in the other rooms as an image, under the sender's name. A poll arrives with its question and options translated, plus a link to the real poll — one poll with all the votes, instead of seven with the votes split.",
+    },
+    prova: "textoDaEnquete",
+  },
+  {
     chave: "replica",
     categoria: "traduzir",
     plano: "pago",
