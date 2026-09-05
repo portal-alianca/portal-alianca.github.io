@@ -172,6 +172,18 @@ export const RECURSOS = [
     prova: "atravessarReacoes",
   },
   {
+    chave: "apagar-corrigir",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Apagar e corrigir atravessam", en: "Deletes and edits carry across" },
+    como: { pt: "Sozinho, é só apagar ou editar", en: "On its own — just delete or edit" },
+    oque: {
+      pt: "Apagou, some das outras salas também — inclusive numa limpeza de moderação. Corrigiu o horário do evento, a correção chega traduzida em todas. Antes a cópia era pedra: quem apagava achava que tinha apagado, e o horário certo ficava numa língua só.",
+      en: "Delete it and it goes from the other rooms too — moderation purges included. Fix the event time and the fix lands translated everywhere. Before, copies were set in stone: you thought you had deleted it, and the right time lived in one language only.",
+    },
+    prova: "apagarNasOutrasSalas",
+  },
+  {
     chave: "replica",
     categoria: "traduzir",
     plano: "pago",
