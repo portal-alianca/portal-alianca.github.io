@@ -99,6 +99,41 @@ h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
 .fala p{margin:3px 0 0; font-size:14.5px; line-height:1.5}
 .carimbo{font-size:11.5px; color:var(--fraquinho); margin-top:7px}
 
+/* ---------- a demonstração viva ----------
+
+   As três caixas do topo eram HTML fixo: uma frase escrita à mão, "traduzida"
+   à mão, para ILUSTRAR o produto. Quem chegava tinha que acreditar. E instalar
+   um bot no próprio Discord é um compromisso grande -- permissões, código de
+   um estranho --, então "acredite" é caro demais para pedir na primeira tela.
+
+   Agora a primeira caixa é um campo, e as outras duas traduzem de verdade,
+   pelo mesmo motor que o plano grátis usa. Não é maquete: é o produto.
+
+   Roda no navegador de quem visita, e é de propósito. Não há chave nenhuma
+   nesta página (o motor grátis não usa chave), a chamada sai do computador da
+   pessoa, e nenhuma cota minha é gasta por quem só está olhando. */
+.digitar{
+  width:100%; background:transparent; border:0; padding:0; resize:none; overflow:hidden;
+  color:var(--texto); font:inherit; font-size:14.5px; line-height:1.5; margin:3px 0 0;
+}
+.digitar:focus{outline:none}
+.digitar::placeholder{color:var(--fraquinho)}
+/* A caixa onde se escreve precisa parecer que aceita escrita. Sem esta borda
+   viva ela era idêntica às outras duas, e ninguém clicava. */
+.sala.viva{border-color:var(--ambar); box-shadow:0 0 0 1px var(--ambar) inset}
+.sala.viva .cab{color:var(--ambar)}
+.lingua-alvo{
+  background:none; border:0; color:var(--fraquinho); font:inherit; font-size:12.5px;
+  font-weight:650; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  cursor:pointer; padding:0; margin-left:2px;
+}
+.lingua-alvo:focus-visible{outline:2px solid var(--ambar); outline-offset:2px}
+.lingua-alvo option{background:var(--painel); color:var(--texto)}
+/* Enquanto a tradução não voltou, o texto de antes continua legível mas
+   apagado. Trocar por "carregando..." piscaria a caixa a cada tecla. */
+.esperando{opacity:.42; transition:opacity .18s}
+.dica-demo{font-size:12.5px; color:var(--fraquinho); margin:14px 0 0; text-align:center}
+
 /* ---------- seções ---------- */
 section{padding:82px 0; border-top:1px solid var(--borda)}
 .rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px}
@@ -283,29 +318,47 @@ html[lang="en"] [data-en]{display:revert}
       <span data-en>Free forever · no card · working in under a minute</span>
     </p>
 
-    <div class="salas">
-      <div class="sala">
-        <div class="cab">#general-chat-pt</div>
+    <div class="salas" id="demo">
+      <div class="sala viva">
+        <div class="cab">#general-chat · <span data-pt>você</span><span data-en>you</span></div>
         <div class="fala">
           <div class="bola"></div>
-          <div><b>Tiago</b><p>Alguém entra no urso às 20h?</p></div>
+          <div>
+            <b data-pt>Você</b><b data-en>You</b>
+            <!-- rows=1 e o próprio JS crescendo a caixa: textarea de altura fixa
+                 ou corta a frase ou deixa um buraco embaixo das outras duas. -->
+            <textarea class="digitar" id="demo-fonte" rows="1" maxlength="200" spellcheck="false"
+              aria-label="Escreva aqui / Type here">Alguém entra no urso às 20h?</textarea>
+          </div>
         </div>
       </div>
-      <div class="sala">
-        <div class="cab">#general-chat-en</div>
+      <div class="sala" data-saida>
+        <div class="cab">#general-chat-<select class="lingua-alvo" data-alvo="en"></select></div>
         <div class="fala">
           <div class="bola"></div>
-          <div><b>Tiago</b><p>Anyone joining the bear at 8pm?</p><div class="carimbo">🇧🇷 → 🇬🇧</div></div>
+          <div>
+            <b data-pt>Você</b><b data-en>You</b>
+            <p data-texto>Anyone joining the bear at 8pm?</p>
+            <div class="carimbo" data-carimbo>🇧🇷 → 🇬🇧</div>
+          </div>
         </div>
       </div>
-      <div class="sala">
-        <div class="cab">#general-chat-ar</div>
+      <div class="sala" data-saida>
+        <div class="cab">#general-chat-<select class="lingua-alvo" data-alvo="ar"></select></div>
         <div class="fala">
           <div class="bola"></div>
-          <div><b>Tiago</b><p dir="rtl">هل سينضم أحد إلى الدب الساعة 8 مساءً؟</p><div class="carimbo">🇧🇷 → 🇸🇦</div></div>
+          <div>
+            <b data-pt>Você</b><b data-en>You</b>
+            <p data-texto dir="rtl">هل سينضم أحد إلى الدب الساعة 8 مساءً؟</p>
+            <div class="carimbo" data-carimbo>🇧🇷 → 🇸🇦</div>
+          </div>
         </div>
       </div>
     </div>
+    <p class="dica-demo">
+      <span data-pt>Escreva ali em cima, na sua língua. É o mesmo tradutor do plano grátis — o pago usa DeepL ou Azure, que são melhores.</span>
+      <span data-en>Type up there, in your own language. This is the free plan's translator — the paid one uses DeepL or Azure, which are better.</span>
+    </p>
   </div>
 </div>
 
@@ -658,6 +711,188 @@ function idioma(qual) {
 [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
   b.addEventListener("click", function () { idioma(b.dataset.troca); });
 });
+
+/* ======================= A DEMONSTRACAO VIVA =======================
+
+   Sem servidor, e isso nao e' economia: e' a decisao que faz a coisa existir.
+
+   O motor GRATIS do produto e' o endpoint do Google que o bot ja usa, e ele
+   responde `access-control-allow-origin: *` -- conferido, nao suposto. Entao
+   a pagina chama direto do navegador de quem visita:
+
+   - Nao ha chave nenhuma nesta pagina, porque o motor gratis nao usa chave.
+     Um endpoint meu com chave dentro seria uma torneira de traducao aberta
+     para a internet, paga por mim.
+   - A chamada sai do computador da pessoa, com o IP dela. Quem so' esta
+     olhando nao gasta cota de ninguem.
+   - E nao abre porta no bot. O processo do Discord precisa ficar de pe 24h;
+     pendurar um endereco publico nele seria criar um jeito novo de ele cair,
+     e cair e' o que ja custou uma noite inteira aqui.
+
+   O preco honesto: e' o motor gratis, que e' pior que o DeepL do plano pago.
+   A linha embaixo das caixas diz isso. Subvender e' o lado certo do erro numa
+   pagina de venda -- quem instala tem uma surpresa boa. */
+
+/* As mesmas 20 linguas do bot. Escritas aqui porque esta pagina nao carrega o
+   codigo do bot; se a lista de la mudar, esta e' uma copia que envelhece -- e
+   e' por isso que os testes conferem que os dois lados batem. */
+var LINGUAS_DEMO = [
+  ["en","en"],["pt","pt"],["es","es"],["ar","ar"],["fr","fr"],
+  ["de","de"],["it","it"],["ru","ru"],["tr","tr"],["zh-CN","zh"],
+  ["ja","ja"],["ko","ko"],["hi","hi"],["id","id"],["vi","vi"],
+  ["th","th"],["pl","pl"],["nl","nl"],["uk","uk"],["tl","tl"]
+];
+
+/* A resposta do clients5 vem em duas formas, e a segunda so' aparece quando o
+   texto tem mais de uma frase:
+
+     [["good morning","pt"]]                      uma frase
+     [[["bom","..."],["dia","..."]],null,"pt"]    varias
+
+   Ler so' a forma de cima devolveria "undefined" no cartao a partir da
+   segunda frase que a pessoa escrevesse -- defeito que so' aparece quando
+   alguem digita um ponto final. */
+function lerTraducao(dados) {
+  if (!dados) return { texto: "", origem: "" };
+  if (Array.isArray(dados[0]) && typeof dados[0][0] === "string") {
+    return { texto: String(dados[0][0] || ""), origem: String(dados[0][1] || "") };
+  }
+  if (Array.isArray(dados[0])) {
+    var junto = dados[0].map(function (p) { return (p && p[0]) || ""; }).join("");
+    return { texto: junto, origem: String(dados[2] || "") };
+  }
+  return { texto: "", origem: "" };
+}
+
+/* A bandeira e' CALCULADA do codigo do pais, e nao escrita a mao.
+
+   Emoji de bandeira e' o par de "indicadores regionais" das duas letras do
+   pais: BR = as letras B e R deslocadas para o bloco 0x1F1E6. Uma tabela de
+   vinte emojis escrita a mao envelhece torta -- basta um deles vir de um
+   copiar-e-colar quebrado para o cartao mostrar dois quadrados. */
+var PAIS_DA_LINGUA = {
+  en:"GB", pt:"BR", es:"ES", ar:"SA", fr:"FR", de:"DE", it:"IT", ru:"RU",
+  tr:"TR", "zh-CN":"CN", zh:"CN", ja:"JP", ko:"KR", hi:"IN", id:"ID",
+  vi:"VN", th:"TH", pl:"PL", nl:"NL", uk:"UA", tl:"PH", fa:"IR"
+};
+function bandeiraDemo(lingua) {
+  var pais = PAIS_DA_LINGUA[lingua];
+  if (!pais) return "";
+  return String.fromCodePoint(
+    0x1F1E6 + pais.charCodeAt(0) - 65,
+    0x1F1E6 + pais.charCodeAt(1) - 65
+  );
+}
+var SETA_DEMO = "→";
+
+/* O selo repete o do cartao do bot: de onde veio, para onde foi. Idioma que eu
+   nao conheco vira o codigo cru em vez de sumir -- sumir seria o cartao
+   mentindo que nao houve traducao. */
+function seloDemo(de, para) {
+  var a = bandeiraDemo(de) || de || "", b = bandeiraDemo(para) || para || "";
+  return a && b ? a + " " + SETA_DEMO + " " + b : "";
+}
+
+/* Da direita para a esquerda, como no Discord. */
+function daDireita(lingua) { return ["ar","fa","he","ur"].indexOf(String(lingua || "")) >= 0; }
+
+(function () {
+  var fonte = document.getElementById("demo-fonte");
+  var demo = document.getElementById("demo");
+  if (!fonte || !demo) return;
+
+  var saidas = [].slice.call(demo.querySelectorAll("[data-saida]"));
+  [].forEach.call(demo.querySelectorAll(".lingua-alvo"), function (sel) {
+    sel.innerHTML = LINGUAS_DEMO.map(function (l) {
+      var b = bandeiraDemo(l[0]);
+      return '<option value="' + l[0] + '">' + b + " " + l[1] + "</option>";
+    }).join("");
+    sel.value = sel.dataset.alvo;
+    sel.addEventListener("change", function () { traduzirTudo(true); });
+  });
+
+  /* Textarea de uma linha so' cresce se alguem a fizer crescer. Altura fixa
+     ou corta a frase ou deixa um buraco embaixo das outras duas caixas. */
+  function ajustar() { fonte.style.height = "auto"; fonte.style.height = fonte.scrollHeight + "px"; }
+  ajustar();
+
+  /* O que ja foi traduzido nao e' pedido de novo. Sem isto, apagar uma letra e
+     digitar de volta custa uma chamada -- e quem esta experimentando faz
+     exatamente isso. */
+  var lembrado = {};
+  var pedido = 0;
+
+  /* A guarda de ordem vale SEMPRE, e o `agora` nao a desliga.
+
+     A primeira versao escrevia `meu !== pedido && !agora`, e o efeito era o
+     contrario do pretendido: a chamada de abertura (que passa `agora`) chegava
+     depois da primeira frase digitada e devolvia o texto de exemplo por cima
+     do que a pessoa acabou de escrever. Quem visse isso concluiria que o
+     tradutor esta quebrado -- na primeira tela do produto.
+
+     `agora` quer dizer uma coisa so': nao espere a pausa de digitacao. Quem
+     chega tarde nunca pinta, venha de onde vier. */
+  function traduzirTudo(agora) {
+    var texto = fonte.value.trim();
+    ajustar();
+    /* `meu` prende esta rodada: a pessoa continua digitando, e a resposta de
+       uma frase velha nao pode chegar depois e sobrescrever a nova. */
+    var meu = ++pedido;
+    saidas.forEach(function (sala) {
+      var alvo = sala.querySelector(".lingua-alvo").value;
+      var onde = sala.querySelector("[data-texto]");
+      var carimbo = sala.querySelector("[data-carimbo]");
+      if (!texto) { onde.textContent = ""; carimbo.textContent = ""; return; }
+
+      var chave = alvo + " " + texto;
+      if (lembrado[chave]) return pintar(onde, carimbo, alvo, lembrado[chave]);
+
+      onde.classList.add("esperando");
+      var url = "https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=" +
+        encodeURIComponent(alvo) + "&q=" + encodeURIComponent(texto);
+      fetch(url).then(function (r) { return r.json(); }).then(function (dados) {
+        if (meu !== pedido) return; // chegou tarde: ja ha frase mais nova
+        var saiu = lerTraducao(dados);
+        if (!saiu.texto) throw new Error("vazio");
+        lembrado[chave] = saiu;
+        pintar(onde, carimbo, alvo, saiu);
+      }).catch(function () {
+        /* O Google recusa de vez em quando, e a pagina nao pode virar uma
+           caixa quebrada por causa disso: mostra o original e diz por que. */
+        if (meu !== pedido) return;
+        onde.classList.remove("esperando");
+        onde.textContent = texto;
+        carimbo.textContent = document.documentElement.lang === "en"
+          ? "the free translator refused this one, try again in a moment"
+          : "o tradutor gratis recusou agora, tente de novo daqui a pouco";
+      });
+    });
+  }
+
+  function pintar(onde, carimbo, alvo, saiu) {
+    onde.classList.remove("esperando");
+    onde.textContent = saiu.texto;
+    onde.setAttribute("dir", daDireita(alvo) ? "rtl" : "ltr");
+    carimbo.textContent = seloDemo(saiu.origem, alvo);
+  }
+
+  /* Uma chamada por PAUSA, e nao por tecla: sem isto, uma frase de trinta
+     letras seriam sessenta chamadas ao Google (duas salas), e ele passa a
+     recusar tudo -- a demonstracao se quebraria sozinha justamente com quem
+     mais escreveu nela. */
+  var relogio = null;
+  fonte.addEventListener("input", function () {
+    clearTimeout(relogio);
+    relogio = setTimeout(traduzirTudo, 600);
+  });
+  /* Enter nao quebra linha aqui: e' uma fala do Discord, e mandar e' o gesto
+     que a pessoa espera. */
+  fonte.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); clearTimeout(relogio); traduzirTudo(true); }
+  });
+
+  traduzirTudo(true);
+})();
 
 /* Na primeira visita vale a língua do navegador: quem chega de um servidor
    internacional quase nunca lê português, e cair numa página que não se
