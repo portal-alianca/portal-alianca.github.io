@@ -2370,7 +2370,50 @@ function termosDoServidor(servidor) {
   return String(servidor?.glossario || "").split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
 }
 
+/* Figurinha e enquete nao tem texto, e por isso nao atravessavam NADA.
+
+   O espelho monta o cartao a partir do `content`. Figurinha nao e' content e
+   nao e' anexo -- e' uma terceira coisa --, entao uma figurinha sozinha caia
+   no `if (!linhaNova && !arquivos.length) continue` e a sala do outro lado
+   simplesmente nao recebia mensagem. Nao chegava vazia: nao chegava. Num
+   servidor de jogo isso e' metade da conversa, e o buraco era invisivel dos
+   dois lados -- quem mandou viu a figurinha na sala dele.
+
+   As de formato LOTTIE (as do proprio Discord) ficam de fora da imagem: a URL
+   delas e' um .json de animacao, que o embed nao desenha. Sobra o nome, que e'
+   pouco e e' honesto -- melhor "🎨 wumpus" do que um quadrado quebrado. */
+function figurinhaDe(msg) {
+  const f = msg?.stickers?.first?.();
+  if (!f) return null;
+  const desenhavel = f.format !== 3; // 3 = LOTTIE, animacao em JSON
+  return { nome: String(f.name || "").slice(0, 80), url: desenhavel ? (f.url || "") : "" };
+}
+
+/* A enquete atravessa como TEXTO, e nao como enquete.
+
+   Webhook ate' consegue criar enquete, e seria a coisa errada: sete enquetes
+   separadas, com os votos partidos em sete. A pergunta com dez votos viraria
+   sete perguntas com um ou dois cada, e ninguem saberia qual e' o resultado.
+
+   Entao a pergunta e as opcoes vao traduzidas, e o link leva a pessoa a votar
+   na enquete de verdade -- uma so', na sala de origem, com todos os votos
+   juntos. */
+function textoDaEnquete(msg) {
+  const p = msg?.poll;
+  if (!p) return "";
+  const pergunta = String(p.question?.text || "").trim();
+  const opcoes = [...(p.answers?.values?.() || [])]
+    .map((a) => String(a.text || "").trim()).filter(Boolean);
+  if (!pergunta && !opcoes.length) return "";
+  return [pergunta && `📊 ${pergunta}`, ...opcoes.map((o) => `• ${o}`)].filter(Boolean).join("\n");
+}
+
 async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null, termos = []) {
+  /* Enquete vira o corpo da fala quando nao ha' texto nenhum. Se a pessoa
+     escreveu algo junto, o que ela escreveu vem primeiro. */
+  const enquete = textoDaEnquete(msg);
+  if (enquete) texto = [String(texto || "").trim(), enquete].filter(Boolean).join("\n");
+  const figurinha = figurinhaDe(msg);
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -2463,7 +2506,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     agora: Date.now(),
     respondeAlguem: !!msg.reference,
     marcados,
-    arquivos,
+    /* Figurinha entra aqui junto com o anexo, e pelo mesmo motivo: a imagem
+       vive presa AO CARTAO, e emendar deixaria o texto novo no cartao de cima
+       com a figurinha antiga do lado. Um cartao com duas figurinhas nao existe
+       -- o embed desenha uma imagem so'. */
+    arquivos: figurinha ? [...arquivos, figurinha] : arquivos,
     avisaTodos,
   });
 
@@ -2572,8 +2619,16 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        No corpo do embed, e nao no rodape: o rodape e' o canto certo, mas la'
        o Discord nao desenha link nenhum -- o nome apareceria morto, e a
        assinatura existe justamente pra ser tocada. */
-    const linhaNova = [corpo, ...anexos].filter(Boolean).join("\n");
-    if (!linhaNova && !arquivos.length) continue;
+    /* O link de votar sai DEPOIS da traducao, de proposito: `[rotulo](url)` no
+       meio do texto que vai pro tradutor volta com o colchete no lugar errado
+       com frequencia, e o link morre. O rotulo fica bilingue, como os outros
+       do produto. */
+    const votar = msg.poll && msg.url ? `[📊 Votar / Vote](${msg.url})` : "";
+    const linhaNova = [corpo, ...anexos, votar].filter(Boolean).join("\n");
+    /* Figurinha sozinha nao tem texto nem anexo, e era exatamente por isto que
+       ela nao atravessava: caia neste `continue` e a sala do outro lado nao
+       recebia nada. */
+    if (!linhaNova && !arquivos.length && !figurinha) continue;
 
     const cabecalho = respondendo ? {
       ...respondendo,
@@ -2633,7 +2688,12 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     const montar = (corpoDoCartao, cabecalhoDoCartao) => ({
       color: cor,
       ...(cabecalhoDoCartao ? { author: cabecalhoDoCartao } : {}),
-      description: `${corpoDoCartao.slice(0, LIMITE_DO_CARTAO)}` +
+      /* A figurinha e' a fala inteira quando vem sozinha, entao ela e' a
+         IMAGEM do cartao e nao um anexo pendurado embaixo. O nome entra no
+         corpo so' quando nao ha' imagem para desenhar (as do Discord, em
+         LOTTIE) -- sem ele o cartao sairia completamente vazio. */
+      ...(figurinha?.url ? { image: { url: figurinha.url } } : {}),
+      description: `${(corpoDoCartao || (figurinha ? `🎨 ${figurinha.nome}` : "")).slice(0, LIMITE_DO_CARTAO)}` +
         `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
         (selo ? ` · ${selo}` : ""),
     });

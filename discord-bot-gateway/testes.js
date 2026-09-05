@@ -996,6 +996,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
+    "figurinhaDe", "textoDaEnquete",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1075,6 +1076,23 @@ function conferirCartao(onde, embed, componentes = []) {
       /I'm about to go in\nI was tweaking my translation system\n😅/.test(emIngles.embed.description));
     verdade("a assinatura aparece uma vez só",
       emIngles.embed.description.split("discord.com/users/").length - 1 === 1);
+  }
+
+  /* Figurinha abre cartão novo pelo mesmo motivo do anexo: a imagem vive presa
+     AO CARTÃO, e emendar deixaria o texto novo no cartão de cima com a
+     figurinha antiga do lado. Um cartão com duas figurinhas não existe — o
+     embed desenha uma imagem só. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "olha isso");
+    await falar(mundo, "", { stickers: { first: () => ({ name: "kek", format: 1, url: "http://f/kek.png" }) } });
+
+    ok("fala com figurinha sai em cartão novo", mundo.quantas(), 4);
+    const comImagem = [...mundo.mensagens.values()].filter((m) => m.embed.image);
+    ok("e a imagem aparece uma vez em cada sala", comImagem.length, 2);
+    verdade("o cartão de cima continua sem imagem nenhuma",
+      [...mundo.mensagens.values()].some((m) => !m.embed.image && /olha isso/.test(m.embed.description)));
   }
 
   /* Marcar alguém abre cartão novo: editar não toca sino em ninguém. */
@@ -4797,6 +4815,124 @@ function conferirCartao(onde, embed, componentes = []) {
     /const falas = velho \? \[\.\.\.velho\.falas, \{ msgId: msg\.id/.test(espelho));
   verdade("e isso é gravado nos dois caminhos (cartão novo e emenda)",
     (espelho.match(/guardarFalas\(/g) || []).length >= 2);
+}
+
+/* ====== figurinha e enquete também atravessam ======
+
+   O espelho monta o cartão a partir do `content`. Figurinha não é content e
+   não é anexo — é uma terceira coisa —, então uma figurinha sozinha caía no
+   `continue` que descarta fala vazia e a sala do outro lado simplesmente não
+   recebia mensagem. Não chegava vazia: NÃO CHEGAVA. Num servidor de jogo isso
+   é metade da conversa, e o buraco era invisível dos dois lados — quem mandou
+   viu a figurinha na sala dele e foi embora. */
+{
+  const { figurinhaDe, textoDaEnquete } = carregar(["figurinhaDe", "textoDaEnquete"]);
+
+  /* ---- figurinha ---- */
+  const comFigurinha = (f) => ({ stickers: { first: () => f } });
+  ok("mensagem sem figurinha não inventa uma", figurinhaDe(comFigurinha(null)), null);
+  ok("mensagem nenhuma não estoura", figurinhaDe(undefined), null);
+  ok("figurinha PNG vira nome e imagem",
+    figurinhaDe(comFigurinha({ name: "kek", format: 1, url: "http://f/kek.png" })),
+    { nome: "kek", url: "http://f/kek.png" });
+  /* Formato 3 é LOTTIE — as figurinhas do próprio Discord. A URL delas é um
+     .json de animação, que o embed não desenha: pendurar isso como imagem
+     daria um quadrado quebrado, que é pior do que só o nome. */
+  ok("figurinha do Discord (LOTTIE) fica só com o nome",
+    figurinhaDe(comFigurinha({ name: "wumpus", format: 3, url: "http://f/w.json" })),
+    { nome: "wumpus", url: "" });
+  ok("nome gigante é cortado",
+    figurinhaDe(comFigurinha({ name: "x".repeat(200), format: 1, url: "u" })).nome.length, 80);
+
+  /* ---- enquete ---- */
+  const enquete = (pergunta, ...opcoes) => ({
+    poll: { question: { text: pergunta }, answers: new Map(opcoes.map((t, i) => [i, { text: t }])) },
+  });
+  ok("mensagem sem enquete não vira texto", textoDaEnquete({}), "");
+  ok("enquete vazia também não", textoDaEnquete(enquete("", )), "");
+  ok("a pergunta e as opções viram uma lista",
+    textoDaEnquete(enquete("Rally hoje?", "Sim", "Não")),
+    "📊 Rally hoje?\n• Sim\n• Não");
+  ok("opção em branco não vira marcador solto",
+    textoDaEnquete(enquete("E aí?", "Sim", "  ")), "📊 E aí?\n• Sim");
+}
+
+/* ---- e as duas passando pelo espelho de verdade ----
+
+   Os testes puros acima confirmam a leitura; este confirma que ela CHEGA do
+   outro lado, que é onde o defeito morava. */
+{
+  const { espelharMensagem, ultimaFalaDaSala } = carregar([
+    "JANELA_DE_GRUPO", "LIMITE_DO_CARTAO", "MAX_SALAS_LEMBRADAS", "TEXTO_MAXIMO",
+    "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
+    "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
+    "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
+    "figurinhaDe", "textoDaEnquete",
+    "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
+
+  const salas = new Map([["en", { lastMessageId: null }]]);
+  const lista = [{ canal_id: "pt", idioma: "pt", webhook: "pt" },
+                 { canal_id: "en", idioma: "en", webhook: "en" }];
+  const origem = { canal_id: "pt", idioma: "pt" };
+
+  const mandar = async (extra, texto = "") => {
+    const postas = [];
+    globalThis.clienteDoWebhook = () => ({
+      send: async (o) => { postas.push(o); return { id: `m${postas.length}` }; },
+      editMessage: async () => { throw new Error("nao deveria emendar"); },
+    });
+    ultimaFalaDaSala.clear();
+    await espelharMensagem({
+      id: "o1",
+      author: { id: "tiago", username: "Tiago", displayAvatarURL: () => "http://foto" },
+      member: { displayName: "Tiago" },
+      attachments: { size: 0 },
+      mentions: { users: new Map() },
+      reference: null,
+      channel: { id: "pt" },
+      guild: { id: "g", channels: { cache: salas } },
+      url: "http://discord/g/pt/o1",
+      ...extra,
+    }, lista, origem, texto);
+    return postas;
+  };
+
+  /* O caso do defeito: figurinha sozinha não chegava em sala nenhuma. */
+  {
+    const postas = await mandar({ stickers: { first: () => ({ name: "kek", format: 1, url: "http://f/kek.png" }) } });
+    ok("figurinha sozinha chega do outro lado", postas.length, 1);
+    ok("e chega como imagem do cartão", postas[0]?.embeds?.[0]?.image?.url, "http://f/kek.png");
+    /* Sem isto o cartão sairia com a descrição vazia, e o Discord recusa o
+       embed inteiro — a fala sumiria pelo outro caminho. */
+    verdade("e o cartão nunca fica sem descrição",
+      (postas[0]?.embeds?.[0]?.description || "").trim().length > 0);
+  }
+
+  /* A do Discord não tem imagem para desenhar: sobra o nome, e ele precisa
+     aparecer, senão o cartão sai vazio. */
+  {
+    const postas = await mandar({ stickers: { first: () => ({ name: "wumpus", format: 3, url: "http://f/w.json" }) } });
+    ok("figurinha do Discord chega mesmo assim", postas.length, 1);
+    verdade("sem imagem quebrada pendurada", !postas[0]?.embeds?.[0]?.image);
+    verdade("e com o nome no corpo", /wumpus/.test(postas[0]?.embeds?.[0]?.description || ""));
+  }
+
+  /* Enquete: a pergunta atravessa, e o link leva a votar na única enquete que
+     existe. Sete enquetes separadas partiriam os votos em sete. */
+  {
+    const postas = await mandar({
+      stickers: { first: () => null },
+      poll: { question: { text: "Rally hoje?" }, answers: new Map([[0, { text: "Sim" }]]) },
+    });
+    ok("enquete chega do outro lado", postas.length, 1);
+    const corpo = postas[0]?.embeds?.[0]?.description || "";
+    verdade("com a pergunta", /Rally hoje\?/.test(corpo));
+    verdade("e com as opções", /• Sim/.test(corpo));
+    /* O link sai DEPOIS da tradução: `[rótulo](url)` no meio do texto que vai
+       pro tradutor volta com o colchete fora do lugar e o link morre. */
+    verdade("e com o caminho de volta para votar",
+      /\[📊 Votar \/ Vote\]\(http:\/\/discord\/g\/pt\/o1\)/.test(corpo));
+  }
 }
 
 /* Crash não pode engolir o placar.

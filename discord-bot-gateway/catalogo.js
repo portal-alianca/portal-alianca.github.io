@@ -184,6 +184,18 @@ export const RECURSOS = [
     prova: "apagarNasOutrasSalas",
   },
   {
+    chave: "figurinha-enquete",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Figurinha e enquete também passam", en: "Stickers and polls come through too" },
+    como: { pt: "Sozinho, é só mandar", en: "On its own — just send it" },
+    oque: {
+      pt: "Figurinha aparece nas outras salas como imagem, com o nome de quem mandou. Enquete chega com a pergunta e as opções traduzidas, e um botão que leva à enquete de verdade — uma só, com todos os votos juntos, em vez de sete enquetes com os votos partidos.",
+      en: "A sticker shows up in the other rooms as an image, under the sender's name. A poll arrives with its question and options translated, plus a link to the real poll — one poll with all the votes, instead of seven with the votes split.",
+    },
+    prova: "textoDaEnquete",
+  },
+  {
     chave: "replica",
     categoria: "traduzir",
     plano: "pago",
