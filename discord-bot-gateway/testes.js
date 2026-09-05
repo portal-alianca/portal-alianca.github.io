@@ -5002,6 +5002,159 @@ function conferirCartao(onde, embed, componentes = []) {
     fotos(home) === 0 && /href="\.\/passos\.html"/.test(home));
 }
 
+/* ====== a demonstração viva do topo da página ======
+
+   As três caixas do topo eram HTML fixo: uma frase escrita à mão, "traduzida"
+   à mão. Quem chegava tinha que ACREDITAR — e instalar um bot no próprio
+   Discord é um compromisso grande (permissões, código de um estranho), então
+   "acredite" é caro demais para pedir na primeira tela.
+
+   Agora a primeira caixa é um campo e as outras duas traduzem de verdade, pelo
+   mesmo motor que o plano grátis usa, direto do navegador de quem visita.
+
+   Por que sem servidor: o motor grátis não usa chave, e o endpoint responde
+   `access-control-allow-origin: *` (conferido com curl, não suposto). Um
+   endpoint meu com chave dentro seria uma torneira de tradução aberta para a
+   internet, paga por mim. E abrir porta no bot criaria um jeito novo de o
+   processo do Discord cair, que é o que já custou uma noite inteira. */
+{
+  const pagina = readFileSync(`${aqui}/../cyron/index.html`, "utf8");
+  const script = pagina.slice(pagina.lastIndexOf("<script>") + 8, pagina.lastIndexOf("</script>"));
+
+  /* As funções puras da página, avaliadas fora do navegador. Recorto por nome,
+     como o extrator do index.js faz, para que renomear uma delas quebre alto
+     em vez de o teste sumir em silêncio. */
+  const daPagina = (nomes) => {
+    const codigo = nomes.map((n) => {
+      const i = script.indexOf(`function ${n}(`);
+      if (i < 0) throw new Error(`não achei "${n}" na página — foi renomeada?`);
+      let nivel = 0, k = script.indexOf("{", i);
+      const inicio = k;
+      for (; k < script.length; k++) {
+        if (script[k] === "{") nivel++;
+        else if (script[k] === "}") { nivel--; if (!nivel) { k++; break; } }
+      }
+      return script.slice(i, k);
+    }).join("\n");
+    const mapa = nomes.map((n) => `${n}: ${n}`).join(",");
+    /* As constantes que essas funções leem vêm junto: a tabela de países e a
+       seta do selo. Sem elas o recorte avalia e só estoura na primeira
+       chamada, com um "não definido" que aponta para o teste em vez de para
+       a página. */
+    const tabela = script.slice(script.indexOf("var PAIS_DA_LINGUA"), script.indexOf("function bandeiraDemo"))
+      + script.slice(script.indexOf("var SETA_DEMO"), script.indexOf("\n", script.indexOf("var SETA_DEMO")));
+    return (0, eval)(`${tabela}\n${codigo}\n;({${mapa}})`);
+  };
+
+  const { lerTraducao, bandeiraDemo, seloDemo, daDireita } =
+    daPagina(["lerTraducao", "bandeiraDemo", "seloDemo", "daDireita"]);
+
+  /* As guardas de código olham o CÓDIGO, e não os comentários.
+
+     Sem isto, o teste que proíbe `meu !== pedido && !agora` encontrava a
+     expressão dentro do comentário que EXPLICA por que ela é errada — e o
+     conserto falhava por causa da explicação do próprio conserto. */
+  /* O `[^:]` antes do `//` não é enfeite: sem ele o removedor come o `//` de
+     `https://` e leva o resto da linha junto — e o teste que confere QUAL
+     endpoint a página chama passa a não achar endpoint nenhum. O removedor
+     apagava justamente a linha que ele existe para guardar. */
+  const codigo = script.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+  /* ---- ler a resposta do tradutor ----
+
+     Ela vem em duas formas, e a segunda só aparece quando o texto tem mais de
+     uma frase. Ler só a de cima devolveria "undefined" no cartão a partir do
+     primeiro ponto final que alguém digitasse — na primeira tela do produto. */
+  ok("uma frase", lerTraducao([["good morning", "pt"]]),
+    { texto: "good morning", origem: "pt" });
+  ok("várias frases vêm em pedaços e são coladas",
+    lerTraducao([[["Good morning. ", null], ["Anyone at the bear?", null]], null, "pt"]),
+    { texto: "Good morning. Anyone at the bear?", origem: "pt" });
+  ok("resposta vazia não vira undefined", lerTraducao(null), { texto: "", origem: "" });
+  ok("resposta de formato estranho também não", lerTraducao([42]), { texto: "", origem: "" });
+  ok("pedaço sem texto não quebra a cola",
+    lerTraducao([[["oi", null], null], null, "pt"]).texto, "oi");
+
+  /* ---- a bandeira sai do código do país ----
+
+     Uma tabela de vinte emojis escrita à mão envelhece torta: basta um vir de
+     um copiar-e-colar quebrado para o cartão mostrar dois quadrados. */
+  ok("Brasil", bandeiraDemo("pt"), "\u{1F1E7}\u{1F1F7}");
+  ok("Reino Unido", bandeiraDemo("en"), "\u{1F1EC}\u{1F1E7}");
+  ok("chinês tem o código com região", bandeiraDemo("zh-CN"), "\u{1F1E8}\u{1F1F3}");
+  ok("língua que eu não conheço não vira quadrado", bandeiraDemo("xx"), "");
+
+  /* O selo repete o do cartão do bot: de onde veio, para onde foi. */
+  ok("o selo mostra os dois lados", seloDemo("pt", "en"), "\u{1F1E7}\u{1F1F7} → \u{1F1EC}\u{1F1E7}");
+  /* Idioma desconhecido vira o código cru em vez de sumir: sumir seria o
+     cartão mentindo que não houve tradução. */
+  ok("origem desconhecida aparece como código", seloDemo("xx", "en"), "xx → \u{1F1EC}\u{1F1E7}");
+  ok("sem origem não há selo", seloDemo("", "en"), "");
+
+  verdade("árabe é da direita para a esquerda", daDireita("ar"));
+  verdade("persa também", daDireita("fa"));
+  verdade("inglês não", !daDireita("en"));
+  verdade("nada não estoura", !daDireita(undefined));
+
+  /* ---- e as decisões que não cabem numa função pura ---- */
+
+  /* NENHUMA credencial nesta página. Ela é estática e pública: qualquer chave
+     aqui é uma chave publicada, e o motor grátis não precisa de nenhuma.
+
+     A primeira versão proibia as PALAVRAS "DeepL" e "Azure", e acusava o texto
+     de venda que diz honestamente "o pago usa DeepL ou Azure". Guarda que pega
+     a palavra em vez do segredo ensina quem lê a desligar a guarda. Agora ela
+     procura o FORMATO de uma credencial: o cabeçalho de cada serviço, e
+     qualquer bolo opaco de 24 caracteres ou mais. */
+  verdade("a página não leva credencial nenhuma",
+    !/Ocp-Apim-Subscription-Key|DeepL-Auth-Key|Authorization|api[-_]?key|key=/i.test(codigo));
+  verdade("nem um segredo solto com cara de chave",
+    !/["'][A-Za-z0-9_-]{24,}["']/.test(codigo.replace(/dict-chrome-ex/g, "")));
+  verdade("e chama o motor grátis, o mesmo do plano grátis",
+    /clients5\.google\.com\/translate_a\/t\?client=dict-chrome-ex/.test(codigo));
+
+  /* Uma chamada por PAUSA, e não por tecla: sem isto, uma frase de trinta
+     letras seriam sessenta chamadas (duas salas), e o Google passa a recusar
+     tudo — a demonstração se quebraria sozinha justamente com quem mais
+     escreveu nela. */
+  verdade("digitar não dispara uma chamada por tecla",
+    /clearTimeout\(relogio\);\s*relogio = setTimeout\(traduzirTudo, \d+\);/.test(codigo));
+  /* Teto de tamanho no próprio campo: o resto é conversa. */
+  verdade("o campo tem teto de tamanho", /maxlength="\d+"/.test(pagina));
+  /* Texto repetido não é pedido de novo — quem experimenta apaga e redigita. */
+  verdade("o que já foi traduzido fica lembrado", /if \(lembrado\[chave\]\)/.test(codigo));
+
+  /* A GUARDA DE ORDEM, e este teste tem dono.
+
+     A primeira versão escrevia `meu !== pedido && !agora`, e o efeito era o
+     contrário do pretendido: a chamada de abertura chegava depois da primeira
+     frase digitada e devolvia o texto de exemplo POR CIMA do que a pessoa
+     acabou de escrever. Quem visse isso concluiria que o tradutor está
+     quebrado — na primeira tela do produto. Apareceu rodando a página num
+     navegador de verdade, não lendo o código. */
+  ok("resposta atrasada nunca pinta por cima da frase nova",
+    (codigo.match(/if \(meu !== pedido\) return;/g) || []).length, 2);
+  verdade("e o `agora` não desliga essa guarda", !/meu !== pedido && !agora/.test(codigo));
+
+  /* Falha do tradutor mostra o original, e não uma caixa quebrada. */
+  verdade("tradutor recusando não deixa a caixa vazia",
+    /onde\.textContent = texto;/.test(codigo));
+
+  /* ---- a lista de línguas é cópia, e cópia envelhece ----
+
+     A página não carrega o código do bot, então as 20 línguas estão escritas
+     duas vezes. Se alguém acrescentar uma no bot e esquecer aqui, o visitante
+     não consegue escolher a língua dele — e é justamente ele que o produto
+     está tentando convencer. */
+  const { LINGUAS_MENU } = carregar(["LINGUAS_MENU"]);
+  const naPagina = [...script.matchAll(/\["([a-z-]+(?:-[A-Z]+)?)","[a-z]+"\]/g)].map((m) => m[1]);
+  ok("a página oferece as mesmas línguas que o bot",
+    naPagina.slice().sort(), LINGUAS_MENU.map((l) => l[0]).sort());
+  /* E toda língua oferecida tem bandeira: uma sem país viraria uma opção sem
+     desenho no meio de dezenove com. */
+  ok("e todas elas têm bandeira", naPagina.filter((l) => !bandeiraDemo(l)), []);
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
