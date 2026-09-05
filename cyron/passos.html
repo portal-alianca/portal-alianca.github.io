@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CYRON — primeiros passos</title>
+<meta name="description" content="Da instalação à primeira tradução: cinco passos, e três acontecem sozinhos.">
+<meta property="og:title" content="CYRON — primeiros passos">
+<meta property="og:description" content="Da instalação à primeira tradução: cinco passos, e três acontecem sozinhos.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+<style>
+/* Âmbar dos próprios cartões do bot (0xF5A623): quem vê o CYRON trabalhar no
+   Discord e chega aqui reconhece o mesmo produto. */
+:root{
+  --fundo:#0B0D11; --painel:#13161C; --painel-2:#1A1E26; --painel-3:#222833;
+  --borda:#232935; --borda-viva:#333B49;
+  --texto:#EDEFF3; --fraco:#98A1AE; --fraquinho:#6C7583;
+  --ambar:#F5A623; --ambar-claro:#FFC768; --verde:#5EBB83; --azul:#5865F2;
+  --r:16px;
+  --serif:ui-serif,Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+a{color:var(--ambar); text-decoration:none}
+a:hover{text-decoration:underline}
+.env{max-width:1000px; margin:0 auto; padding:0 22px}
+.estreito{max-width:720px}
+h1,h2,h3{line-height:1.15; margin:0; letter-spacing:-.022em}
+
+/* ---------- barra ---------- */
+.barra{position:sticky; top:0; z-index:30; background:rgba(11,13,17,.82); backdrop-filter:blur(12px); border-bottom:1px solid var(--borda)}
+.barra .env{display:flex; align-items:center; gap:14px; height:60px}
+.marca{font-weight:800; letter-spacing:.14em; font-size:15px; color:var(--texto)}
+.marca b{color:var(--ambar); font-weight:800}
+.barra nav{margin-left:auto; display:flex; align-items:center; gap:6px}
+/* nowrap sempre: sem isso o link se parte em duas linhas dentro de uma barra de
+   60px de altura e as duas metades saem por cima e por baixo dela. */
+.barra nav a{color:var(--fraco); font-size:14.5px; padding:8px 11px; border-radius:9px; white-space:nowrap}
+.barra nav a:hover{color:var(--texto); background:var(--painel-2); text-decoration:none}
+.idioma{display:flex; border:1px solid var(--borda-viva); border-radius:9px; overflow:hidden; margin-left:6px; flex:0 0 auto}
+.idioma button{background:none; border:0; color:var(--fraco); font:700 12px/1 inherit; padding:8px 10px; cursor:pointer}
+.idioma button[aria-pressed="true"]{background:var(--ambar); color:#1a1206}
+
+/* ---------- a barra no telefone ----------
+
+   Quatro links, a marca e o PT/EN não cabem lado a lado em 390px: a página
+   inteira ficava com 470px de largura, "Meus servidores" saía cortado na
+   direita, o PT/EN ficava fora da tela e cada link se quebrava em duas linhas
+   espremidas. Quem entrou pelo celular não achou "Primeiros passos" porque não
+   dava para ler nem tocar.
+
+   No telefone a barra vira duas fileiras: marca e idioma em cima, os links
+   embaixo numa faixa que rola de lado. Rolar é honesto -- a barra de rolagem
+   fica escondida, mas o último link aparece pela metade de propósito, que é o
+   que diz ao dedo que há mais coisa à direita. */
+@media (max-width:760px){
+  .barra .env{height:auto; padding:9px 16px 0; flex-wrap:wrap; gap:0 10px}
+  .barra nav{
+    order:3; width:100%; margin:6px -16px 0; padding:0 16px 8px;
+    overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; gap:2px;
+  }
+  .barra nav::-webkit-scrollbar{display:none}
+  .barra nav a{padding:7px 10px; font-size:14px}
+  .idioma{margin-left:auto}
+}
+
+/* ---------- botões ---------- */
+.bt{display:inline-flex; align-items:center; justify-content:center; gap:9px; padding:14px 24px;
+  border-radius:12px; font-weight:650; font-size:15.5px; border:1px solid transparent; cursor:pointer;
+  transition:transform .13s ease, filter .13s ease}
+.bt:hover{text-decoration:none; transform:translateY(-1px); filter:brightness(1.08)}
+.bt-1{background:var(--azul); color:#fff; box-shadow:0 8px 26px -12px rgba(88,101,242,.9)}
+.bt-2{background:var(--painel-3); color:var(--texto); border-color:var(--borda-viva)}
+.bt-3{background:var(--ambar); color:#1a1206}
+
+/* ---------- topo ---------- */
+.topo{padding:96px 0 76px; position:relative; overflow:hidden; text-align:center}
+.topo::before{content:""; position:absolute; inset:-30% 15% auto; height:520px;
+  background:radial-gradient(closest-side,rgba(245,166,35,.15),transparent 72%); pointer-events:none}
+.topo h1{font-size:clamp(34px,6vw,60px); font-weight:760; position:relative}
+.topo h1 em{font-style:normal; color:var(--ambar)}
+.chamada{margin:22px auto 0; max-width:600px; color:var(--fraco); font-size:clamp(17px,2.3vw,20px); position:relative}
+.acoes{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:36px; position:relative}
+.mini{margin-top:16px; font-size:13.5px; color:var(--fraquinho); position:relative}
+
+/* ---------- a mesma frase em três salas ---------- */
+.salas{display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); margin-top:64px; text-align:left; position:relative}
+.sala{background:var(--painel); border:1px solid var(--borda); border-radius:var(--r); padding:15px 17px}
+.sala .cab{font-size:12.5px; color:var(--fraquinho); font-weight:650; margin-bottom:11px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.fala{display:flex; gap:11px}
+.bola{width:32px; height:32px; border-radius:50%; flex:0 0 32px; background:linear-gradient(140deg,#8b5cf6,#f5a623)}
+.fala b{display:block; font-size:13.5px; color:var(--ambar-claro); font-weight:650}
+.fala p{margin:3px 0 0; font-size:14.5px; line-height:1.5}
+.carimbo{font-size:11.5px; color:var(--fraquinho); margin-top:7px}
+
+/* ---------- seções ---------- */
+section{padding:82px 0; border-top:1px solid var(--borda)}
+.rotulo{font-size:12px; font-weight:750; letter-spacing:.18em; text-transform:uppercase; color:var(--ambar); margin-bottom:14px}
+section h2{font-size:clamp(26px,3.8vw,38px)}
+.intro{color:var(--fraco); max-width:640px; margin:18px 0 0; font-size:17.5px}
+
+/* ---------- COMO FUNCIONA: a barra lateral ---------- */
+.explica{display:grid; gap:34px; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; margin-top:44px}
+@media (max-width:800px){ .explica{grid-template-columns:1fr} }
+
+/* Foto de verdade, e não um desenho meu.
+
+   Aqui havia uma reprodução da barra lateral feita em CSS. Ela era honesta e
+   ficava bonita, mas um servidor real convence de um jeito que ilustração
+   nenhuma alcança -- e a única pergunta que esta seção precisa responder é
+   "isto existe mesmo?". A moldura arredondada é do próprio print do celular;
+   não tento imitar aparelho nenhum em volta. */
+.foto{margin:0; position:sticky; top:80px}
+.foto img{
+  display:block; width:100%; height:auto; border-radius:var(--r);
+  border:1px solid var(--borda); background:#0E1116;
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.9);
+}
+.foto figcaption{margin-top:13px; font-size:13.5px; color:var(--fraquinho); line-height:1.5}
+/* A legenda dentro de uma regra herdaria o tamanho do texto da regra, porque
+   `.regras span` alcança o span do idioma aqui dentro e vence a herança. */
+.foto figcaption span{color:inherit; font-size:inherit}
+.foto.pequena{position:static; max-width:290px; margin:18px 0 4px}
+.foto.pequena img{border-radius:12px}
+.foto.pequena figcaption{margin-top:10px; font-size:13px}
+@media (max-width:800px){ .foto{position:static; max-width:400px} }
+
+.regras{list-style:none; padding:0; margin:0; counter-reset:r}
+.regras li{position:relative; padding:0 0 26px 46px; counter-increment:r}
+.regras li::before{
+  content:counter(r); position:absolute; left:0; top:-1px; width:30px; height:30px; border-radius:50%;
+  background:var(--painel-3); border:1px solid var(--borda-viva); color:var(--ambar);
+  display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:750;
+}
+.regras b{display:block; font-size:17px; margin-bottom:4px}
+.regras span{color:var(--fraco); font-size:15.5px}
+
+/* ---------- primeiros passos ----------
+
+   Linha vertical ligando os números, e não cinco cartões soltos: a instalação
+   é uma sequência, e o desenho tem que dizer isso antes do texto. A linha para
+   no último número (:last-child) -- descendo além dele, apontaria para um
+   sexto passo que não existe. */
+.passos{list-style:none; padding:0; margin:44px 0 0; counter-reset:p}
+.passos li{position:relative; padding:0 0 42px 62px; counter-increment:p}
+.passos li::before{
+  content:counter(p); position:absolute; left:0; top:0; width:40px; height:40px;
+  border-radius:50%; background:var(--painel-3); border:1px solid var(--borda-viva);
+  color:var(--ambar); display:flex; align-items:center; justify-content:center;
+  font-size:17px; font-weight:750; z-index:1;
+}
+.passos li::after{
+  content:""; position:absolute; left:19px; top:44px; bottom:0; width:1px;
+  background:linear-gradient(var(--borda-viva), transparent);
+}
+.passos li:last-child{padding-bottom:0}
+.passos li:last-child::after{display:none}
+.passo-texto b{display:block; font-size:19px; margin-bottom:7px; letter-spacing:-.01em}
+.passo-texto > span{color:var(--fraco); font-size:16px}
+.passo-texto strong{color:var(--texto); font-weight:600}
+.passo-texto em{color:var(--ambar); font-style:normal; font-size:15px}
+/* O botão vem logo depois do texto do passo, sem nada em volta. Herdando o
+   inline-flex de .bt ele entrava na MESMA linha do parágrafo, e margin-top não
+   empurra caixa inline: no celular ele caía por cima da última frase, tapando
+   "onde você pode.". Bloco que encolhe até o conteúdo -- desce de linha e
+   continua do tamanho do texto dele. */
+.passo-bt{display:flex; width:fit-content; margin-top:18px}
+/* O desenho de cada passo.
+
+   Toca para abrir em tamanho cheio: num telefone, 640px de desenho espremidos
+   em 290 deixam o texto com 6px. O link é o zoom -- e é o mesmo gesto que o
+   Discord dá na imagem do cartão, então quem veio de lá já sabe.
+
+   width/height no <img> reservam o espaço antes de a imagem chegar: sem eles a
+   página pula para baixo quando cada desenho carrega, e quem está lendo o
+   passo 2 perde a linha. */
+.passo-foto{margin:20px 0 0; max-width:640px}
+.passo-foto img{display:block; width:100%; height:auto; border-radius:12px; border:1px solid var(--borda)}
+.passo-foto figcaption{margin-top:9px; font-size:12.5px; color:var(--fraquinho)}
+.passo-foto a:hover img{border-color:var(--borda-viva)}
+@media (max-width:600px){
+  .passos li{padding-left:52px}
+  .passos li::before{width:34px; height:34px; font-size:15px}
+  .passos li::after{left:16px; top:38px}
+}
+
+/* ---------- duas formas ---------- */
+.formas{display:grid; gap:18px; grid-template-columns:1fr 1fr; margin-top:40px}
+@media (max-width:760px){ .formas{grid-template-columns:1fr} }
+.forma{background:var(--painel); border:1px solid var(--borda); border-radius:var(--r); padding:28px}
+.forma.viva{border-color:rgba(245,166,35,.4); background:linear-gradient(180deg,rgba(245,166,35,.05),transparent 60%),var(--painel)}
+.forma .tipo{font-size:12px; font-weight:750; letter-spacing:.14em; text-transform:uppercase; color:var(--fraquinho); margin-bottom:10px}
+.forma.viva .tipo{color:var(--ambar)}
+.forma h3{font-size:23px; font-family:var(--serif); font-weight:600; letter-spacing:-.01em}
+.forma p{color:var(--fraco); font-size:15.5px; margin:12px 0 0}
+.forma ul{list-style:none; padding:0; margin:20px 0 0; display:flex; flex-direction:column; gap:10px}
+.forma li{position:relative; padding-left:25px; font-size:15.5px}
+.forma li::before{content:"✓"; position:absolute; left:0; color:var(--verde); font-weight:700}
+
+/* ---------- planos ---------- */
+.tabela{width:100%; border-collapse:collapse; margin-top:38px; font-size:15.5px}
+.tabela th,.tabela td{padding:15px 14px; text-align:left; border-bottom:1px solid var(--borda)}
+.tabela thead th{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--fraquinho); font-weight:750}
+.tabela th[scope="row"]{font-weight:500; color:var(--fraco)}
+.tabela td{font-variant-numeric:tabular-nums}
+.tabela .col-pago{background:rgba(245,166,35,.045)}
+.preco-linha td{padding-top:22px; padding-bottom:22px}
+.preco{font-size:27px; font-weight:750; letter-spacing:-.02em; color:var(--texto)}
+.preco small{font-size:13.5px; font-weight:500; color:var(--fraquinho)}
+.sim{color:var(--verde); font-weight:700}
+.nao{color:var(--fraquinho)}
+.rolar{overflow-x:auto; -webkit-overflow-scrolling:touch}
+.pos-tabela{display:flex; gap:12px; flex-wrap:wrap; margin-top:28px}
+
+.nota{margin-top:30px; padding:17px 19px; border-left:3px solid var(--borda-viva);
+  background:var(--painel); border-radius:0 var(--r) var(--r) 0; color:var(--fraco); font-size:15px}
+.nota strong{color:var(--texto)}
+
+/* ---------- perguntas ---------- */
+details{border-bottom:1px solid var(--borda); padding:19px 0}
+summary{cursor:pointer; font-weight:600; font-size:16.5px; list-style:none; display:flex; gap:13px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+"; color:var(--ambar); font-weight:700; flex:0 0 12px}
+details[open] summary::before{content:"–"}
+details p{color:var(--fraco); margin:12px 0 0 25px; font-size:15.5px}
+
+/* ---------- fim ---------- */
+.fecho{text-align:center; padding:96px 0}
+.fecho h2{font-size:clamp(27px,4vw,40px)}
+.fecho p{color:var(--fraco); margin:18px auto 32px; max-width:480px}
+footer{border-top:1px solid var(--borda); padding:32px 0; color:var(--fraquinho); font-size:14px}
+footer .env{display:flex; gap:18px; flex-wrap:wrap; align-items:center}
+footer nav{margin-left:auto; display:flex; gap:18px}
+
+[data-en]{display:none}
+html[lang="en"] [data-pt]{display:none}
+html[lang="en"] [data-en]{display:revert}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <div class="env">
+    <a class="marca" href="./">CY<b>RON</b></a>
+    <nav>
+      <a href="./#funciona"><span data-pt>Como funciona</span><span data-en>How it works</span></a>
+      <a href="./recursos.html"><span data-pt>Tudo que ele faz</span><span data-en>Everything it does</span></a>
+      <a href="./passos.html"><span data-pt>Primeiros passos</span><span data-en>Get started</span></a>
+      <a href="./#planos"><span data-pt>Planos</span><span data-en>Pricing</span></a>
+      <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
+    </nav>
+    <div class="idioma" role="group" aria-label="Idioma / Language">
+      <button type="button" data-troca="pt" aria-pressed="true">PT</button>
+      <button type="button" data-troca="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="passos">
+  <div class="env">
+    <div class="rotulo"><span data-pt>Primeiros passos</span><span data-en>Getting started</span></div>
+    <h2>
+      <span data-pt>Da instalação à primeira tradução</span>
+      <span data-en>From install to first translation</span>
+    </h2>
+    <p class="intro">
+      <span data-pt>São cinco passos, e três deles acontecem sozinhos. O tempo total é o que você leva para clicar em “Autorizar”. Os desenhos são só isso — desenhos do que você vai ver em cada passo; as <a href="./#funciona">fotos de um servidor de verdade</a> estão na página inicial.</span>
+      <span data-en>Five steps, and three happen on their own. The total time is however long it takes you to click “Authorize”. The pictures below are drawings of what you'll see at each step — the <a href="./#funciona">photos of a real server</a> are on the home page.</span>
+    </p>
+
+    <ol class="passos">
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Adicione o CYRON ao seu servidor</span><span data-en>Add CYRON to your server</span></b>
+          <span data-pt>Um clique no botão, escolher o servidor, autorizar. Você precisa ser dono ou ter <strong>Gerenciar Servidor</strong> — o Discord só mostra na lista os servidores onde você pode.</span>
+          <span data-en>One click, pick the server, authorize. You need to be the owner or have <strong>Manage Server</strong> — Discord only lists the servers where you can.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-autorizar.png" target="_blank" rel="noopener">
+              <img src="./img/passo-autorizar.png" width="1280" height="852" loading="lazy" decoding="async"
+                alt="Tela de autorização: escolher o servidor, e as quatro permissões que o CYRON pede, cada uma com o motivo.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-autorizar-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-autorizar-en.png" width="1280" height="852" loading="lazy" decoding="async"
+                alt="Authorize screen: pick the server, and the four permissions CYRON asks for, each with its reason.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
+          <a class="bt bt-1 convite passo-bt" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Ele se instala sozinho</span><span data-en>It installs itself</span></b>
+          <span data-pt>Sem formulário e sem configuração. Ele cria o canal onde as pessoas escolhem o idioma e um canal de administração com um painel de botões — e já começa a funcionar. Se você nunca abrir o painel, ele continua funcionando.</span>
+          <span data-en>No form, no setup. It creates the channel where people pick their language plus an admin channel with a button panel — and starts working right away. If you never open the panel, it keeps working.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-canais.png" target="_blank" rel="noopener">
+              <img src="./img/passo-canais.png" width="1280" height="1006" loading="lazy" decoding="async"
+                alt="Lista de canais do servidor logo depois de autorizar: os canais que já eram seus, e abaixo os três que o CYRON criou.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-canais-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-canais-en.png" width="1280" height="1006" loading="lazy" decoding="async"
+                alt="The server's channel list right after authorizing: the channels that were already yours, and below them the three CYRON created.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Cada pessoa escolhe a língua dela</span><span data-en>Each person picks their language</span></b>
+          <span data-pt>No canal de entrada, num menu com 20 idiomas. A partir daí o bot fala com ela nessa língua — e ela só enxerga a ala dela do servidor.</span>
+          <span data-en>In the entry channel, from a menu of 20 languages. From then on the bot talks to them in it — and they only see their own wing of the server.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-idioma.png" target="_blank" rel="noopener">
+              <img src="./img/passo-idioma.png" width="1280" height="1152" loading="lazy" decoding="async"
+                alt="O canal de entrada com a mensagem fixada e o menu de idiomas aberto, mostrando português, inglês, espanhol e árabe.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-idioma-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-idioma-en.png" width="1280" height="1110" loading="lazy" decoding="async"
+                alt="The entry channel with its pinned message and the language menu open, showing Portuguese, English, Spanish and Arabic.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Você aponta quais canais eu traduzo</span><span data-en>You point at the channels to translate</span></b>
+          <span data-pt>No painel de administração, num menu de canais do próprio Discord. Cada canal que você marcar ganha uma cópia traduzida em cada idioma que alguém escolheu. <em>Este passo é do plano pago — no grátis não há nada a configurar.</em></span>
+          <span data-en>In the admin panel, using Discord's own channel picker. Every channel you tick gets a translated copy in each language someone picked. <em>This step is on the paid plan — on Free there's nothing to configure.</em></span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-painel.png" target="_blank" rel="noopener">
+              <img src="./img/passo-painel.png" width="1280" height="1036" loading="lazy" decoding="async"
+                alt="O painel fixado no canal de administração: o estado do servidor, o menu de canais a traduzir e os botões de ajuste.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-painel-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-painel-en.png" width="1280" height="1036" loading="lazy" decoding="async"
+                alt="The panel pinned in the admin channel: the server's state, the picker for channels to translate, and the setting buttons.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
+        </div>
+      </li>
+
+      <li>
+        <div class="passo-texto">
+          <b><span data-pt>Pronto — o servidor passa a viver em todas as línguas</span><span data-en>Done — the server now lives in every language</span></b>
+          <span data-pt>Você publica uma vez no canal de sempre, e chega traduzido em todas as alas. Quem escreve na sala da língua dele aparece na dos outros já traduzido, com o nome e a foto de quem falou.</span>
+          <span data-en>You post once in the usual channel, and it lands translated in every wing. Whoever writes in their language's room shows up in the others already translated, with the speaker's name and avatar.</span>
+          <figure class="passo-foto" data-pt>
+            <a href="./img/passo-alas.png" target="_blank" rel="noopener">
+              <img src="./img/passo-alas.png" width="1280" height="1152" loading="lazy" decoding="async"
+                alt="A mesma frase em três canais: o original em português, e as cópias em inglês e em árabe, com o nome e a foto de quem falou.">
+            </a>
+            <figcaption>Toque para ver em tamanho cheio.</figcaption>
+          </figure>
+          <figure class="passo-foto" data-en>
+            <a href="./img/passo-alas-en.png" target="_blank" rel="noopener">
+              <img src="./img/passo-alas-en.png" width="1280" height="1154" loading="lazy" decoding="async"
+                alt="The same line in three channels: the Portuguese original, and the English and Arabic copies, carrying the speaker's name and avatar.">
+            </a>
+            <figcaption>Tap to view it full size.</figcaption>
+          </figure>
+          <a class="bt bt-2 passo-bt" href="./#funciona"><span data-pt>Ver como fica</span><span data-en>See how it looks</span></a>
+        </div>
+      </li>
+    </ol>
+
+    <div class="nota">
+      <span data-pt><strong>E se der errado?</strong> O painel de administração diz o que está faltando — permissão que eu não tenho, cargo acima do meu, gente que escolheu um idioma que não coube no plano. Ele não fica em silêncio quando alguma coisa não funciona.</span>
+      <span data-en><strong>And if something goes wrong?</strong> The admin panel tells you what's missing — a permission I don't have, a role above mine, people who picked a language that didn't fit the plan. It doesn't stay quiet when something isn't working.</span>
+    </div>
+  </div>
+</section>
+
+<div class="fecho">
+  <div class="env">
+    <h2><span data-pt>É só isso.</span><span data-en>That's all of it.</span></h2>
+    <p>
+      <span data-pt>Instala sozinho, traduz na mesma hora, e o plano grátis não vence nunca.</span>
+      <span data-en>It installs itself, translates right away, and the free plan never expires.</span>
+    </p>
+    <a class="bt bt-1 convite" href="#"><span data-pt>Adicionar ao Discord</span><span data-en>Add to Discord</span></a>
+  </div>
+</div>
+
+</main>
+
+
+<footer>
+  <div class="env">
+    <span>CYRON</span>
+    <nav>
+      <a href="./recursos.html"><span data-pt>Tudo que ele faz</span><span data-en>Everything it does</span></a>
+      <a href="./painel.html"><span data-pt>Meus servidores</span><span data-en>My servers</span></a>
+      <a href="./privacidade.html"><span data-pt>Privacidade</span><span data-en>Privacy</span></a>
+      <a href="./termos.html"><span data-pt>Termos de uso</span><span data-en>Terms of use</span></a>
+      <a href="../"><span data-pt>Portal das Alianças</span><span data-en>Alliance Portal</span></a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+/* O convite é montado aqui, e não escrito à mão em cada botão: são quatro
+   botões na página, e um deles com a permissão errada seria um servidor onde
+   o bot entra sem poder criar canal -- falha que só aparece depois, e para o
+   cliente. */
+var CLIENT_ID = "1498142929041096856";
+var PERMISSOES = "327223209040";
+var CONVITE = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
+  "&permissions=" + PERMISSOES + "&scope=bot%20applications.commands";
+
+[].forEach.call(document.querySelectorAll(".convite"), function (a) { a.href = CONVITE; });
+
+/* A troca de idioma é CSS, não reescrita de texto: os dois idiomas já estão na
+   página, o buscador vê os dois, e a troca é instantânea. */
+function idioma(qual) {
+  document.documentElement.lang = qual === "en" ? "en" : "pt-BR";
+  [].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.troca === qual));
+  });
+  try { localStorage.setItem("cyron-idioma", qual); } catch (e) { /* modo privado */ }
+}
+
+[].forEach.call(document.querySelectorAll("[data-troca]"), function (b) {
+  b.addEventListener("click", function () { idioma(b.dataset.troca); });
+});
+
+/* Na primeira visita vale a língua do navegador: quem chega de um servidor
+   internacional quase nunca lê português, e cair numa página que não se
+   entende é perder a pessoa antes da primeira frase. */
+(function () {
+  var guardado = null;
+  try { guardado = localStorage.getItem("cyron-idioma"); } catch (e) { /* modo privado */ }
+  if (guardado) return idioma(guardado);
+  var nav = (navigator.language || "pt").toLowerCase();
+  if (nav.indexOf("pt") !== 0) idioma("en");
+})();
+</script>
+
+</body>
+</html>

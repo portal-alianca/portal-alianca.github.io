@@ -4935,6 +4935,73 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* ====== os links do site levam a algum lugar ======
+
+   Este teste existe por um defeito que eu mesmo acabei de cometer: os cinco
+   passos saíram de index.html para passos.html, e o link `#passos` da barra
+   continuou apontando para uma âncora que não existia mais. Clicar não fazia
+   nada — nem erro, nem página errada, nada. É o pior tipo de link quebrado,
+   porque não parece quebrado: parece um site que não responde.
+
+   Mover uma seção de página é justamente o tipo de mudança que se faz sem
+   reler os cinco lugares que apontavam para ela. Então a conferência fica
+   aqui, e não na minha memória. */
+{
+  const paginas = ["index", "passos", "recursos", "painel", "privacidade", "termos"]
+    .map((n) => ({ nome: `${n}.html`, caminho: `${aqui}/../cyron/${n}.html` }))
+    .filter((p) => existsSync(p.caminho))
+    .map((p) => ({ ...p, html: readFileSync(p.caminho, "utf8") }));
+
+  verdade("as páginas do site estão onde eu penso que estão", paginas.length >= 5);
+  const idsDe = (html) => new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const porNome = new Map(paginas.map((p) => [p.nome, p]));
+
+  const mortos = [];
+  for (const pag of paginas) {
+    const meus = idsDe(pag.html);
+    for (const [, href] of pag.html.matchAll(/href="([^"]+)"/g)) {
+      /* `#` sozinho é o convite do Discord, montado pelo JS a partir do
+         CLIENT_ID: escrever a URL à mão em quatro botões era como um deles
+         acabava com a permissão errada. */
+      if (href === "#" || /^(https?:|mailto:|data:)/.test(href)) continue;
+      /* href montado dentro de JS (`href="' + CONVITE + '"`) não é endereço
+         nenhum: é código que vira endereço no navegador. O painel monta os
+         dele assim, e lê-los como link daria quatro falsos alarmes. */
+      if (/\$\{|' \+ |\+ '/.test(href)) continue;
+
+      /* Âncora na própria página. */
+      if (href.startsWith("#")) {
+        if (!meus.has(href.slice(1))) mortos.push(`${pag.nome} → ${href}`);
+        continue;
+      }
+      /* Âncora noutra página (`./#planos` é a home). */
+      const [alvo, ancora] = href.replace(/^\.\//, "").split("#");
+      const destino = alvo ? porNome.get(alvo) : porNome.get("index.html");
+      if (alvo && !destino) {
+        /* Arquivo fora da lista (uma imagem, a pasta de cima): só confiro que
+           ele existe no disco. */
+        if (!existsSync(`${aqui}/../cyron/${alvo}`)) mortos.push(`${pag.nome} → ${href}`);
+        continue;
+      }
+      if (ancora && destino && !idsDe(destino.html).has(ancora)) mortos.push(`${pag.nome} → ${href}`);
+    }
+  }
+  ok("nenhum link do site aponta para o vazio", mortos, []);
+
+  /* E a seção que mudou de casa, presa pelo nome: os passos moram em
+     passos.html, e a home só guarda a porta. Se alguém trouxer os cinco passos
+     de volta para a home, a página volta a ter onze telas e este teste avisa. */
+  const home = porNome.get("index.html")?.html || "";
+  const passos = porNome.get("passos.html")?.html || "";
+  /* Conta a MARCAÇÃO, e não a palavra: o CSS de `.passo-foto` continua nas
+     duas páginas (elas carregam a mesma folha embutida), então procurar o
+     nome solto acharia a regra de estilo e o teste passaria sempre. */
+  const fotos = (html) => (html.match(/<figure class="passo-foto"/g) || []).length;
+  verdade("os cinco passos moram na página deles", fotos(passos) >= 5);
+  verdade("e a home só guarda a porta para eles",
+    fotos(home) === 0 && /href="\.\/passos\.html"/.test(home));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
