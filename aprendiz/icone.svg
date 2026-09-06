@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0d1013"/>
+  <!-- o rastro dela: violeta indo sumindo, como no jogo -->
+  <g fill="#a78bfa">
+    <rect x="150" y="300" width="72" height="72" rx="18" opacity=".3"/>
+    <rect x="150" y="220" width="72" height="72" rx="18" opacity=".55"/>
+    <rect x="150" y="140" width="72" height="72" rx="18" opacity=".8"/>
+    <rect x="230" y="140" width="72" height="72" rx="18"/>
+  </g>
+  <circle cx="330" cy="320" r="34" fill="#fbbf24"/>
+</svg>
