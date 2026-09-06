@@ -1,0 +1,14 @@
+{
+  "name": "O Reino — você decide, a conta chega depois",
+  "short_name": "O Reino",
+  "description": "Você é o rei. Os problemas nascem do reino, e a conta chega anos depois.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "portrait",
+  "background_color": "#14100c",
+  "theme_color": "#14100c",
+  "lang": "pt-BR",
+  "icons": [{ "src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
