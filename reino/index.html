@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>O Reino</title>
+<meta name="description" content="Você é o rei. Os problemas nascem do reino, e a conta chega anos depois.">
+<meta name="theme-color" content="#14100c">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icone.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icone.svg">
+<style>
+/* ---------------------------------------------------------------
+   Pergaminho no escuro.
+
+   Cor quente, ao contrário do Aprendiz: aquilo era um laboratório, isto é
+   um salão. E o texto é o produto — a petição tem que ser confortável de
+   ler no celular, porque ler é o jogo.
+   --------------------------------------------------------------- */
+:root{
+  --fundo:#14100c; --carta:#1e1813; --linha:#332920;
+  --texto:#efe6d8; --fraco:#a3927c; --fraquinho:#6f6252;
+  --ouro:#d9a441; --sangue:#b4553f; --verde:#7f9a5c;
+  --serif:ui-serif,Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  display:flex; flex-direction:column; align-items:center;
+  padding:max(10px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom));
+  overscroll-behavior:none; user-select:none;
+}
+.tudo{width:100%; max-width:440px; flex:1; display:flex; flex-direction:column; gap:10px; min-height:0}
+
+/* ---- a barra do reino ---- */
+.reino{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--fraco)}
+.ano{font-family:var(--serif); font-size:19px; color:var(--texto); font-weight:600; margin-right:auto}
+.medida{display:flex; align-items:center; gap:4px; white-space:nowrap}
+.barra{width:34px; height:5px; border-radius:3px; background:var(--linha); overflow:hidden}
+.barra i{display:block; height:100%; background:var(--ouro)}
+.barra.fe i{background:#8f7fc0}
+.barra.espada i{background:var(--sangue)}
+.contas{display:flex; gap:12px; font-size:12.5px; color:var(--fraco); font-variant-numeric:tabular-nums}
+.contas b{color:var(--texto); font-weight:650}
+
+/* ---- a crônica ---- */
+.rolo{
+  flex:1; min-height:0; overflow-y:auto; padding:2px 2px 4px;
+  display:flex; flex-direction:column; gap:9px;
+  -webkit-overflow-scrolling:touch;
+}
+.linha{font-size:14px; color:var(--fraco); line-height:1.45; padding-left:12px; border-left:2px solid var(--linha)}
+.linha .a{color:var(--fraquinho); font-size:11.5px; letter-spacing:.05em; display:block}
+.linha.grave{border-left-color:var(--sangue); color:#d9bfae}
+.escolhi{font-size:13px; color:var(--ouro); padding-left:12px; border-left:2px solid var(--ouro)}
+/* O `.a` só quebrava linha dentro de `.linha`, e a escolha saía colada no
+   título: "A seca no valeAbrir o celeiro". A regra tem que valer nos dois. */
+.escolhi .a{color:var(--fraquinho); font-size:11.5px; letter-spacing:.05em; display:block}
+
+/* ---- a petição ---- */
+.peticao{
+  background:var(--carta); border:1px solid var(--linha); border-radius:14px;
+  padding:14px 15px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+}
+.peticao h2{
+  margin:0 0 7px; font-family:var(--serif); font-size:21px; font-weight:600;
+  line-height:1.2; color:var(--texto);
+}
+.peticao p{margin:0; font-size:15px; line-height:1.55; color:#d8cbb8}
+.deQuem{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--ouro); font-weight:700; margin-bottom:5px}
+
+/* ---- escolhas ---- */
+.escolhas{display:flex; flex-direction:column; gap:7px}
+button{
+  font:inherit; font-size:15px; font-weight:600; text-align:left;
+  border-radius:11px; padding:13px 14px; min-height:50px;
+  border:1px solid var(--linha); background:var(--carta); color:var(--texto); cursor:pointer;
+}
+button:active{background:#2a221a}
+button.seguir{text-align:center; color:var(--fraco); font-weight:600; background:transparent}
+.fim{text-align:center; padding:10px 4px}
+.fim h2{font-family:var(--serif); font-size:22px; margin:0 0 6px}
+.fim p{color:var(--fraco); font-size:14px; margin:0 0 12px}
+</style>
+</head>
+<body>
+<div class="tudo">
+
+  <div class="reino">
+    <span class="ano" id="ano">Ano 1</span>
+    <span class="medida" title="fé">✝<span class="barra fe"><i id="bFe"></i></span></span>
+    <span class="medida" title="exército">⚔<span class="barra espada"><i id="bEspada"></i></span></span>
+  </div>
+  <div class="contas">
+    <span>povo <b id="povo">400</b></span>
+    <span>trigo <b id="trigo">900</b></span>
+    <span>ouro <b id="ouro">120</b></span>
+  </div>
+
+  <div class="rolo" id="rolo"></div>
+
+  <div id="baixo"></div>
+
+</div>
+
+<script type="module">
+import { reinoNovo, umAno, peticaoDoAno, decidir } from "./reino.js";
+
+const $ = (id) => document.getElementById(id);
+let R = null, esperando = null;
+
+function pintarReino() {
+  $("ano").textContent = "Ano " + R.ano;
+  $("povo").textContent = R.povo;
+  $("trigo").textContent = R.trigo;
+  $("ouro").textContent = R.ouro;
+  $("bFe").style.width = R.fe + "%";
+  $("bEspada").style.width = R.espada + "%";
+}
+
+/* A crônica cresce para baixo e o rolo persegue o fim: quem está lendo quer
+   ver o que acabou de acontecer, não o começo do reinado. */
+function escrever(html, classe = "linha") {
+  const d = document.createElement("div");
+  d.className = classe;
+  d.innerHTML = html;
+  $("rolo").appendChild(d);
+  $("rolo").scrollTop = $("rolo").scrollHeight;
+}
+
+let jaContadas = 0;
+function contarNovidades() {
+  for (const c of R.cronica.slice(jaContadas)) {
+    const grave = /morto|vazia|Enterraram|abandon|excomung|menos gente|fome/i.test(c.texto);
+    escrever(`<span class="a">Ano ${c.ano}</span>${c.texto}`, grave ? "linha grave" : "linha");
+  }
+  jaContadas = R.cronica.length;
+}
+
+function mostrarPeticao(p) {
+  esperando = p;
+  const baixo = $("baixo");
+  baixo.innerHTML = "";
+  const cartao = document.createElement("div");
+  cartao.className = "peticao";
+  cartao.innerHTML = `<div class="deQuem">Ano ${R.ano}</div><h2>${p.titulo}</h2><p>${p.texto}</p>`;
+  baixo.appendChild(cartao);
+
+  const caixa = document.createElement("div");
+  caixa.className = "escolhas";
+  caixa.style.marginTop = "9px";
+  p.opcoes.forEach((o, i) => {
+    const b = document.createElement("button");
+    b.textContent = o.rotulo;
+    b.onclick = () => escolher(i);
+    caixa.appendChild(b);
+  });
+  baixo.appendChild(caixa);
+}
+
+function escolher(i) {
+  const p = esperando;
+  escrever(`<span class="a">Ano ${R.ano} · ${p.titulo}</span>${p.opcoes[i].rotulo}`, "escolhi");
+  decidir(R, p, i);
+  contarNovidades();
+  pintarReino();
+  esperando = null;
+  correrOsAnos();
+}
+
+/* Os anos correm sozinhos até alguém bater na porta. É aqui que a conta
+   atrasada aparece — e ela precisa aparecer ANTES da próxima petição, senão
+   o jogador liga o efeito à decisão errada. */
+function correrOsAnos() {
+  $("baixo").innerHTML = "";
+  const passo = () => {
+    if (R.fim || R.ano >= 60) return acabar();
+    umAno(R);
+    contarNovidades();
+    pintarReino();
+    if (R.fim) return acabar();
+    const p = peticaoDoAno(R);
+    if (p && p.opcoes.length) return mostrarPeticao(p);
+    setTimeout(passo, 220);
+  };
+  setTimeout(passo, 260);
+}
+
+function acabar() {
+  contarNovidades();
+  pintarReino();
+  const anos = R.ano;
+  $("baixo").innerHTML = `<div class="fim">
+      <h2>${R.fim ? "O reinado acabou" : "Você morreu na cama"}</h2>
+      <p>${R.fim || `Reinou ${anos} anos e entregou o reino inteiro.`}<br>
+         ${R.decisoes.length} decisões · ${R.tem.size ? [...R.tem].join(", ") : "nada construído"}</p>
+    </div>
+    <div class="escolhas"><button class="seguir" id="denovo">Outro reinado</button></div>`;
+  $("denovo").onclick = comecar;
+}
+
+function comecar() {
+  R = reinoNovo();
+  jaContadas = 0;
+  $("rolo").innerHTML = "";
+  escrever(`<span class="a">Ano 0</span>Você foi coroado. O reino tem 400 pessoas, trigo para um ano, e um tesouro que o tesoureiro chama de “suficiente por ora”.`);
+  pintarReino();
+  correrOsAnos();
+}
+
+comecar();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+</script>
+</body>
+</html>
