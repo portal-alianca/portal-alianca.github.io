@@ -3088,6 +3088,68 @@ function nomeDoIdioma(cod) {
   return achado ? `${achado[2]} ${achado[1]}` : cod;
 }
 
+/* O nome de CATEGORIA e de CARGO -- sem bandeira, de proposito.
+ *
+ * O Discord desenha mensagem com as imagens de emoji dele, mas nome de canal,
+ * de categoria e de cargo saem na fonte do SISTEMA. E a fonte de emoji do
+ * Windows nao tem bandeira nenhuma: a Microsoft nao inclui. Quando falta o
+ * desenho, sobram os dois caracteres que formam a bandeira -- os indicadores
+ * regionais --, e "🇩🇪 Alemão" chega no PC como "DE Alemão".
+ *
+ * Nao existe conserto pelo nosso lado: nenhum codigo nosso faz o Windows
+ * desenhar uma bandeira. O que da' pra fazer e' nao depender dela onde ela nao
+ * e' desenhada. Nas mensagens (menu, placar, reacao, rodape) a bandeira
+ * continua, porque ali o Discord troca por imagem e ela aparece em todo mundo.
+ *
+ * A forma e' "pt-português": o codigo da lingua, e o nome dela na PROPRIA
+ * lingua. Copiada de um servidor que o dono achou bem organizado, e ela
+ * resolve as duas pontas de uma vez -- quem fala aquela lingua le' o nome
+ * dela escrito do jeito certo, e quem administra o servidor se guia pelo
+ * codigo, que e' curto e igual em toda linha. O codigo faz o mesmo papel que
+ * as duas letras da bandeira quebrada faziam ("DE"), so' que de proposito e
+ * aparecendo igual em todo sistema.
+ *
+ * Do codigo entra so' a parte antes do traco: "zh-CN" viraria "zh-CN-中文",
+ * com dois tracos e uma regiao que nao diz nada a ninguem. */
+function nomeDeIdiomaNoDiscord(cod) {
+  const achado = LINGUAS_MENU.find(([c]) => c === cod);
+  if (!achado) return cod;
+  const [, portugues, , proprio] = achado;
+  return `${String(cod).split("-")[0].toLowerCase()}-${(proprio || portugues).toLowerCase()}`;
+}
+
+/* Os nomes que o bot JA' escreveu para este idioma, o de hoje e os de antes.
+ *
+ * Serve pra duas coisas que dependem de reconhecer a propria letra: renomear
+ * o que ficou com o nome velho, e achar cargo largado. Sem a forma antiga aqui
+ * o bot deixaria de reconhecer tudo que ele mesmo criou ate' agora. */
+function nomesJaUsadosNoDiscord(cod) {
+  return [nomeDeIdiomaNoDiscord(cod), nomeDoIdioma(cod)];
+}
+
+/* Renomeia so' o que continua com um nome que o BOT escreveu.
+ *
+ * Se o dono renomeou a categoria na mao, aquele nome e' dele e fica. Trocar o
+ * nome escolhido por outra pessoa seria o bot passando por cima do dono do
+ * servidor -- e ele nao ia entender de onde veio. */
+async function corrigirNomeDeIdioma(coisa, cod, motivo) {
+  const certo = nomeDeIdiomaNoDiscord(cod);
+  if (!coisa || coisa.name === certo) return false;
+  if (!nomesJaUsadosNoDiscord(cod).includes(coisa.name)) return false;
+  /* O nome velho tem que ser guardado ANTES: setName altera o proprio objeto,
+     entao ler coisa.name depois imprimia "de-deutsch renomeado para
+     de-deutsch" -- justamente o dado que faz o log servir pra alguma coisa. */
+  const velho = coisa.name;
+  try {
+    await coisa.setName(certo, motivo);
+    console.log(`idioma: "${velho}" renomeado para "${certo}" (bandeira nao aparece no Windows)`);
+    return true;
+  } catch (e) {
+    console.error("idioma: nao consegui renomear", coisa.name, e?.message || e);
+    return false;
+  }
+}
+
 /* Um idioma passa a EXISTIR num servidor quando alguem o escolhe. Existir
    quer dizer: ter um cargo (a chave que abre as portas dele) e uma linha no
    banco. A sala de conversa e' um bem desse idioma, nao a definicao dele --
@@ -3151,7 +3213,7 @@ async function trocarCargoNasPortas(guild, velhoId, novoId) {
 }
 
 async function garantirIdioma(guild, servidorId, idioma) {
-  const cargo = await criarCargoDeIdioma(guild, nomeDoIdioma(idioma), "cargo do idioma");
+  const cargo = await criarCargoDeIdioma(guild, nomeDeIdiomaNoDiscord(idioma), "cargo do idioma");
 
   const linha = { servidor_id: servidorId, idioma, role_id: cargo.id };
   /* Devolve a linha COM o id que o banco deu.
@@ -3177,7 +3239,7 @@ async function garantirCanalDeChat(guild, sala, categoriaId) {
     type: ChannelType.GuildText,
     parent: categoriaId || undefined,
     rateLimitPerUser: SEGUNDOS_ENTRE_FALAS,
-    topic: `Chat espelhado — ${nomeDoIdioma(sala.idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
+    topic: `Chat espelhado — ${nomeDeIdiomaNoDiscord(sala.idioma)}. O que for dito aqui aparece nas outras salas traduzido.`,
     permissionOverwrites: [
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       { id: sala.role_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
@@ -3582,7 +3644,13 @@ function portasDaCategoria(guild, cargoId) {
 async function garantirCategoria(guild, sala, pistaCanal) {
   if (sala.categoria_id) {
     const achada = await guild.channels.fetch(sala.categoria_id).catch(() => null);
-    if (achada) return achada;
+    if (achada) {
+      /* A categoria ja' existe, e pode ter nascido com bandeira no nome. Como
+         ela e' varrida de tempos em tempos, o conserto chega sozinho nos
+         servidores que ja' estao de pe -- sem ninguem ter que refazer nada. */
+      await corrigirNomeDeIdioma(achada, sala.idioma, "bandeira não aparece no Windows");
+      return achada;
+    }
   }
 
   /* Sem categoria gravada, mas com canal deste idioma ja de pe: a categoria e'
@@ -3607,7 +3675,7 @@ async function garantirCategoria(guild, sala, pistaCanal) {
   if (!sala.role_id) return null; // sem cargo nao ha como fechar a porta
 
   const categoria = await guild.channels.create({
-    name: nomeDoIdioma(sala.idioma),
+    name: nomeDeIdiomaNoDiscord(sala.idioma),
     type: ChannelType.GuildCategory,
     permissionOverwrites: portasDaCategoria(guild, sala.role_id),
     reason: "categoria do idioma",
@@ -3658,7 +3726,7 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    topic: `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
+    topic: `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
     /* Quem entra e quem fala vem do canal de origem -- ver portasDaReplica.
 
        Tudo de um cargo numa entrada so: dois overwrites com o mesmo id fazem
@@ -3871,7 +3939,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            e prometer conversa num canal onde a pessoa nao consegue escrever
            e' pior do que nao dizer nada -- ela tenta, nao vai, e o recado do
            bot diz o contrario do topico logo acima. */
-        const assunto = `${def.tipo} — ${nomeDoIdioma(sala.idioma)}. ` + (pago
+        const assunto = `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. ` + (pago
           ? "O que se escreve aqui aparece traduzido nos outros idiomas."
           : "Cópia traduzida do canal original.");
         if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
@@ -4159,7 +4227,7 @@ async function sincronizarUmGuild(guild) {
         if (sala.role_id && guild.roles.cache.has(sala.role_id)) continue;
         try {
           const canal = sala.canal_id ? await guild.channels.fetch(sala.canal_id).catch(() => null) : null;
-          const cargo = await criarCargoDeIdioma(guild, nomeDoIdioma(sala.idioma), "sala de idioma do chat espelhado");
+          const cargo = await criarCargoDeIdioma(guild, nomeDeIdiomaNoDiscord(sala.idioma), "sala de idioma do chat espelhado");
           if (canal) {
             await canal.permissionOverwrites.set([
               { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -4336,6 +4404,16 @@ async function sincronizarUmGuild(guild) {
       if (aindaAltos.length) cargoAcimaDeMim.set(servidorId, { nomes: aindaAltos.map((c) => c.name) });
       else cargoAcimaDeMim.delete(servidorId);
 
+      /* Cargo que nasceu com bandeira no nome ganha o nome novo aqui.
+         A categoria se conserta sozinha em garantirCategoria; o cargo nao
+         passa por la', entao o conserto dele mora nesta varredura. Cargo
+         acima de mim eu nao alcanco pra renomear -- e a funcao ja engole esse
+         erro, que e' o mesmo lixo que o painel ja avisa logo abaixo. */
+      for (const [idioma, sala] of porIdioma) {
+        const cargo = sala.role_id && guild.roles.cache.get(sala.role_id);
+        if (cargo) await corrigirNomeDeIdioma(cargo, idioma, "bandeira não aparece no Windows");
+      }
+
       /* A sobra e' lida do servidor, nao anotada na hora da troca.
 
          Anotar na hora parecia mais simples e estava errado por dois motivos:
@@ -4344,7 +4422,7 @@ async function sincronizarUmGuild(guild) {
          Perguntando ao servidor -- cargo acima de mim, com nome de idioma que
          eu uso, que nao e' o cargo em uso -- o recado fica de pe enquanto o
          lixo existir e some sozinho no minuto em que a pessoa apagar. */
-      const nomesEmUso = new Set([...porIdioma.keys()].map((i) => nomeDoIdioma(i)));
+      const nomesEmUso = new Set([...porIdioma.keys()].flatMap((i) => nomesJaUsadosNoDiscord(i)));
       const lixoAlto = [...guild.roles.cache.values()]
         .filter((c) => c.position >= minhaAltura && !cargosDeSala.has(c.id) && nomesEmUso.has(c.name))
         .map((c) => c.name);
