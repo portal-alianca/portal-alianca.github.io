@@ -45,6 +45,12 @@ body{
 .contas{display:flex; gap:12px; font-size:12.5px; color:var(--fraco); font-variant-numeric:tabular-nums}
 .contas b{color:var(--texto); font-weight:650}
 
+/* ---- a cidade ---- */
+.cidade{
+  display:block; width:100%; height:170px; flex:0 0 auto;
+  border-radius:12px; border:1px solid var(--linha); background:#171c26;
+}
+
 /* ---- a crônica ---- */
 .rolo{
   flex:1; min-height:0; overflow-y:auto; padding:2px 2px 4px;
@@ -99,6 +105,11 @@ button.seguir{text-align:center; color:var(--fraco); font-weight:600; background
     <span>ouro <b id="ouro">120</b></span>
   </div>
 
+  <!-- A cidade fica ACIMA da crônica, e não abaixo: é a primeira coisa que
+       se vê ao abrir, e é ela que faz o reino parecer um lugar em vez de um
+       registro. O texto explica; ela mostra. -->
+  <canvas id="cidade" class="cidade"></canvas>
+
   <div class="rolo" id="rolo"></div>
 
   <div id="baixo"></div>
@@ -107,9 +118,27 @@ button.seguir{text-align:center; color:var(--fraco); font-weight:600; background
 
 <script type="module">
 import { reinoNovo, umAno, peticaoDoAno, decidir } from "./reino.js";
+import { plantaDaCidade, desenharCidade } from "./cidade.js";
 
 const $ = (id) => document.getElementById(id);
-let R = null, esperando = null;
+let R = null, esperando = null, planta = null;
+
+/* ---- a cidade, redesenhada sempre ----
+
+   Num laço próprio, e não a cada decisão: a gente anda devagar mesmo nos anos
+   em que nada acontece, e cidade parada é cenário. Cidade que se move é lugar. */
+const tela = $("cidade"), pincel = tela.getContext("2d");
+function ajustarCidade() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  tela.width = Math.round(tela.clientWidth * dpr);
+  tela.height = Math.round(tela.clientHeight * dpr);
+  pincel.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function pintarCidade(t) {
+  if (R && planta) desenharCidade(pincel, tela.clientWidth, tela.clientHeight, R, planta, t);
+  requestAnimationFrame(pintarCidade);
+}
+addEventListener("resize", ajustarCidade);
 
 function pintarReino() {
   $("ano").textContent = "Ano " + R.ano;
@@ -203,6 +232,10 @@ function acabar() {
 
 function comecar() {
   R = reinoNovo();
+  /* A planta nasce da mesma semente do reino: o mesmo reinado sempre desenha
+     a mesma cidade, e recarregar a página não muda o lugar de casa nenhuma. */
+  planta = plantaDaCidade(R.ano + Math.floor(Math.random() * 99999));
+  ajustarCidade();
   jaContadas = 0;
   $("rolo").innerHTML = "";
   escrever(`<span class="a">Ano 0</span>Você foi coroado. O reino tem 400 pessoas, trigo para um ano, e um tesouro que o tesoureiro chama de “suficiente por ora”.`);
@@ -211,6 +244,7 @@ function comecar() {
 }
 
 comecar();
+requestAnimationFrame(pintarCidade);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 </script>
 </body>

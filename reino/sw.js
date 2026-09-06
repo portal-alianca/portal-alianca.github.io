@@ -2,7 +2,7 @@
    arquivos e nao fala com servidor nenhum. Depois da primeira visita abre
    sem sinal. Trocar o nome do cache e' o que publica versao nova. */
 const CACHE = "reino-v1";
-const TUDO = ["./", "./index.html", "./reino.js", "./manifest.json", "./icone.svg"];
+const TUDO = ["./", "./index.html", "./reino.js", "./cidade.js", "./manifest.json", "./icone.svg"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(TUDO)).catch(() => {}));
   self.skipWaiting();
