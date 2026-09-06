@@ -1,0 +1,14 @@
+{
+  "name": "Mundo — solte um povo e veja no que dá",
+  "short_name": "Mundo",
+  "description": "Um mundo que vive sem você. Solte um povo, e ele cresce, constrói e briga sozinho.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "portrait",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "lang": "pt-BR",
+  "icons": [{ "src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

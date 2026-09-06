@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Mundo</title>
+<meta name="description" content="Um mundo que vive sem você. Solte um povo e veja o que ele faz.">
+<meta name="theme-color" content="#0b0f14">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icone.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icone.svg">
+<style>
+:root{
+  --fundo:#0b0f14; --carta:#141a22; --linha:#212b36;
+  --texto:#e6edf5; --fraco:#8b9aab;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{height:100%; overflow:hidden}
+body{
+  margin:0; background:var(--fundo); color:var(--texto);
+  font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  display:flex; flex-direction:column; align-items:center;
+  padding:max(6px,env(safe-area-inset-top)) 8px max(8px,env(safe-area-inset-bottom));
+  overscroll-behavior:none; user-select:none; touch-action:manipulation;
+}
+.tudo{width:100%; max-width:440px; flex:1; display:flex; flex-direction:column; gap:7px; min-height:0}
+
+/* ---- os povos, em cima ---- */
+.povos{display:flex; gap:10px; align-items:center; font-size:12.5px; color:var(--fraco); min-height:20px; flex-wrap:wrap}
+.povo{display:flex; align-items:center; gap:5px; font-variant-numeric:tabular-nums}
+.bola{width:9px; height:9px; border-radius:50%}
+.relogio{margin-left:auto; font-size:11.5px; color:#5f6b78}
+
+/* ---- o mapa ---- */
+.mapa{
+  flex:1; min-height:0; display:flex; align-items:center; justify-content:center;
+  background:#070a0e; border:1px solid var(--linha); border-radius:12px; overflow:hidden;
+}
+canvas{display:block; image-rendering:pixelated; touch-action:none}
+
+/* ---- o que aconteceu ---- */
+.diario{
+  font-size:12.5px; color:var(--fraco); min-height:32px;
+  display:flex; align-items:center; justify-content:center; text-align:center; padding:0 4px;
+}
+
+/* ---- os poderes ----
+   Grade de seis, e não uma tira que rola: no teste a "água" nascia cortada na
+   borda, e poder cortado é poder que ninguém descobre que existe. */
+.poderes{display:grid; grid-template-columns:repeat(6,1fr); gap:5px}
+.poder{
+  min-width:0; display:flex; flex-direction:column; align-items:center; gap:2px;
+  padding:8px 2px; border-radius:11px; cursor:pointer;
+  border:1px solid var(--linha); background:var(--carta); color:var(--fraco);
+  font:inherit; font-size:10.5px; font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.poder .emoji{font-size:19px; line-height:1}
+.poder[aria-pressed="true"]{border-color:#5b7f9e; background:#1b2836; color:var(--texto)}
+.controles{display:flex; gap:6px}
+.controles button{
+  flex:1; padding:10px; border-radius:10px; font:inherit; font-size:13px; font-weight:650;
+  border:1px solid var(--linha); background:var(--carta); color:var(--texto); cursor:pointer;
+}
+.controles button[aria-pressed="true"]{border-color:#5b7f9e; background:#1b2836}
+</style>
+</head>
+<body>
+<div class="tudo">
+
+  <div class="povos" id="povos"><span class="relogio" id="relogio">—</span></div>
+
+  <div class="mapa"><canvas id="tela"></canvas></div>
+
+  <div class="diario" id="diario">Escolha um poder e toque no mapa. Comece soltando um povo.</div>
+
+  <div class="poderes" id="poderes"></div>
+  <div class="controles">
+    <button id="btPausa">⏸ Pausar</button>
+    <button id="btRapido">⏩ Rápido</button>
+    <button id="btNovo">🌍 Novo mundo</button>
+  </div>
+
+</div>
+
+<script type="module">
+import { mundoNovo, semearPovo, passo, contar, nivelDe, PODERES, CORES, NOMES,
+         AGUA, AREIA, CAMPO, FLORESTA, MONTANHA } from "./mundo.js";
+
+const $ = (id) => document.getElementById(id);
+const tela = $("tela"), ctx = tela.getContext("2d");
+
+let m = null, lado = 8, pausado = false, rapido = false, poder = "povo";
+
+/* ---- as cores do chão ---- */
+const CHAO = [];
+CHAO[AGUA] = "#14293d"; CHAO[AREIA] = "#5c5236";
+CHAO[CAMPO] = "#2f4a2b"; CHAO[FLORESTA] = "#1e3a24"; CHAO[MONTANHA] = "#3d3a35";
+
+/* O terreno vai para um canvas à parte e só é redesenhado quando MUDA.
+
+   Sem isto seriam 3264 retângulos de chão redesenhados sessenta vezes por
+   segundo, só para pintar por cima os mesmos pontinhos. O celular esquenta e
+   a bateria vai embora por nada. */
+const fundo = document.createElement("canvas");
+const fctx = fundo.getContext("2d");
+let terraSuja = true;
+
+/* Quanto mundo cabe nesta tela.
+ *
+ * O mundo era 48x68 fixo. Num celular 390x844 a caixa do mapa é bem mais alta
+ * que larga, então a largura mandava, e sobravam ~165px de preto em cima e
+ * embaixo do mapa -- um terço da tela gasto com nada. Aqui as MEDIDAS do mundo
+ * é que se ajustam à tela, e não o contrário: mesmo tamanho de célula, mais
+ * mundo para olhar.
+ *
+ * Só é chamado ao criar mundo novo. Girar o celular no meio de uma partida
+ * apenas reajusta o zoom -- não apaga a civilização que estava lá. */
+function medirMundo() {
+  const caixa = tela.parentElement.getBoundingClientRect();
+  const alvo = Math.max(5, Math.min(9, Math.round((caixa.width - 4) / 48)));
+  return {
+    L: Math.max(28, Math.min(80, Math.floor((caixa.width - 4) / alvo))),
+    A: Math.max(28, Math.min(120, Math.floor((caixa.height - 4) / alvo))),
+  };
+}
+
+function ajustar() {
+  const caixa = tela.parentElement.getBoundingClientRect();
+  lado = Math.max(3, Math.floor(Math.min((caixa.width - 4) / m.L, (caixa.height - 4) / m.A)));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  tela.style.width = (lado * m.L) + "px";
+  tela.style.height = (lado * m.A) + "px";
+  tela.width = fundo.width = Math.round(lado * m.L * dpr);
+  tela.height = fundo.height = Math.round(lado * m.A * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  terraSuja = true;
+}
+
+function pintarTerra() {
+  for (let y = 0; y < m.A; y++) {
+    for (let x = 0; x < m.L; x++) {
+      fctx.fillStyle = CHAO[m.terreno[y * m.L + x]];
+      fctx.fillRect(x * lado, y * lado, lado, lado);
+    }
+  }
+  terraSuja = false;
+}
+
+function pintar() {
+  if (terraSuja) pintarTerra();
+  ctx.drawImage(fundo, 0, 0, tela.clientWidth, tela.clientHeight);
+
+  /* O território por cima, translúcido: é a leitura principal do mundo. Sem
+     ele dá para ver gente andando e não dá para ver QUEM está ganhando. */
+  ctx.globalAlpha = 0.34;
+  for (let y = 0; y < m.A; y++) {
+    for (let x = 0; x < m.L; x++) {
+      const d = m.dono[y * m.L + x];
+      if (d < 0) continue;
+      ctx.fillStyle = m.povos[d].cor;
+      ctx.fillRect(x * lado, y * lado, lado, lado);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  /* As casas: quadradinho maior conforme o povo aprendeu. É como o avanço
+     aparece sem uma barra de progresso em lugar nenhum.
+
+     A conta era `0.5 + nivel*0.16`, feita quando o nível parava em 3. Com a
+     escada indo até 6 isso dava 1.46 de lado -- casa maior que o próprio
+     quadrado do mapa, transbordando por cima das vizinhas. */
+  for (const c of m.casas) {
+    ctx.fillStyle = m.povos[c.povo].cor;
+    const t = lado * (0.40 + Math.min(c.nivel, 6) * 0.083);
+    ctx.fillRect(c.x * lado + (lado - t) / 2, c.y * lado + (lado - t) / 2, t, t);
+    if (c.nivel >= 4) {
+      ctx.fillStyle = "#fff";
+      ctx.globalAlpha = 0.7;
+      ctx.fillRect(c.x * lado + lado / 2 - 1, c.y * lado + lado / 2 - 1, 2, 2);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /* A gente: um ponto por pessoa. São eles que fazem o mapa respirar. */
+  for (const g of m.gente) {
+    ctx.fillStyle = m.povos[g.povo].cor;
+    const t = Math.max(2, lado * 0.42);
+    ctx.fillRect(g.x * lado + (lado - t) / 2, g.y * lado + (lado - t) / 2, t, t);
+  }
+}
+
+function pintarPovos() {
+  const caixa = $("povos");
+  caixa.querySelectorAll(".povo").forEach((e) => e.remove());
+  m.povos.forEach((p) => {
+    const n = contar(m, p.id);
+    const e = document.createElement("span");
+    e.className = "povo";
+    e.innerHTML = `<span class="bola" style="background:${p.cor}"></span>${n}${n ? ` · nv${nivelDe(p)}` : " ✝"}`;
+    caixa.insertBefore(e, $("relogio"));
+  });
+  $("relogio").textContent = `t ${m.tempo}`;
+}
+
+/* ---- o laço ----
+   O mundo anda em passos fixos e a tela pinta uma vez por quadro. Separar os
+   dois é o que deixa o "rápido" acelerar o MUNDO sem virar animação picotada. */
+let ultimo = 0, sobra = 0, painelEm = -99;
+function quadro(agora) {
+  requestAnimationFrame(quadro);
+  const dt = Math.min(100, agora - ultimo); ultimo = agora;
+  if (!pausado) {
+    sobra += dt * (rapido ? 6 : 1.6);
+    let n = 0;
+    while (sobra > 16 && n < 40) { passo(m); sobra -= 16; n++; }
+  }
+  pintar();
+  /* Contar a cada 15 passos, e não `tempo % 15`: no modo rápido o mundo anda
+     6 passos por quadro e o resto 15 simplesmente nunca cai, então o painel
+     congelaria justo quando há mais o que ver. */
+  if (m.tempo - painelEm >= 15) { painelEm = m.tempo; pintarPovos(); }
+  const ultimoDiario = m.diario[m.diario.length - 1];
+  if (ultimoDiario && $("diario").dataset.t !== String(ultimoDiario.tempo)) {
+    $("diario").dataset.t = ultimoDiario.tempo;
+    $("diario").textContent = ultimoDiario.texto;
+  }
+}
+
+/* ---- os poderes ---- */
+const LISTA = [
+  { id: "povo", emoji: "👣", nome: "povo" },
+  { id: "comida", emoji: "🌾", nome: "fartura" },
+  { id: "floresta", emoji: "🌲", nome: "floresta" },
+  { id: "fogo", emoji: "🔥", nome: "fogo" },
+  { id: "peste", emoji: "☠️", nome: "peste" },
+  { id: "agua", emoji: "🌊", nome: "água" },
+];
+function montarPoderes() {
+  $("poderes").innerHTML = "";
+  for (const p of LISTA) {
+    const b = document.createElement("button");
+    b.className = "poder";
+    b.setAttribute("aria-pressed", String(p.id === poder));
+    b.innerHTML = `<span class="emoji">${p.emoji}</span>${p.nome}`;
+    b.onclick = () => {
+      poder = p.id;
+      $("poderes").querySelectorAll(".poder").forEach((o, i) =>
+        o.setAttribute("aria-pressed", String(LISTA[i].id === poder)));
+    };
+    $("poderes").appendChild(b);
+  }
+}
+
+tela.addEventListener("pointerdown", (e) => {
+  const r = tela.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / lado);
+  const y = Math.floor((e.clientY - r.top) / lado);
+  if (x < 0 || y < 0 || x >= m.L || y >= m.A) return;
+  if (poder === "povo") {
+    if (m.povos.length >= 4) { $("diario").textContent = "Quatro povos já é muita gente para um mundo deste tamanho."; return; }
+    semearPovo(m, x, y, CORES[m.povos.length], NOMES[m.povos.length]);
+    pintarPovos();
+  } else {
+    PODERES[poder](m, x, y);
+    /* Fogo e água mudam o CHÃO, então o fundo tem que ser repintado. */
+    if (poder === "fogo" || poder === "agua" || poder === "floresta") terraSuja = true;
+  }
+});
+
+$("btPausa").onclick = () => {
+  pausado = !pausado;
+  $("btPausa").textContent = pausado ? "▶ Continuar" : "⏸ Pausar";
+  $("btPausa").setAttribute("aria-pressed", String(pausado));
+};
+$("btRapido").onclick = () => {
+  rapido = !rapido;
+  $("btRapido").setAttribute("aria-pressed", String(rapido));
+};
+$("btNovo").onclick = () => novoMundo();
+
+function novoMundo() {
+  const { L, A } = medirMundo();
+  m = mundoNovo(L, A);
+  painelEm = -99;
+  ajustar();
+  pintarPovos();
+  $("diario").textContent = "Mundo novo, e vazio. Toque para soltar um povo.";
+}
+
+addEventListener("resize", () => ajustar());
+montarPoderes();
+novoMundo();
+requestAnimationFrame(quadro);
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+</script>
+</body>
+</html>
