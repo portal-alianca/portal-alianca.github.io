@@ -79,6 +79,56 @@ jobs:
             done
           fi
 
+      # ESPERAR a maquina assentar, e reprovar o deploy se ela nao assentar.
+      #
+      # O passo "Como ficou" abaixo ja existia e nao servia para o que foi
+      # feito. Ele roda tres segundos depois do deploy, e tres segundos depois
+      # a maquina ainda esta trocando: dois deploys seguidos foram conferidos e
+      # o estado impresso foi `replacing` num e `created` no outro. Nenhum dos
+      # dois e' `started`. Quer dizer que o passo criado para PROVAR que o bot
+      # subiu estruturalmente nunca conseguia provar -- ele sempre olha cedo
+      # demais --, e o check verde seguia valendo tanto quanto antes.
+      #
+      # Isso importa aqui mais do que pareceria: uma vez o bot passou doze
+      # horas fora do ar com todos os deploys em verde. Um check que nao pode
+      # falhar e' pior que check nenhum, porque ensina a confiar nele.
+      #
+      # Agora o passo pergunta ate' a maquina chegar em `started`, e FALHA se
+      # ela nao chegar. Verde volta a significar "o bot esta de pe".
+      - name: Esperar a maquina ligar de verdade
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          # O veredito sai do python, e nao de um grep espertinho no shell:
+          # "todas ligadas" e' a condicao que decide se o deploy passa, e ela
+          # tem que ser legivel por quem for mexer nisto depois.
+          #
+          # Maquina nenhuma na lista NAO e' sucesso: seria o bot inexistente
+          # passando como bot de pe.
+          veredito='
+          import json, sys
+          try:
+              ms = json.load(sys.stdin)
+          except Exception:
+              print("SEM RESPOSTA"); sys.exit()
+          if not ms:
+              print("NENHUMA MAQUINA"); sys.exit()
+          estados = [m.get("state", "?") for m in ms]
+          print(("TODAS DE PE: " if all(e == "started" for e in estados) else "AINDA NAO: ")
+                + ", ".join(estados))
+          '
+          for tentativa in $(seq 1 30); do
+            saida=$(flyctl machine list --json 2>/dev/null | python3 -c "$(echo "$veredito" | sed 's/^          //')" || echo "SEM RESPOSTA")
+            echo "tentativa $tentativa: $saida"
+            case "$saida" in
+              "TODAS DE PE: "*) exit 0 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::A maquina nao chegou em 'started' em 150s. O bot pode estar fora do ar."
+          exit 1
+
       # O estado final no log do deploy, sempre. Sem isto, "deu certo" e' uma
       # inferencia; com isto, e' uma linha que se le.
       - name: Como ficou
