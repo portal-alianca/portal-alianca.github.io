@@ -5155,6 +5155,99 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("e todas elas têm bandeira", naPagina.filter((l) => !bandeiraDemo(l)), []);
 }
 
+/* ====== o nome de categoria e de cargo não pode depender de bandeira ======
+
+   O dono abriu o servidor no PC e viu "DE Alemão", "CN Chinês", "BR Português"
+   onde deviam estar as bandeiras.
+
+   A causa não é nossa e não tem conserto nosso: o Discord desenha nome de
+   canal, categoria e cargo com a fonte do SISTEMA, e a fonte de emoji do
+   Windows não traz bandeira nenhuma. Faltando o desenho, sobram os dois
+   indicadores regionais que formam a bandeira -- "🇩🇪" é literalmente D+E.
+
+   Em mensagem a bandeira continua, porque ali o Discord troca por imagem
+   própria e ela aparece pra todo mundo. O que estes testes prendem é a
+   fronteira: bandeira no que é MENSAGEM, nunca no que vira NOME. */
+{
+  const { LINGUAS_MENU, nomeDoIdioma, nomeDeIdiomaNoDiscord, nomesJaUsadosNoDiscord } =
+    carregar(["LINGUAS_MENU", "nomeDoIdioma", "nomeDeIdiomaNoDiscord", "nomesJaUsadosNoDiscord"]);
+
+  ok("português vira pt-português", nomeDeIdiomaNoDiscord("pt"), "pt-português");
+  ok("alemão vira de-deutsch", nomeDeIdiomaNoDiscord("de"), "de-deutsch");
+  ok("o árabe fica no alfabeto dele", nomeDeIdiomaNoDiscord("ar"), "ar-العربية");
+  /* "zh-CN" tem região no código. Sem cortar sairia "zh-CN-中文", com dois
+     traços e uma região que não diz nada a ninguém. */
+  ok("chinês perde a região do código", nomeDeIdiomaNoDiscord("zh-CN"), "zh-中文");
+  ok("idioma que eu não conheço volta como veio", nomeDeIdiomaNoDiscord("xx"), "xx");
+
+  /* O coração: nenhum nome que vai virar categoria ou cargo pode conter um
+     indicador regional. É esse caractere, e só ele, que o Windows não desenha. */
+  const temBandeira = (t) => /[\u{1F1E6}-\u{1F1FF}]/u.test(t);
+  const comBandeira = LINGUAS_MENU.map(([c]) => nomeDeIdiomaNoDiscord(c)).filter(temBandeira);
+  ok("nenhum nome de categoria/cargo leva bandeira", comBandeira, []);
+
+  /* E a bandeira NÃO pode ter sumido de onde ela funciona. Sem esta, "tirar a
+     bandeira" viraria tirar de todo lugar, e o menu e o placar -- que são
+     mensagem -- perderiam o único sinal que não precisa de tradução. */
+  const semBandeira = LINGUAS_MENU.map(([c]) => nomeDoIdioma(c)).filter((t) => !temBandeira(t));
+  ok("mas a mensagem continua com bandeira", semBandeira, []);
+
+  /* Vinte idiomas, vinte nomes: dois iguais fariam duas categorias com o mesmo
+     nome, e ninguém saberia qual é qual. */
+  const nomes = LINGUAS_MENU.map(([c]) => nomeDeIdiomaNoDiscord(c));
+  ok("nenhum nome se repete", nomes.length - new Set(nomes).size, 0);
+
+  /* Discord corta nome de canal em 100 caracteres. */
+  ok("todos cabem no limite do Discord", nomes.filter((n) => n.length > 100), []);
+
+  /* Para renomear o que já existe, o bot precisa reconhecer a própria letra
+     antiga. Sem a forma velha nesta lista ele não reconheceria NADA do que
+     ele mesmo criou até hoje, e nenhum servidor de pé seria consertado. */
+  verdade("reconhece o nome velho, com bandeira", nomesJaUsadosNoDiscord("de").includes("🇩🇪 Alemão"));
+  verdade("e reconhece o nome novo", nomesJaUsadosNoDiscord("de").includes("de-deutsch"));
+
+  /* Renomear só o que o bot escreveu. */
+  const { corrigirNomeDeIdioma } = carregar(["corrigirNomeDeIdioma"]);
+  const fingirCoisa = (name) => ({ name, novos: [], setName(n) { this.novos.push(n); this.name = n; } });
+
+  const velha = fingirCoisa("🇩🇪 Alemão");
+  await corrigirNomeDeIdioma(velha, "de", "teste");
+  ok("categoria com bandeira é renomeada", velha.novos, ["de-deutsch"]);
+
+  const jaCerta = fingirCoisa("de-deutsch");
+  await corrigirNomeDeIdioma(jaCerta, "de", "teste");
+  ok("a que já está certa não é tocada de novo", jaCerta.novos, []);
+
+  /* O dono renomeou na mão. Aquele nome é dele. Trocar seria o bot passando
+     por cima do dono do servidor, que não ia entender de onde veio. */
+  const doDono = fingirCoisa("🇩🇪 Galera da Alemanha");
+  await corrigirNomeDeIdioma(doDono, "de", "teste");
+  ok("nome escolhido pelo dono fica", doDono.novos, []);
+
+  /* Se o Discord recusar (cargo acima de mim, por exemplo), engole e segue --
+     uma varredura inteira não pode morrer por causa de um nome. */
+  const teimosa = { name: "🇩🇪 Alemão", setName() { throw new Error("Missing Permissions"); } };
+  ok("recusa do Discord não derruba a varredura", await corrigirNomeDeIdioma(teimosa, "de", "teste"), false);
+}
+
+/* Nenhum nome de categoria ou cargo pode voltar a sair de nomeDoIdioma.
+
+   Este é o teste que impede a volta do defeito: se alguém escrever de novo
+   `name: nomeDoIdioma(...)` ou criar cargo com ele, o Windows volta a mostrar
+   "DE Alemão" -- e isso não aparece em teste nenhum que só olhe o resultado
+   de uma função. Tem que olhar a chamada. */
+{
+  const criacoes = fonte.match(/criarCargoDeIdioma\([^)]*\)/g) || [];
+  verdade("o bot ainda cria cargo de idioma", criacoes.length >= 2);
+  ok("e nenhum cargo nasce com nomeDoIdioma",
+    criacoes.filter((c) => c.includes("nomeDoIdioma(")), []);
+
+  const categoria = pedaco("garantirCategoria");
+  verdade("a categoria nasce com o nome sem bandeira", categoria.includes("name: nomeDeIdiomaNoDiscord("));
+  verdade("e não com o nome com bandeira", !categoria.includes("name: nomeDoIdioma("));
+  verdade("e a categoria que já existe é renomeada", categoria.includes("corrigirNomeDeIdioma("));
+}
+
 /* Crash não pode engolir o placar.
 
    Duas vezes esta semana um TypeError numa asserção derrubou o processo antes
