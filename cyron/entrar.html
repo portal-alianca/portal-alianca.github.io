@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cyron Defense — entrando</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127942;</text></svg>">
+<!--
+  Retorno do login do Cyron Defense.
+
+  POR QUE ESTA PAGINA EXISTE
+  O jogo abria um servidor local (127.0.0.1) e esperava o navegador voltar
+  nele. No Android isso nao funciona: conferido no aparelho, a conexao chega
+  mas o app fica congelado em segundo plano e nunca responde -- o navegador
+  gira para sempre.
+
+  Entao o retorno passa por aqui. Esta pagina recebe o "code", guarda por
+  poucos minutos numa ponte, e o jogo vem busca-lo quando voltar a frente.
+
+  ISTO NAO E' UM RISCO DE CONTA
+  O "code" sozinho nao entra em conta nenhuma: a troca exige o code_verifier
+  do PKCE, que nasce dentro do jogo e nunca sai dele. A ponte guarda o codigo
+  em leitura de uso unico e apaga tudo em 10 minutos.
+-->
+<style>
+  :root{
+    --fundo:#0B0D11; --painel:#13161C; --borda:#232935;
+    --texto:#EDEFF3; --fraco:#98A1AE; --ambar:#F5A623; --verde:#5EBB83; --vermelho:#E5707A;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;
+    background:var(--fundo); color:var(--texto);
+    font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  .cartao{
+    width:min(440px,100%); background:var(--painel); border:1px solid var(--borda);
+    border-radius:16px; padding:32px 26px; text-align:center;
+  }
+  .marca{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--ambar); margin-bottom:22px}
+  .sinal{width:56px; height:56px; margin:0 auto 18px; border-radius:50%; display:grid; place-items:center; font-size:28px}
+  .girando{border:3px solid var(--borda); border-top-color:var(--ambar); animation:gira .9s linear infinite}
+  @keyframes gira{to{transform:rotate(360deg)}}
+  .ok{background:rgba(94,187,131,.12); color:var(--verde)}
+  .ruim{background:rgba(229,112,122,.12); color:var(--vermelho)}
+  h1{font-size:22px; margin:0 0 10px; font-weight:650}
+  p{margin:0; color:var(--fraco)}
+  p + p{margin-top:12px}
+  .passo{
+    margin-top:24px; padding:14px 16px; border-radius:12px;
+    background:rgba(245,166,35,.08); border:1px solid rgba(245,166,35,.25);
+    color:var(--texto); font-weight:600;
+  }
+  code{
+    display:block; margin-top:10px; padding:10px; border-radius:8px; word-break:break-all;
+    background:#0a0c10; border:1px solid var(--borda); color:var(--fraco); font-size:12px;
+  }
+  @media (prefers-reduced-motion:reduce){ .girando{animation:none} }
+</style>
+</head>
+<body>
+  <main class="cartao">
+    <div class="marca">Cyron Defense</div>
+    <div class="sinal girando" id="sinal"></div>
+    <h1 id="titulo">Confirmando seu login…</h1>
+    <p id="texto">S&oacute; um instante.</p>
+    <div class="passo" id="passo" hidden>Pode fechar esta aba e voltar para o jogo.</div>
+    <code id="detalhe" hidden></code>
+  </main>
+
+<script>
+(function () {
+  var URL_SB = "https://npbqezpfjrjvsqwvgtfy.supabase.co";
+  var ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5wYnFlenBmanJqdnNxd3ZndGZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1MzEwODAsImV4cCI6MjA5MjEwNzA4MH0.-eJ1DWs3ujkSEgR7YYj98AzMlOBRu9v1Uj-oy-8zT88";
+
+  // O Supabase acrescenta ?code= ou &code=; se algo der errado ele manda
+  // error/error_description. Um provedor pode ainda usar fragmento (#).
+  function params() {
+    var p = new URLSearchParams(location.search);
+    if (location.hash && location.hash.length > 1) {
+      new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) {
+        if (!p.has(k)) p.set(k, v);
+      });
+    }
+    return p;
+  }
+
+  function mostrar(tipo, titulo, texto, detalhe) {
+    var s = document.getElementById("sinal");
+    s.className = "sinal " + (tipo === "ok" ? "ok" : "ruim");
+    s.textContent = tipo === "ok" ? "\u2713" : "!";
+    document.getElementById("titulo").textContent = titulo;
+    document.getElementById("texto").innerHTML = texto;
+    if (tipo === "ok") document.getElementById("passo").hidden = false;
+    if (detalhe) {
+      var d = document.getElementById("detalhe");
+      d.textContent = detalhe;
+      d.hidden = false;
+    }
+  }
+
+  var p = params();
+  var estado = p.get("s") || "";
+  var codigo = p.get("code") || "";
+  var erro = p.get("error_description") || p.get("error") || "";
+
+  if (erro) {
+    mostrar("ruim", "O login n\u00e3o foi conclu\u00eddo",
+      "Volte ao jogo e tente de novo.", erro);
+    return;
+  }
+  if (!estado || !codigo) {
+    // Alguem abriu a pagina direto, sem vir do login.
+    mostrar("ruim", "Nada para confirmar aqui",
+      "Esta p\u00e1gina s\u00f3 funciona quando o pr\u00f3prio jogo te traz at\u00e9 ela.");
+    return;
+  }
+
+  fetch(URL_SB + "/rest/v1/rpc/login_ponte_guardar", {
+    method: "POST",
+    headers: { "apikey": ANON, "Authorization": "Bearer " + ANON, "Content-Type": "application/json" },
+    body: JSON.stringify({ p_estado: estado, p_codigo: codigo })
+  })
+  .then(function (r) {
+    if (r.ok) {
+      mostrar("ok", "Pronto!", "Seu login foi confirmado.");
+    } else {
+      return r.text().then(function (t) {
+        // Recado honesto: o jogo nao vai receber nada, e a pessoa precisa saber.
+        mostrar("ruim", "N\u00e3o consegui entregar ao jogo",
+          "O login com o Google deu certo, mas a confirma\u00e7\u00e3o n\u00e3o chegou. Volte ao jogo e tente de novo.",
+          "HTTP " + r.status + " " + t.slice(0, 200));
+      });
+    }
+  })
+  .catch(function (e) {
+    mostrar("ruim", "Sem conex&atilde;o",
+      "Confira a internet e tente o login de novo pelo jogo.", String(e).slice(0, 200));
+  });
+})();
+</script>
+</body>
+</html>
