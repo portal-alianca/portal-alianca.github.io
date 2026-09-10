@@ -12620,8 +12620,38 @@ async function deHoraEmHora() {
    quer quando o bot está morrendo em silêncio. */
 const BATIDA = 2 * 60 * 1000;
 
+/* A frase sobre a memoria, dita a partir do que foi MEDIDO.
+ *
+ * A mensagem de morte afirmava "a causa quase sempre e' memoria" -- um palpite
+ * escrito no texto, igual em toda queda. Depois de tres mortes numa tarde a
+ * gente ainda nao sabia se era memoria, porque a batida so' gravava o horario.
+ *
+ * Agora ela grava tambem os MB. Se a ultima leitura estava colada no teto, a
+ * suspeita vira prova; se estava folgada, a memoria fica DESCARTADA -- e isso
+ * vale mais que a suspeita, porque manda procurar noutro lugar em vez de
+ * ficar olhando um numero que estava bem. */
+function fraseDaMemoria(mb) {
+  if (!mb) {
+    return "Ainda não sei quanta memória eu estava usando: esta é a primeira queda " +
+      "desde que passei a anotar isso. Na próxima eu digo o número.";
+  }
+  const pct = Math.round((mb / TETO_MEMORIA) * 100);
+  if (pct >= 85) {
+    return `**Foi memória**: a última batida marcava **${mb} MB de ${TETO_MEMORIA}** (${pct}%). ` +
+      "O Fly mata sem avisar quando estoura, e por isso não houve erro nenhum.";
+  }
+  if (pct >= 65) {
+    return `A última batida marcava **${mb} MB de ${TETO_MEMORIA}** (${pct}%) — apertado, ` +
+      "mas não colado no teto. Memória é suspeita, não é conclusão.";
+  }
+  return `**Não foi memória**: a última batida marcava só **${mb} MB de ${TETO_MEMORIA}** (${pct}%). ` +
+    "Procure noutro lugar — a máquina pode ter sido movida pelo Fly, ou o processo caiu por outra causa.";
+}
+
 async function contarQueVoltei() {
-  const antes = Number((await ajustes().catch(() => ({})))["visto"]) || 0;
+  const guardado = await ajustes().catch(() => ({}));
+  const antes = Number(guardado["visto"]) || 0;
+  const mbAntes = Number(guardado["visto_mb"]) || 0;
   const parado = antes ? Date.now() - antes : null;
   const morreu = parado !== null && parado < 3 * BATIDA;
 
@@ -12632,8 +12662,8 @@ async function contarQueVoltei() {
       description: morreu
         ? "O processo anterior não se despediu: a última batida foi há " +
           `${Math.round(parado / 1000)}s e elas são de ${BATIDA / 1000} em ${BATIDA / 1000}s.\n\n` +
-          "Quem clicou em algo nesse intervalo viu **“não respondeu a tempo”**. " +
-          "A causa quase sempre é memória: a máquina tem 256 MB e o Fly mata sem avisar."
+          "Quem clicou em algo nesse intervalo viu **“não respondeu a tempo”**.\n\n" +
+          fraseDaMemoria(mbAntes)
         : parado === null
           ? "Primeira vez que eu conto isso — daqui pra frente todo reinício aparece aqui."
           : `Sem batida há ${Math.round(parado / 60000)} min, então isto foi publicação, e não queda.`,
@@ -12649,8 +12679,14 @@ client.once("clientReady", () => {
   contarQueVoltei()
     .catch((e) => console.error("batida: nao consegui contar que voltei:", e?.message || e))
     .finally(() => {
-      const bater = () => porAjuste("visto", String(Date.now()))
-        .catch((e) => console.error("batida: nao consegui bater:", e?.message || e));
+      /* A batida leva os MB junto. Sem eles, uma morte por memoria e uma morte
+         por outra coisa deixam exatamente o mesmo rastro -- que foi o caso das
+         tres quedas de hoje. Sao duas escritas na mesma tabela, a cada dois
+         minutos: barato ao lado de nao saber por que o bot morre. */
+      const bater = () => Promise.all([
+        porAjuste("visto", String(Date.now())),
+        porAjuste("visto_mb", String(Math.round(process.memoryUsage().rss / 1048576))),
+      ]).catch((e) => console.error("batida: nao consegui bater:", e?.message || e));
       bater();
       setInterval(bater, BATIDA);
     });

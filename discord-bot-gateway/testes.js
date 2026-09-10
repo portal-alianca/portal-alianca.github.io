@@ -4334,6 +4334,22 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade(`o fly.toml diz quanta memória a máquina tem (${noFly} MB)`, noFly > 0);
   ok("e o cartão de saúde usa esse mesmo número", noCodigo, noFly);
 
+  /* O TETO DA HEAP DO V8.
+
+     O Node não sabe do limite da máquina: sem a bandeira, o V8 dimensiona a
+     heap pelo que ele acha que há disponível, deixa crescer, e quem interrompe
+     é o Fly — com um SIGKILL, que não vira exceção nem log. Foi assim que o bot
+     morreu três vezes numa tarde deixando só "o processo anterior não se
+     despediu".
+
+     Tem que caber COM FOLGA no que a máquina tem: buffers, pilha e o próprio
+     Node vivem fora da heap do V8 e não entram na conta do --max-old-space-size.
+     Uma heap de 256 numa máquina de 256 é a mesma morte com um passo a mais. */
+  const heap = Number((fly.match(/--max-old-space-size=(\d+)/) || [])[1]);
+  verdade("o Node sobe com teto de heap", heap > 0);
+  verdade(`e o teto (${heap} MB) deixa folga na máquina de ${noFly} MB`,
+    heap > 0 && heap <= noFly - 40);
+
   /* O corte em si. Sem ele, tudo aqui em cima é comentário. */
   verdade("as mensagens têm teto na memória", /MessageManager: \d+,/.test(fonte));
   verdade("e uma vassoura passa nelas", /messages: \{ interval: \d+, lifetime: \d+ \}/.test(fonte));
@@ -5616,6 +5632,68 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("mas não inventa dias", !/dias/.test(semRitmo));
   verdade("um dia só não sai no plural",
     /~1 dia(?!s)/.test(linhaDaCota({ tipo: "deepl", pct: 90, usado: 450000, teto: 500000 }, 40000)));
+}
+
+/* A MORTE PASSA A DIZER O QUE FOI MEDIDO, E NÃO O QUE SE SUPÕE.
+ *
+ * A mensagem afirmava "a causa quase sempre é memória" — um palpite escrito no
+ * texto, igual em toda queda. Depois de três mortes numa tarde ainda não se
+ * sabia se era memória, porque a batida só gravava o horário.
+ *
+ * Agora ela grava os MB junto, e a frase muda com o número. O caso que mais
+ * importa é o de BAIXO: leitura folgada DESCARTA a memória, e isso vale mais
+ * que a suspeita — manda procurar noutro lugar, em vez de ficar olhando um
+ * número que estava bem. */
+{
+  const { fraseDaMemoria, TETO_MEMORIA } = carregar(["TETO_MEMORIA", "fraseDaMemoria"]);
+
+  /* Sem leitura ainda: não pode inventar causa nenhuma. */
+  const sem = fraseDaMemoria(0);
+  verdade("sem medição, admite que não sabe", /ainda não sei/i.test(sem));
+  verdade("e não culpa a memória por padrão", !/foi memória/i.test(sem));
+
+  const colado = fraseDaMemoria(Math.round(TETO_MEMORIA * 0.95));
+  verdade("colado no teto, afirma que foi memória", /\*\*Foi memória\*\*/.test(colado));
+  verdade("e mostra o número medido", new RegExp(`de ${TETO_MEMORIA}`).test(colado));
+
+  const apertado = fraseDaMemoria(Math.round(TETO_MEMORIA * 0.7));
+  verdade("na faixa do meio, chama de suspeita e não de conclusão",
+    /suspeita, não é conclusão/i.test(apertado));
+
+  /* O que mais muda o dia de quem investiga. */
+  const folgado = fraseDaMemoria(Math.round(TETO_MEMORIA * 0.3));
+  verdade("folgado, DESCARTA a memória", /\*\*Não foi memória\*\*/.test(folgado));
+  verdade("e manda procurar noutro lugar", /noutro lugar/i.test(folgado));
+  verdade("nunca afirma e nega ao mesmo tempo",
+    !(/\*\*Foi memória\*\*/.test(folgado)));
+
+  /* A frase antiga não pode voltar por descuido: ela era a mesma em toda
+     queda, e é justamente isso que a tornava inútil. */
+  for (const mb of [0, 30, 180, 250]) {
+    verdade(`com ${mb} MB, não repete o palpite antigo`,
+      !/quase sempre é memória/i.test(fraseDaMemoria(mb)));
+  }
+}
+
+/* A LIGAÇÃO: a batida tem que GRAVAR os MB.
+ *
+ * fraseDaMemoria() pode estar perfeita e nunca receber número — aí ela cai
+ * para sempre no "ainda não sei", e a queda continua sem diagnóstico. Já é a
+ * quinta vez hoje que este é o buraco, então desta vez ele nasce travado.
+ *
+ * E contarQueVoltei() tem que LER a chave que a batida escreve: dois nomes
+ * diferentes passariam nos dois testes de função e não diriam nada na tela. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+
+  const bloco = fonte.slice(fonte.indexOf("const bater ="), fonte.indexOf("setInterval(bater"));
+  verdade("a batida grava a memória junto com o horário",
+    /visto_mb/.test(bloco) && /memoryUsage/.test(bloco));
+
+  const conta = fonte.slice(fonte.indexOf("async function contarQueVoltei"));
+  const corpo = conta.slice(0, conta.indexOf("\n}"));
+  verdade("e quem conta a morte lê a MESMA chave", /visto_mb/.test(corpo));
+  verdade("e usa a frase medida, em vez de texto fixo", /fraseDaMemoria/.test(corpo));
 }
 
 let resumiu = false;
