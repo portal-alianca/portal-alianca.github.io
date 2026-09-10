@@ -2329,6 +2329,19 @@ client.on("messageUpdate", async (velha, nova) => {
        nada disso e' a pessoa corrigindo a frase. Sem esta linha, cada link
        colado numa sala espelhada custaria seis traducoes, para sempre, e
        calado. */
+    /* O mesmo barulho que o guard abaixo descarta e' o unico momento em que a
+       previa do link fica disponivel: o Discord manda a mensagem primeiro e
+       resolve o link depois. Entao aqui a gente aproveita a passagem para
+       pendurar a imagem nos cartoes -- SEM traduzir nada, que e' o custo que o
+       guard existe para evitar. Ganhar embed e' a assinatura desse evento. */
+    if (!nova?.editedTimestamp && nova?.guildId && !nova.webhookId
+        && (nova.embeds?.length || 0) > (velha?.embeds?.length || 0)) {
+      const comEmbed = nova.partial ? await nova.fetch().catch(() => null) : nova;
+      if (comEmbed && !comEmbed.author?.bot) {
+        await ilustrarNasOutrasSalas(comEmbed).catch(() => {});
+      }
+    }
+
     if (!nova?.editedTimestamp || !nova.guildId || nova.webhookId) return;
     if (velha && !velha.partial && velha.content === nova.content) return;
 
@@ -2389,6 +2402,68 @@ function figurinhaDe(msg) {
   return { nome: String(f.name || "").slice(0, 80), url: desenhavel ? (f.url || "") : "" };
 }
 
+/* GIF colado como LINK atravessava como link cru, e nao como GIF.
+
+   O Discord so' desenha previa de link no CORPO de uma mensagem. Dentro da
+   descricao de um embed -- que e' onde o cartao do espelho poe a fala -- ele
+   nao desenha nada. Entao "https://klipy.com/gifs/..." chegava do outro lado
+   como texto azul sublinhado, e o GIF que a pessoa mandou nao existia para
+   quem lia na outra sala.
+
+   A imagem nao precisa ser descoberta: quando alguem cola o link, o proprio
+   Discord vai buscar e devolve a previa resolvida em msg.embeds. Aqui a gente
+   so' pega o que ele ja' achou e poe na IMAGEM do cartao -- sem buscar pagina,
+   sem biblioteca nova, e funciona para qualquer site que ele saiba abrir
+   (tenor, giphy, klipy).
+
+   Prefere .gif explicito: um mesmo link costuma trazer .webp e .gif, e o
+   .webp do Discord entra parado. Melhor o quadro que se mexe. */
+function midiaDeLink(msg) {
+  for (const e of (msg?.embeds || [])) {
+    const candidatas = [e?.image?.url, e?.thumbnail?.url]
+      .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u));
+    if (!candidatas.length) continue;
+    const anima = candidatas.find((u) => /\.gif(\?|#|$)/i.test(u));
+    return anima || candidatas[0];
+  }
+  return "";
+}
+
+/* Pendura a imagem nos cartoes JA' enviados.
+
+   Existe por causa do relogio: o Discord manda a mensagem primeiro e resolve a
+   previa do link depois, entao no instante em que o espelho monta o cartao o
+   msg.embeds costuma estar vazio. Sem esta segunda passada, o GIF so'
+   apareceria nos links que o Discord tivesse resolvido rapido o bastante --
+   um resultado que muda a cada vez.
+
+   NAO traduz nada: o texto ja' atravessou. So' acrescenta a imagem, e so' em
+   cartao que ainda nao tem uma (figurinha e' imagem e manda mais). */
+async function ilustrarNasOutrasSalas(msg) {
+  const midia = midiaDeLink(msg);
+  if (!midia) return;
+  const familia = ondeMoraAFala.get(msg.id) || await procurarFamilia(msg.id);
+  if (!familia || familia.size < 2 || eACopia(familia, msg.id, msg.channelId)) return;
+
+  const { enderecos } = await enderecosDoEspelho(msg.guildId);
+  if (!enderecos?.size) return;
+
+  for (const [sala, copiaId] of familia) {
+    if (copiaId === msg.id) continue;
+    const url = enderecos.get(sala);
+    if (!url) continue;
+    const canal = await client.channels.fetch(sala).catch(() => null);
+    const copia = canal ? await canal.messages.fetch(copiaId).catch(() => null) : null;
+    const embed = copia?.embeds?.[0];
+    if (!embed) continue;
+    const atual = embed.toJSON();
+    if (atual.image?.url) continue; // figurinha, ou ja' ilustrado numa passada anterior
+    await clienteDoWebhook(url).editMessage(copiaId, {
+      embeds: [{ ...atual, image: { url: midia } }],
+    }).catch((e) => console.error("espelho: nao consegui ilustrar a copia:", e?.message || e));
+  }
+}
+
 /* A enquete atravessa como TEXTO, e nao como enquete.
 
    Webhook ate' consegue criar enquete, e seria a coisa errada: sete enquetes
@@ -2414,6 +2489,10 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
   const enquete = textoDaEnquete(msg);
   if (enquete) texto = [String(texto || "").trim(), enquete].filter(Boolean).join("\n");
   const figurinha = figurinhaDe(msg);
+  /* A previa que o Discord ja' resolveu do link, se ja' chegou. Quando ainda
+     nao chegou -- o caso comum, porque ele resolve depois de mandar --, quem
+     pendura a imagem e' ilustrarNasOutrasSalas(), na segunda passada. */
+  const midiaLink = midiaDeLink(msg);
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. */
   const nome = (msg.member?.displayName || msg.author.username || "alguem").slice(0, 80);
@@ -2692,7 +2771,12 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
          IMAGEM do cartao e nao um anexo pendurado embaixo. O nome entra no
          corpo so' quando nao ha' imagem para desenhar (as do Discord, em
          LOTTIE) -- sem ele o cartao sairia completamente vazio. */
-      ...(figurinha?.url ? { image: { url: figurinha.url } } : {}),
+      /* GIF colado como link vira IMAGEM do cartao, pelo mesmo motivo da
+         figurinha: dentro da descricao de um embed o Discord nao desenha
+         previa nenhuma, e o GIF chegaria do outro lado como texto azul. A
+         figurinha manda mais -- quando ha' as duas, ela e' a fala inteira. */
+      ...(figurinha?.url ? { image: { url: figurinha.url } }
+        : (midiaLink ? { image: { url: midiaLink } } : {})),
       description: `${(corpoDoCartao || (figurinha ? `🎨 ${figurinha.nome}` : "")).slice(0, LIMITE_DO_CARTAO)}` +
         `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
         (selo ? ` · ${selo}` : ""),
