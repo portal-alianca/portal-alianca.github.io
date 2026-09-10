@@ -3,8 +3,22 @@ primary_region = "gru"
 
 [build]
 
+# --max-old-space-size existe porque o Node NAO sabe do limite da maquina.
+#
+# Sem esta bandeira o V8 dimensiona a heap pelo que ele acha que ha' disponivel,
+# deixa ela crescer, e quem interrompe e' o Fly -- com um SIGKILL, que nao vira
+# excecao, nao vira log e nao deixa o processo se despedir. E' exatamente o que
+# as quedas de hoje relataram: "o processo anterior nao se despediu".
+#
+# Com teto, o V8 passa a coletar com forca ANTES de chegar la'. Se ainda assim
+# faltar memoria, a morte deixa de ser silenciosa: vira um erro de heap que
+# aparece no log, com pilha. Trocar morte calada por erro nomeado ja' vale a
+# bandeira, mesmo que ela nao evite a queda.
+#
+# 200 de 256 deixa ~56 MB para o resto (buffers, pilha, o proprio Node), que
+# nao moram na heap do V8 e por isso nao entram nesta conta.
 [processes]
-  app = "node index.js"
+  app = "node --max-old-space-size=200 index.js"
 
 [[vm]]
   size = "shared-cpu-1x"
