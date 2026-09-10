@@ -1131,6 +1131,105 @@ async function usoDeHoje(servidorId) {
   }), { caracteres: 0, traducoes: 0, cache: 0 });
 }
 
+/* ---------------------------------------------------------------------------
+   O MES, e nao so' o dia.
+   ---------------------------------------------------------------------------
+   O relato foi "nao consigo entender o uso dos tokens: quanto ja' usamos do
+   limite do mes, quanto falta".
+
+   A conta nunca fechava porque o painel e o limite estao em RELOGIOS
+   DIFERENTES: tudo que o bot mostrava era do dia (usoDeHoje), e o teto das
+   contas de tradutor e' do mes. Nao havia soma mensal em lugar nenhum, entao
+   a pergunta so' podia ser respondida somando dias na mao.
+   --------------------------------------------------------------------------- */
+
+function primeiroDiaDoMes(hoje = hojeISO()) {
+  return `${String(hoje).slice(0, 7)}-01`;
+}
+
+/* Quantos dias o mes de `hoje` tem. Dia 0 do mes seguinte e' o ultimo deste --
+   assim fevereiro e ano bissexto saem certos sem tabela nenhuma. */
+function diasNoMesDe(hoje = hojeISO()) {
+  const [a, m] = String(hoje).split("-").map(Number);
+  return new Date(Date.UTC(a, m, 0)).getUTCDate();
+}
+
+/* Caracteres por dia, olhando so' os ultimos dias.
+
+   O ritmo do MES inteiro mente depois de uma mudanca: quem ligou o espelho no
+   dia 20 tem vinte dias de quase nada puxando a media para baixo, e o painel
+   diria que a cota dura ate' o ano que vem. A janela curta responde "no ritmo
+   de agora", que e' a pergunta que a pessoa esta' fazendo. */
+const DIAS_DE_RITMO = 7;
+
+function ritmoDiario(linhas, hoje = hojeISO(), janela = DIAS_DE_RITMO) {
+  const limite = new Date(Date.parse(`${hoje}T00:00:00Z`) - (janela - 1) * 86400000)
+    .toISOString().slice(0, 10);
+  const recentes = (linhas || []).filter((l) => String(l.dia) >= limite);
+  if (!recentes.length) return 0;
+  const total = recentes.reduce((a, l) => a + Number(l.caracteres || 0), 0);
+  /* Divide pela JANELA inteira, e nao pelos dias com registro: dia sem traducao
+     e' dia de consumo zero, e ignora-lo inflaria o ritmo de quem so' traduz nas
+     quintas -- o painel diria que a cota acaba antes do que acaba.
+     E nao pelo dia do mes tambem: a janela atravessa a virada (no dia 3, ela
+     pega quatro dias do mes passado), e dividir sete dias de consumo por tres
+     daria um ritmo mais que dobrado bem no comeco do mes. */
+  return total / janela;
+}
+
+/* O que sobra, dito em DIAS.
+
+   "43%" nao responde a pergunta. Dia 3 do mes com 43% e' um problema; dia 28
+   com 43% e' folga enorme -- e o painel mostrava o mesmo texto nos dois casos.
+   O que decide e' quanto tempo o resto dura no ritmo atual. */
+function duracaoDoQueSobra(usado, teto, porDia) {
+  if (!teto || teto <= 0) return null;           // teto desconhecido: nao invento
+  const sobra = Math.max(0, teto - usado);
+  if (sobra <= 0) return { sobra: 0, dias: 0 };
+  if (!porDia || porDia <= 0) return { sobra, dias: null };  // sem consumo, nao ha' o que projetar
+  return { sobra, dias: Math.floor(sobra / porDia) };
+}
+
+/* Numero curto e sem separador de milhar.
+
+   Pelo mesmo motivo que o resto do painel evita toLocaleString: "1.240" e' mil
+   duzentos e quarenta em portugues e um virgula dois quatro em ingles, e este
+   cartao e' lido nas duas. "1.2k" nao muda de significado. */
+function emK(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v < 1000000) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}k`;
+  return `${(v / 1000000).toFixed(1)}M`;
+}
+
+/* O ritmo da CHAVE DO DONO, somando todos os servidores.
+ *
+ * A cota da DeepL e' da conta, e nao de um servidor: quem gasta e' todo mundo
+ * que cai no tradutor da casa. Projetar com o consumo de um servidor so' diria
+ * que a cota dura muito mais do que dura. */
+async function ritmoDaChaveDoDono(hoje = hojeISO()) {
+  const desde = new Date(Date.parse(`${hoje}T00:00:00Z`) - (DIAS_DE_RITMO - 1) * 86400000)
+    .toISOString().slice(0, 10);
+  const linhas = await sb(
+    `cyron_uso_diario?dia=gte.${desde}&dia=lte.${hoje}&select=dia,caracteres,motor`) || [];
+  return ritmoDiario(linhas.filter((l) => String(l.motor || "").startsWith("dono-")), hoje);
+}
+
+/* O que este servidor traduziu no mes corrente, e em que ritmo. */
+async function usoDoMes(servidorId, hoje = hojeISO()) {
+  const linhas = await sb(
+    `cyron_uso_diario?servidor_id=eq.${servidorId}` +
+    `&dia=gte.${primeiroDiaDoMes(hoje)}&dia=lte.${hoje}` +
+    "&select=dia,caracteres,traducoes,do_cache") || [];
+  const total = linhas.reduce((a, l) => ({
+    caracteres: a.caracteres + Number(l.caracteres || 0),
+    traducoes: a.traducoes + Number(l.traducoes || 0),
+    cache: a.cache + Number(l.do_cache || 0),
+  }), { caracteres: 0, traducoes: 0, cache: 0 });
+  return { ...total, porDia: ritmoDiario(linhas, hoje) };
+}
+
+
 async function traduzirComCache(texto, alvo, motor = MOTOR_AUTO) {
   if (texto.length > MAX_CACHE) return await traduzir(texto, alvo, motor);
 
@@ -1369,6 +1468,31 @@ const AVISOS_DE_COTA = [95, 85, 70];
 const cotaDoDono = new Map();  // tipo -> { usado, teto, pct, quando, faixa }
 
 function comoEstaACota() { return [...cotaDoDono.entries()].map(([tipo, v]) => ({ tipo, ...v })); }
+
+/* A cota em uma linha que RESPONDE a pergunta.
+ *
+ * Ela saia como "DeepL 42%", e "42%" nao diz nem quanto foi gasto, nem quanto
+ * sobra, nem quanto tempo o resto dura. As tres coisas cabem numa linha:
+ *
+ *   DeepL 213k de 500k (43%) · sobram 287k, ~19 dias neste ritmo
+ *
+ * O "~19 dias" e' o que vira decisao. Ele sai do ritmo dos ultimos dias, e nao
+ * de uma data de virada da conta: a DeepL zera no ciclo de cobranca dela, que
+ * nao e' necessariamente o primeiro do mes, e prometer "acaba dia 30" seria
+ * inventar uma data que eu nao sei. Duracao eu sei; data, nao.
+ *
+ * `porDia` vem de fora (dos NOSSOS contadores, que sao do mes-calendario).
+ * Sem ele, a linha ainda diz o quanto sobra -- so' nao projeta. */
+function linhaDaCota(c, porDia = 0) {
+  const nome = MOTORES[c?.tipo]?.nome || c?.tipo || "tradutor";
+  if (!c?.teto) return `**${nome}** ${c?.pct ?? 0}%`;  // sem teto conhecido, a porcentagem e' tudo que ha'
+  const base = `**${nome}** ${emK(c.usado)} de ${emK(c.teto)} (${c.pct}%)`;
+  const resto = duracaoDoQueSobra(c.usado, c.teto, porDia);
+  if (!resto) return base;
+  if (resto.sobra <= 0) return `${base} · **acabou**`;
+  if (resto.dias === null) return `${base} · sobram ${emK(resto.sobra)}`;
+  return `${base} · sobram ${emK(resto.sobra)}, ~${resto.dias} dia${resto.dias === 1 ? "" : "s"} neste ritmo`;
+}
 
 /* Em que faixa este consumo esta, e se ela merece aviso.
 
@@ -7149,6 +7273,9 @@ async function montarPainel(guild, servidor, idioma = "") {
      mesmo no painel traduzido. */
   const motorUsado = await comoEstaOMotor(servidor, T);
   const uso = await usoDeHoje(servidor.id);
+  /* O mes, porque o teto das contas de tradutor e' mensal e o painel so'
+     mostrava o dia -- a conta nunca fechava. */
+  const mes = await usoDoMes(servidor.id).catch(() => null);
   const cotaHoje = cotaDoDonoNoDia(servidor);
   const gastoHoje = await jaGastouHoje(servidor.id);
 
@@ -7225,6 +7352,19 @@ async function montarPainel(guild, servidor, idioma = "") {
         : "_" + await T("nada ainda hoje") + "_",
       inline: true,
     },
+    /* O MES, ao lado do dia.
+       O teto de qualquer conta de tradutor e' mensal, e o painel so' falava do
+       dia: quem quisesse saber "quanto ja' foi do limite" tinha que somar dias
+       na mao. Aqui a soma ja' vem feita, com o ritmo ao lado -- e' o ritmo que
+       diz se o mes fecha folgado ou apertado. */
+    ...(mes && (mes.traducoes || mes.cache) ? [{
+      name: await T("📅 Neste mês"),
+      value: await T("**{0}** traduções · {1} caracteres", mes.traducoes, emK(mes.caracteres)) +
+        (mes.porDia > 0
+          ? "\n_" + await T("cerca de {0} por dia nesta semana", emK(mes.porDia)) + "_"
+          : ""),
+      inline: true,
+    }] : []),
     /* O teto do dia, dito ANTES de bater nele.
 
        Sem esta linha, estourar a cota seria degradação calada -- a tradução
@@ -9382,7 +9522,11 @@ async function cartaoDoDia() {
     .sort((a, b) => b[1] - a[1])
     .map(([m, q]) => `${q} ${NOME_DO_MOTIVO[m] || m}`).join(" · ");
 
-  const cota = comoEstaACota().map((c) => `**${MOTORES[c.tipo]?.nome || c.tipo}** ${c.pct}%`).join(" · ");
+  /* O ritmo sai dos NOSSOS contadores, e so' do que passou pela chave do dono
+     -- que e' a conta que tem teto. Se a leitura falhar, a linha ainda diz
+     quanto sobra; so' nao projeta. */
+  const ritmoDono = await ritmoDaChaveDoDono().catch(() => 0);
+  const cota = comoEstaACota().map((c) => linhaDaCota(c, ritmoDono)).join(" · ");
   const parado = !hoje.t && !copias;
 
   return {

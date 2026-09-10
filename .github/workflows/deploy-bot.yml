@@ -20,8 +20,16 @@ on:
   workflow_dispatch: # permite disparar na mão, pela aba Actions
 
 jobs:
+  # Vermelho aqui IMPEDE a subida. Antes disto, mesclar um pull request pelo
+  # navegador levava o bot ao ar sem que uma linha de teste rodasse -- o
+  # publicar.sh roda a suíte, mas é script local, e só protege quem publica do
+  # próprio computador.
+  testes:
+    uses: ./.github/workflows/testes-bot.yml
+
   deploy:
     name: fly deploy
+    needs: testes
     runs-on: ubuntu-latest
     # Dois deploys ao mesmo tempo brigam pela mesma máquina; o último ganha.
     concurrency:
