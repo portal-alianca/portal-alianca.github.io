@@ -12652,8 +12652,13 @@ async function contarQueVoltei() {
   const guardado = await ajustes().catch(() => ({}));
   const antes = Number(guardado["visto"]) || 0;
   const mbAntes = Number(guardado["visto_mb"]) || 0;
+  const despedi = Number(guardado["despedi"]) || 0;
   const parado = antes ? Date.now() - antes : null;
-  const morreu = parado !== null && parado < 3 * BATIDA;
+  /* Despedida fresca = a saida foi de proposito (publicacao, reinicio na mao).
+     Fresca importa: uma despedida velha, de dias atras, nao pode ficar
+     desculpando uma morte de agora. */
+  const despediu = despedi > 0 && Date.now() - despedi < 3 * BATIDA;
+  const morreu = parado !== null && parado < 3 * BATIDA && !despediu;
 
   await avisarNoPainel(CANAL_ERROS, {
     embeds: [{
@@ -12664,12 +12669,20 @@ async function contarQueVoltei() {
           `${Math.round(parado / 1000)}s e elas são de ${BATIDA / 1000} em ${BATIDA / 1000}s.\n\n` +
           "Quem clicou em algo nesse intervalo viu **“não respondeu a tempo”**.\n\n" +
           fraseDaMemoria(mbAntes)
-        : parado === null
-          ? "Primeira vez que eu conto isso — daqui pra frente todo reinício aparece aqui."
-          : `Sem batida há ${Math.round(parado / 60000)} min, então isto foi publicação, e não queda.`,
+        : despediu
+          ? "Publicação: o processo anterior **se despediu** antes de sair, então isto foi " +
+            "troca de versão e não queda. Ninguém perdeu clique fora do instante da troca."
+          : parado === null
+            ? "Primeira vez que eu conto isso — daqui pra frente todo reinício aparece aqui."
+            : `Sem batida há ${Math.round(parado / 60000)} min, então isto foi publicação, e não queda.`,
       timestamp: new Date().toISOString(),
     }],
   });
+
+  /* A despedida vale UMA vez. Sem apagar, ela ficaria seis minutos no banco
+     desculpando qualquer morte que acontecesse logo depois de uma publicacao
+     -- que e' justamente quando uma versao nova costuma quebrar. */
+  if (despedi > 0) await porAjuste("despedi", "0").catch(() => {});
 }
 
 client.once("clientReady", () => {
@@ -12783,10 +12796,28 @@ client.once("clientReady", () => {
 
    Com prazo curto: se o banco nao responder, desligar continua sendo mais
    importante que contar. */
+/* E DEIXA DITO QUE A SAIDA FOI DE PROPOSITO.
+ *
+ * A mensagem de morte sempre disse "o processo anterior nao se despediu" -- e
+ * nada, nunca, fazia o processo se despedir. Entao TODA saida parecia morte,
+ * inclusive as minhas publicacoes: quatro deploys numa tarde viraram quatro
+ * caveiras vermelhas num canal de erros, e o dono foi dormir achando que o bot
+ * estava caindo.
+ *
+ * O alarme errado nos dois sentidos e' pior que alarme nenhum: se publicacao e
+ * queda produzem a mesma caveira, a caveira para de significar queda -- e a
+ * proxima, a de verdade, passa despercebida no meio das minhas.
+ *
+ * Uma linha no banco resolve: quem foi morto pelo Fly (SIGKILL, memoria) NAO
+ * passa por aqui e nao consegue escrever nada. A ausencia da despedida e' o
+ * sinal, e agora ela e' real em vez de suposta. */
 for (const sinal of ["SIGINT", "SIGTERM"]) {
   process.on(sinal, async () => {
     await Promise.race([
-      descarregarUso().catch(() => {}),
+      Promise.all([
+        descarregarUso().catch(() => {}),
+        porAjuste("despedi", String(Date.now())).catch(() => {}),
+      ]),
       new Promise((r) => setTimeout(r, 3000)),
     ]);
     process.exit(0);

@@ -5696,6 +5696,42 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e usa a frase medida, em vez de texto fixo", /fraseDaMemoria/.test(corpo));
 }
 
+/* PUBLICAÇÃO NÃO É MORTE.
+ *
+ * O caso real, e o mais constrangedor do dia: quatro deploys numa tarde
+ * viraram quatro caveiras vermelhas no canal de erros, e o dono foi olhar
+ * achando que o bot estava caindo. Conferido nos horários — 17:06, 18:41,
+ * 18:52 e 19:00 no Discord batem com os quatro deploys do mesmo dia.
+ *
+ * A causa: a mensagem sempre disse "o processo anterior não se despediu", e
+ * NADA, nunca, fazia o processo se despedir. Toda saída parecia morte.
+ *
+ * Alarme errado nos dois sentidos é pior que alarme nenhum: se publicação e
+ * queda produzem a mesma caveira, a caveira para de significar queda — e a
+ * próxima, a de verdade, passa despercebida no meio das minhas. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+
+  /* Quem sai de propósito ANOTA que saiu. Quem é morto pelo Fly (SIGKILL,
+     memória) não passa pelo handler e não consegue escrever nada — é a
+     ausência do bilhete que vira o sinal, e agora ela é real. */
+  const saida = fonte.slice(fonte.indexOf('for (const sinal of ["SIGINT", "SIGTERM"])'));
+  const corpoSaida = saida.slice(0, saida.indexOf("\n}"));
+  verdade("ao receber SIGTERM, o bot anota que se despediu", /despedi/.test(corpoSaida));
+
+  const conta = fonte.slice(fonte.indexOf("async function contarQueVoltei"));
+  const corpo = conta.slice(0, conta.indexOf("\n}\n"));
+  verdade("e quem conta a volta lê esse mesmo bilhete", /despedi/.test(corpo));
+  /* A trava que importa: com bilhete, NÃO pode ser morte. */
+  verdade("com despedida, não é morte", /!despediu/.test(corpo));
+  /* Bilhete velho não desculpa morte nova — e ele vale uma vez só, senão
+     ficaria seis minutos acobertando qualquer queda logo depois de uma
+     publicação, que é justamente quando versão nova quebra. */
+  verdade("despedida velha não vale", /Date\.now\(\) - despedi < 3 \* BATIDA/.test(corpo));
+  verdade("e a despedida é apagada depois de usada",
+    /porAjuste\("despedi", "0"\)/.test(corpo));
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;
