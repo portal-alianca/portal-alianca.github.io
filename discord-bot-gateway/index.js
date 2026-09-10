@@ -8434,6 +8434,36 @@ const EXPLICA_ERRO = [
       "uma vez só, e o bot volta a usar aquilo na varredura seguinte.",
   },
   {
+    /* O bot pediu para ser ensinado este: ele aparecia como "❓ Um erro que eu
+       ainda nao sei explicar", com "me mostre esta mensagem e eu passo a
+       explicar este aqui tambem".
+
+       Ele caia no vao entre duas regras. A do tradutor exige a palavra
+       "tradutor" perto do sintoma (de proposito: sem isso ela reivindicaria
+       toda falha de rede da casa). A do banco lista ETIMEDOUT e afins, e o
+       texto do AbortSignal e' outro -- "The operation was aborted due to
+       timeout". Nenhuma das duas o pegava.
+
+       Vem ANTES da regra do banco por precaucao: se um dia o mesmo texto vier
+       junto de um 5xx, quem manda e' a explicacao mais especifica. */
+    /* O CONTEXTO SOZINHO NAO BASTA -- e essa primeira versao eu escrevi errada.
+       Ela era `/passada (curta|longa)|.../` e casava com QUALQUER falha de
+       varredura, inclusive "passada curta falhou em Ks supabase 504", que era
+       do banco e ja' tinha explicacao melhor. Roubar caso alheio e' o mesmo
+       defeito que esta tabela existe para evitar. O teste pegou.
+
+       Agora o sintoma e' obrigatorio: contexto de varredura E timeout. */
+    quando: /(passada (curta|longa)|espelho|varredura).{0,160}(aborted due to timeout|TimeoutError)/i,
+    titulo: "Uma varredura passou do tempo e eu cortei",
+    precisaDeVoce: false,
+    oque: "A varredura de um servidor demorou mais que o prazo e eu cortei a espera em vez de " +
+      "ficar pendurado. Costuma ser o Discord ou o banco lentos naquele instante, e não " +
+      "configuração de ninguém.\n\n" +
+      "A varredura curta roda de minuto em minuto: a seguinte refaz o que ficou para trás.",
+    fazer: "Nada. Só vale olhar se aparecer sempre no MESMO servidor: aí pode ser um servidor " +
+      "grande demais para o prazo, e o tamanho é que precisa de ajuste.",
+  },
+  {
     quando: /supabase 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network|EAI_AGAIN/i,
     titulo: "O banco de dados piscou",
     precisaDeVoce: false,
@@ -12811,6 +12841,11 @@ client.once("clientReady", () => {
  * Uma linha no banco resolve: quem foi morto pelo Fly (SIGKILL, memoria) NAO
  * passa por aqui e nao consegue escrever nada. A ausencia da despedida e' o
  * sinal, e agora ela e' real em vez de suposta. */
+/* O prazo que o handler se da'. Precisa caber DENTRO do kill_timeout do
+   fly.toml, com folga: se o Fly cortar antes, o bilhete nao chega e toda
+   publicacao volta a virar caveira. Um teste confere a folga entre os dois. */
+const PRAZO_DESPEDIDA = 3000;
+
 for (const sinal of ["SIGINT", "SIGTERM"]) {
   process.on(sinal, async () => {
     await Promise.race([
@@ -12818,7 +12853,7 @@ for (const sinal of ["SIGINT", "SIGTERM"]) {
         descarregarUso().catch(() => {}),
         porAjuste("despedi", String(Date.now())).catch(() => {}),
       ]),
-      new Promise((r) => setTimeout(r, 3000)),
+      new Promise((r) => setTimeout(r, PRAZO_DESPEDIDA)),
     ]);
     process.exit(0);
   });

@@ -4350,6 +4350,23 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade(`e o teto (${heap} MB) deixa folga na máquina de ${noFly} MB`,
     heap > 0 && heap <= noFly - 40);
 
+  /* A DESPEDIDA PRECISA CABER NO PRAZO DO FLY.
+
+     O bilhete de despedida é o que separa "publicação" de "morte" no canal de
+     erros. Se o Fly cortar antes de ele chegar ao banco, toda publicação volta
+     a virar caveira vermelha — o defeito que fez o dono achar que o bot estava
+     caindo a tarde inteira.
+
+     São dois números que precisam de folga entre si, e moravam em arquivos
+     diferentes: um no código, o outro no padrão do Fly, que ninguém escreveu e
+     todo mundo supunha. */
+  const prazoFly = Number((fly.match(/kill_timeout\s*=\s*"(\d+)s"/) || [])[1]);
+  const prazoCodigo = Number((fonte.match(/const PRAZO_DESPEDIDA = (\d+);/) || [])[1]);
+  verdade("o fly.toml diz quanto tempo eu tenho para me despedir", prazoFly > 0);
+  verdade("o código tem um prazo próprio para a despedida", prazoCodigo > 0);
+  verdade(`e o do código (${prazoCodigo / 1000}s) cabe no do Fly (${prazoFly}s) com folga`,
+    prazoFly * 1000 >= prazoCodigo * 2);
+
   /* O corte em si. Sem ele, tudo aqui em cima é comentário. */
   verdade("as mensagens têm teto na memória", /MessageManager: \d+,/.test(fonte));
   verdade("e uma vassoura passa nelas", /messages: \{ interval: \d+, lifetime: \d+ \}/.test(fonte));
@@ -5730,6 +5747,44 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("despedida velha não vale", /Date\.now\(\) - despedi < 3 \* BATIDA/.test(corpo));
   verdade("e a despedida é apagada depois de usada",
     /porAjuste\("despedi", "0"\)/.test(corpo));
+}
+
+/* O ERRO QUE O PRÓPRIO BOT PEDIU PARA SER ENSINADO.
+ *
+ * Ele aparecia no canal como "❓ Um erro que eu ainda não sei explicar", com
+ * "me mostre esta mensagem e eu passo a explicar este aqui também":
+ *
+ *   espelho: passada curta falhou em [TOP]Best Alliance Kingshot
+ *   The operation was aborted due to timeout
+ *
+ * Caía no vão entre duas regras. A do tradutor exige a palavra "tradutor"
+ * perto do sintoma (de propósito: sem isso ela reivindicaria toda falha de
+ * rede da casa). A do banco lista ETIMEDOUT e afins, e o texto do AbortSignal
+ * é outro. Nenhuma das duas o pegava. */
+{
+  const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+
+  const real = explicarErro("espelho: passada curta falhou em [TOP]Best Alliance Kingshot",
+    "The operation was aborted due to timeout");
+  verdade("o erro do print passa a ter explicação", !!real);
+  verdade("e é a da varredura, não a do banco",
+    /varredura passou do tempo/i.test(String(real?.titulo)));
+  verdade("e não pede nada de quem lê", real?.precisaDeVoce === false);
+
+  /* A regra nova não pode ROUBAR o que já era bem explicado. Explicação errada
+     é pior que nenhuma: custa o tempo de quem foi procurar no lugar indicado. */
+  const doTradutor = explicarErro("tradutor deepl", "The operation was aborted due to timeout");
+  verdade("timeout do tradutor continua sendo do tradutor",
+    /tradutor demorou/i.test(String(doTradutor?.titulo)));
+
+  const doBanco = explicarErro("espelho: passada curta falhou em Ks", "supabase 504");
+  verdade("o 504 do Supabase continua sendo do banco",
+    /banco de dados piscou/i.test(String(doBanco?.titulo)));
+
+  /* E não pode virar rede de arrastão: uma palavra solta não é um timeout. */
+  const nada = explicarErro("alguem", "escreveu a palavra varredura numa frase qualquer");
+  verdade("frase sem sintoma nenhum não vira erro de varredura",
+    !/varredura passou do tempo/i.test(String(nada?.titulo || "")));
 }
 
 let resumiu = false;
