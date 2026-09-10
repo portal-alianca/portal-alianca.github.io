@@ -996,7 +996,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
-    "figurinhaDe", "textoDaEnquete",
+    "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1093,6 +1093,37 @@ function conferirCartao(onde, embed, componentes = []) {
     ok("e a imagem aparece uma vez em cada sala", comImagem.length, 2);
     verdade("o cartão de cima continua sem imagem nenhuma",
       [...mundo.mensagens.values()].some((m) => !m.embed.image && /olha isso/.test(m.embed.description)));
+  }
+
+  /* GIF colado como link CHEGA como imagem do outro lado.
+     Os testes puros acima confirmam a leitura da prévia; este confirma que ela
+     vira a imagem do cartão, que é onde o defeito aparecia para quem lia. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "https://klipy.com/gifs/feeling-cute", {
+      embeds: [{ image: { url: "https://static2.klipy.com/x.gif" } }],
+    });
+
+    const cartoes = [...mundo.mensagens.values()];
+    ok("o GIF atravessa para as duas salas", cartoes.length, 2);
+    verdade("e chega como IMAGEM, não como link solto no texto",
+      cartoes.every((m) => m.embed.image?.url === "https://static2.klipy.com/x.gif"));
+  }
+
+  /* Figurinha e link na mesma fala: o embed desenha UMA imagem só, e a
+     figurinha é a fala inteira quando vem sozinha. Se as duas disputassem o
+     mesmo lugar sem uma regra, o resultado dependeria da ordem do código. */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    await falar(mundo, "https://klipy.com/gifs/x", {
+      stickers: { first: () => ({ name: "kek", format: 1, url: "http://f/kek.png" }) },
+      embeds: [{ image: { url: "https://static2.klipy.com/x.gif" } }],
+    });
+
+    verdade("com figurinha e link juntos, a figurinha manda",
+      [...mundo.mensagens.values()].every((m) => m.embed.image?.url === "http://f/kek.png"));
   }
 
   /* Marcar alguém abre cartão novo: editar não toca sino em ninguém. */
@@ -4844,6 +4875,42 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("nome gigante é cortado",
     figurinhaDe(comFigurinha({ name: "x".repeat(200), format: 1, url: "u" })).nome.length, 80);
 
+  /* ---- GIF colado como LINK ----
+
+     O relato: "no bot tá saindo assim os gif" — com print de três cartões
+     mostrando https://klipy.com/gifs/... como texto azul, no lugar do GIF.
+
+     A causa não é o link nem o site: o Discord só desenha prévia de link no
+     CORPO de uma mensagem. Dentro da descrição de um embed — que é onde o
+     cartão do espelho põe a fala — ele não desenha nada. Então o GIF que a
+     pessoa mandou simplesmente não existia para quem lia na outra sala.
+
+     A imagem não precisa ser descoberta: quando alguém cola o link, o próprio
+     Discord vai buscar e devolve a prévia resolvida em msg.embeds. Aqui só se
+     pega o que ele já achou. */
+  const { midiaDeLink } = carregar(["midiaDeLink"]);
+  const comEmbeds = (...es) => ({ embeds: es });
+  ok("mensagem sem embed não inventa imagem", midiaDeLink(comEmbeds()), "");
+  ok("mensagem nenhuma não estoura", midiaDeLink(undefined), "");
+  ok("embed sem imagem nenhuma fica de fora",
+    midiaDeLink(comEmbeds({ title: "só texto" })), "");
+  ok("imagem do embed vira a imagem do cartão",
+    midiaDeLink(comEmbeds({ image: { url: "https://s/x.gif" } })), "https://s/x.gif");
+  ok("sem imagem, a miniatura serve",
+    midiaDeLink(comEmbeds({ thumbnail: { url: "https://s/t.png" } })), "https://s/t.png");
+  /* O mesmo link costuma trazer .webp e .gif. O .webp entra parado no embed,
+     então o que se mexe ganha — um GIF que não anima é meio GIF. */
+  ok("entre .webp e .gif, ganha o que anima",
+    midiaDeLink(comEmbeds({ image: { url: "https://s/a.webp" }, thumbnail: { url: "https://s/a.gif" } })),
+    "https://s/a.gif");
+  /* URL que não é http não vai para o embed: `attachment://`, `data:` e afins
+     saem como quadrado quebrado, que é pior do que o link honesto. */
+  ok("endereço que não é http fica de fora",
+    midiaDeLink(comEmbeds({ image: { url: "attachment://x.gif" } })), "");
+  ok("o primeiro embed com imagem é o que vale",
+    midiaDeLink(comEmbeds({ title: "sem imagem" }, { image: { url: "https://s/2.gif" } })),
+    "https://s/2.gif");
+
   /* ---- enquete ---- */
   const enquete = (pergunta, ...opcoes) => ({
     poll: { question: { text: pergunta }, answers: new Map(opcoes.map((t, i) => [i, { text: t }])) },
@@ -4867,7 +4934,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "LINGUAS_MENU", "bandeiraDoIdioma", "seloDeOrigem", "MOTIVOS_QUE_DOEM", "anotarSemTraducao",
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
-    "figurinhaDe", "textoDaEnquete",
+    "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -5256,6 +5323,93 @@ function conferirCartao(onde, embed, componentes = []) {
 
    Este gancho roda mesmo quando a bateria morre no meio, e imprime o que já
    tinha sido coletado -- inclusive as falhas que apontam para a causa. */
+/* A SEGUNDA PASSADA: o GIF que chega atrasado.
+ *
+ * Este e' o caso COMUM, e sem ele o conserto seria meia solucao. O Discord
+ * manda a mensagem primeiro e resolve a previa do link depois, entao no
+ * instante em que o espelho monta o cartao o msg.embeds costuma estar vazio.
+ * Se so' o envio olhasse a previa, o GIF apareceria nos links que o Discord
+ * resolvesse rapido o bastante -- um resultado que muda a cada vez.
+ *
+ * O evento que traz a previa e' o mesmo messageUpdate que o espelho DESCARTA
+ * de proposito (link carregando nao e' correcao, e retraduzir custaria uma
+ * traducao por sala, para sempre e calada). Entao esta funcao pega carona nele
+ * sem traduzir nada: so' pendura a imagem nos cartoes que ja' foram. */
+{
+  const { ilustrarNasOutrasSalas } = carregar([
+    "midiaDeLink", "falasNoCartao", "eACopia", "enderecosDoEspelho", "ilustrarNasOutrasSalas"]);
+
+  const montar = ({ jaTemImagem = false } = {}) => {
+    const editadas = [];
+    const cartao = { embeds: [{ toJSON: () => ({
+      color: 1, description: "texto",
+      ...(jaTemImagem ? { image: { url: "http://f/kek.png" } } : {}),
+    }) }] };
+    globalThis.client = { channels: { fetch: async () => ({ messages: { fetch: async () => cartao } }) } };
+    globalThis.clienteDoWebhook = () => ({
+      editMessage: async (id, o) => editadas.push({ id, embed: o.embeds[0] }),
+    });
+    globalThis.ondeMoraAFala = new Map([["o1", Object.assign(
+      new Map([["pt", "o1"], ["en", "c-en"], ["es", "c-es"]]), { canalDaOriginal: "pt" })]]);
+    globalThis.procurarFamilia = async () => null;
+    globalThis.servidorDoGuild = async () => ({ id: "s1" });
+    globalThis.canaisEspelho = async () => [
+      { canal_id: "pt", webhook: "w-pt" }, { canal_id: "en", webhook: "w-en" },
+      { canal_id: "es", webhook: "w-es" }];
+    return editadas;
+  };
+
+  const fala = (embeds) => ({ id: "o1", channelId: "pt", guildId: "g", embeds });
+
+  /* Sem previa nenhuma nao ha' o que pendurar -- e nao pode sair edicao, senao
+     todo messageUpdate viraria escrita a' toa nas salas. */
+  {
+    const editadas = montar();
+    await ilustrarNasOutrasSalas(fala([]));
+    ok("sem prévia, nenhum cartão é tocado", editadas.length, 0);
+  }
+
+  /* O caso do relato, resolvido pela segunda passada. */
+  {
+    const editadas = montar();
+    await ilustrarNasOutrasSalas(fala([{ image: { url: "https://static2.klipy.com/x.gif" } }]));
+    ok("a prévia atrasada chega nas outras salas", editadas.length, 2);
+    verdade("e chega como imagem do cartão",
+      editadas.every((e) => e.embed.image?.url === "https://static2.klipy.com/x.gif"));
+    verdade("sem apagar o que o cartão já dizia",
+      editadas.every((e) => e.embed.description === "texto"));
+    verdade("a sala de origem não recebe cópia de si mesma",
+      editadas.every((e) => e.id !== "o1"));
+  }
+
+  /* Cartao que ja' tem imagem nao e' mexido: o embed desenha uma imagem so',
+     e sobrescrever trocaria a figurinha de alguem por um GIF. */
+  {
+    const editadas = montar({ jaTemImagem: true });
+    await ilustrarNasOutrasSalas(fala([{ image: { url: "https://static2.klipy.com/x.gif" } }]));
+    ok("cartão que já tem imagem fica como está", editadas.length, 0);
+  }
+}
+
+/* A LIGACAO com o evento, e nao so' a funcao.
+ *
+ * ilustrarNasOutrasSalas() pode estar perfeita e nunca ser chamada -- e' assim
+ * que um recurso morre calado: os testes da funcao continuam verdes e o
+ * produto nao faz nada. Foi exatamente esse buraco que deixou o GIF sair como
+ * link. Entao aqui se confere o FIO: o handler de messageUpdate tem que
+ * chamar a funcao, e tem que chama-la ANTES do guard do editedTimestamp, que
+ * e' justamente o que descarta o evento da previa. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const handler = fonte.slice(fonte.indexOf('client.on("messageUpdate"'));
+  const corpo = handler.slice(0, handler.indexOf("\n});"));
+  const ondeChama = corpo.indexOf("ilustrarNasOutrasSalas");
+  const ondeGuard = corpo.indexOf("if (!nova?.editedTimestamp || !nova.guildId");
+  verdade("messageUpdate chama a segunda passada do GIF", ondeChama > -1);
+  verdade("e chama antes do guard que descarta o evento da prévia",
+    ondeChama > -1 && ondeGuard > -1 && ondeChama < ondeGuard);
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;
