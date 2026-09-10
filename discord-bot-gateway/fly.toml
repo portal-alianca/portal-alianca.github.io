@@ -27,6 +27,19 @@ primary_region = "gru"
 [deploy]
   strategy = "immediate"
 
+# Tempo para o bot se despedir antes do Fly matar de vez.
+#
+# A despedida e' o que separa "publicacao" de "morte" no canal de erros: quem
+# sai de proposito escreve um bilhete no banco, quem e' morto nao consegue. Se
+# o Fly cortar antes do bilhete chegar, TODA publicacao volta a virar caveira
+# vermelha -- que foi o defeito que fez o dono achar que o bot estava caindo.
+#
+# Escrito aqui em vez de confiar no padrao: o handler corre contra um prazo de
+# 3s, e um padrao menor que isso quebraria a despedida sem nenhum aviso. Dois
+# numeros que precisam de uma folga entre eles nao podem morar um no codigo e o
+# outro na cabeca de quem configurou -- um teste confere a folga.
+  kill_timeout = "10s"
+
 # Isto aqui e' um processo que nunca deveria terminar: se ele saiu, deu errado.
 # Sem esta politica o Fly so reinicia quando a saida e' de erro, e uma saida
 # limpa (event loop vazio depois de um login recusado) passava por "acabou o
