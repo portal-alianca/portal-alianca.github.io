@@ -1206,7 +1206,8 @@ function conferirCartao(onde, embed, componentes = []) {
    demais (e ensinar a ignorar o canal) ou falar de menos. */
 {
   const { faixaDaCota, precisaAvisar, barraDeCota } =
-    carregar(["AVISOS_DE_COTA", "faixaDaCota", "precisaAvisar", "barraDeCota"]);
+    carregar(["AVISOS_DE_COTA", "faixaDaCota", "precisaAvisar",
+              "duracaoDoQueSobra", "emK", "barraDeCota"]);
 
   ok("abaixo de 70% não tem faixa", faixaDaCota(69), 0);
   ok("70% cai na faixa de 70", faixaDaCota(70), 70);
@@ -1235,6 +1236,27 @@ function conferirCartao(onde, embed, componentes = []) {
   }
   verdade("cota estourada não vira barra maior que o trilho",
     !/█{11}/.test(barraDeCota({ usado: 5000, teto: 1000 })));
+
+  /* A OUTRA METADE DA PERGUNTA.
+     A barra dizia quanto foi usado e parava aí. O relato foi "quanto já
+     usamos do limite do mês, QUANTO FALTA" — e a segunda metade não estava
+     em lugar nenhum da tela. */
+  const cheia = barraDeCota({ usado: 213000, teto: 500000 }, 15000);
+  verdade("a barra diz quanto foi usado de quanto", /213k de 500k/.test(cheia));
+  verdade("e quanto sobra", /sobram 287k/.test(cheia));
+  /* 287000 / 15000 = 19,1 -> 19. É o número que vira decisão: 43% é a mesma
+     frase no dia 3 (problema) e no dia 28 (folga). */
+  verdade("e por quantos dias o resto dura", /~19 dias/.test(cheia));
+  verdade("cota estourada é dita com todas as letras",
+    /acabou/.test(barraDeCota({ usado: 500000, teto: 500000 }, 15000)));
+  /* Sem ritmo a barra continua inteira: o quanto sobra é fato, a projeção é
+     que depende de consumo. Inventar dias aqui seria pior que omiti-los. */
+  const semRitmo = barraDeCota({ usado: 213000, teto: 500000 }, 0);
+  verdade("sem ritmo, ainda diz quanto sobra", /sobram 287k/.test(semRitmo));
+  verdade("mas não inventa dias", !/dias/.test(semRitmo));
+  /* Nada de toLocaleString: "213.000" é duzentos e treze mil em português e
+     duzentos e treze em inglês, e esta tela é lida nas duas. */
+  verdade("e não usa separador de milhar", !/213\.000|500\.000/.test(cheia));
 }
 
 /* ============== o cartão diário: as contas, sem o Discord ============== */
@@ -2349,6 +2371,36 @@ function conferirCartao(onde, embed, componentes = []) {
      é só um número grande sem referência. */
   verdade("e o ritmo da semana", /15k/.test(String(doMes?.value)));
 
+  /* O CAMPO DO MÊS NUNCA SOME.
+     Ele nascia escondido quando não havia consumo — e escondido também quando
+     a consulta falhava, porque usoDoMes vem com .catch(() => null). Duas
+     causas diferentes, o mesmo nada na tela, e quem procurava o recurso não
+     tinha como saber se era "não usei" ou "não chegou". O relato foi
+     exatamente esse: "não achei". */
+  {
+    const antes = globalThis.usoDoMes;
+
+    globalThis.usoDoMes = async () => ({ traducoes: 0, caracteres: 0, cache: 0, porDia: 0 });
+    const zerado = await montarPainel(guild, servidor, "");
+    const campoZerado = zerado.embed.fields.find((f) => /Neste mês/.test(f.name));
+    verdade("mês zerado ainda mostra o campo", !!campoZerado);
+    verdade("e diz que não houve nada, em vez de sumir",
+      /nada ainda/.test(String(campoZerado?.value)));
+
+    /* Falha de consulta é outra coisa, e tem que ler como outra coisa: dizer
+       "nada ainda" aqui seria o painel afirmando um zero que ele não sabe. */
+    globalThis.usoDoMes = async () => { throw new Error("banco fora"); };
+    const quebrado = await montarPainel(guild, servidor, "");
+    const campoQuebrado = quebrado.embed.fields.find((f) => /Neste mês/.test(f.name));
+    verdade("consulta falhando ainda mostra o campo", !!campoQuebrado);
+    verdade("e diz que não conseguiu somar, não que foi zero",
+      /não consegui/.test(String(campoQuebrado?.value)));
+    verdade("nunca fica com valor vazio — o Discord recusa o cartão inteiro",
+      String(campoQuebrado?.value).length > 0);
+
+    globalThis.usoDoMes = antes;
+  }
+
   /* Os limites do Discord, agora que o cartão é montado inteiro. */
   for (const cartao of [emCasa, emAlemao]) {
     verdade("o cartão cabe em 25 campos", cartao.embed.fields.length <= 25);
@@ -3412,8 +3464,10 @@ function conferirCartao(onde, embed, componentes = []) {
 
   /* ---- os cartões do painel do dono ---- */
   {
-    const { embedDeUso, embedDeErros, embedDeSaude } = carregar([
-      "quandoFoi", "camposDeCota", "TETO_MEMORIA", "mensagensGuardadas",
+    const { embedDeUso, embedDeErros, embedDeSaude, COTA_DE } = carregar([
+      "quandoFoi", "DIAS_DE_RITMO", "ritmoDiario", "ritmoDaChaveDoDono",
+      "duracaoDoQueSobra", "emK", "barraDeCota", "MOTORES", "COTA_DE", "camposDeCota",
+      "TETO_MEMORIA", "mensagensGuardadas",
       "embedDeUso", "embedDeErros", "embedDeSaude"]);
 
     globalThis.INTERVALO_SINCRONIA = globalThis.INTERVALO_SINCRONIA ?? 60000;
@@ -3441,6 +3495,38 @@ function conferirCartao(onde, embed, componentes = []) {
           criado_em: "2026-08-01T00:00:00Z" }));
     conferirCartao("o cartão de uso com 40 servidores", await embedDeUso());
     conferirCartao("o cartão de saúde", await embedDeSaude());
+
+    /* A COTA COM TETO DE VERDADE.
+       motoresDoDono vinha vazio, então camposDeCota() não desenhava campo
+       nenhum e o cartão passava sem nunca exercer a barra. A função podia
+       estar perfeita e nunca ser chamada — pela quarta vez hoje é este o
+       buraco, e é aqui que mora a resposta de "quanto falta". */
+    {
+      const motoresAntes = globalThis.motoresDoDono;
+      const sbAntes = globalThis.sb;
+      /* Data de HOJE: o ritmo olha os últimos 7 dias, e uma data fixa cairia
+         fora da janela para sempre — a conferência da projeção passaria a não
+         testar nada, calada. */
+      const diaDeHoje = new Date().toISOString().slice(0, 10);
+      globalThis.motoresDoDono = () => [{ tipo: "deepl", chave: "k:fx" }];
+      globalThis.sb = async (rota) => rota.includes("cyron_uso_diario")
+        ? [{ dia: diaDeHoje, caracteres: 105000, traducoes: 900, do_cache: 10, motor: "dono-deepl" }]
+        : [];
+      COTA_DE.deepl = async () => ({ usado: 213000, teto: 500000 });
+
+      const saude = await embedDeSaude();
+      conferirCartao("o cartão de saúde com cota", saude);
+      const cota = saude.fields.find((f) => /Cota da/.test(f.name));
+      verdade("a Saúde mostra a cota do mês", !!cota);
+      verdade("com quanto foi usado de quanto", /213k de 500k/.test(String(cota?.value)));
+      verdade("e quanto sobra", /sobram 287k/.test(String(cota?.value)));
+      /* 105000 em 7 dias = 15k/dia; 287k / 15k = 19. É o número que responde
+         "quanto falta" de um jeito que dá para decidir. */
+      verdade("e por quantos dias o resto dura", /~\d+ dias? neste ritmo/.test(String(cota?.value)));
+
+      globalThis.motoresDoDono = motoresAntes;
+      globalThis.sb = sbAntes;
+    }
 
     /* Sem erro nenhum e com erro: o caminho vazio é onde campo fica sem valor,
        e o Discord recusa campo vazio do mesmo jeito que recusa objeto. */

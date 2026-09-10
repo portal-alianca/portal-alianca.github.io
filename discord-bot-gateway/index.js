@@ -7357,14 +7357,24 @@ async function montarPainel(guild, servidor, idioma = "") {
        dia: quem quisesse saber "quanto ja' foi do limite" tinha que somar dias
        na mao. Aqui a soma ja' vem feita, com o ritmo ao lado -- e' o ritmo que
        diz se o mes fecha folgado ou apertado. */
-    ...(mes && (mes.traducoes || mes.cache) ? [{
+    /* O campo aparece SEMPRE, mesmo zerado.
+       Ele nascia escondido quando nao havia consumo -- e escondido tambem
+       quando a consulta falhava, porque usoDoMes vem com .catch(() => null).
+       Duas causas diferentes, o mesmo nada na tela: quem procurava o recurso
+       nao tinha como saber se era "nao usei" ou "nao chegou". O relato foi
+       exatamente esse: "nao achei". Campo mudo e' pior que campo vazio. */
+    {
       name: await T("📅 Neste mês"),
-      value: await T("**{0}** traduções · {1} caracteres", mes.traducoes, emK(mes.caracteres)) +
-        (mes.porDia > 0
-          ? "\n_" + await T("cerca de {0} por dia nesta semana", emK(mes.porDia)) + "_"
-          : ""),
+      value: !mes
+        ? "_" + await T("não consegui somar o mês agora") + "_"
+        : (mes.traducoes || mes.cache)
+          ? await T("**{0}** traduções · {1} caracteres", mes.traducoes, emK(mes.caracteres)) +
+            (mes.porDia > 0
+              ? "\n_" + await T("cerca de {0} por dia nesta semana", emK(mes.porDia)) + "_"
+              : "")
+          : "_" + await T("nada ainda este mês") + "_",
       inline: true,
-    }] : []),
+    },
     /* O teto do dia, dito ANTES de bater nele.
 
        Sem esta linha, estourar a cota seria degradação calada -- a tradução
@@ -9391,6 +9401,9 @@ const tradutorFalhas = { erros: 0, quedas: 0, ultimoErro: "" };
    diferentes. */
 async function camposDeCota() {
   const campos = [];
+  /* Uma leitura so' para todas as chaves: o ritmo e' da CONTA, nao de cada
+     motor, e perguntar por motor seria a mesma consulta repetida. */
+  const porDia = await ritmoDaChaveDoDono().catch(() => 0);
   for (const reserva of motoresDoDono()) {
     const nome = MOTORES[reserva.tipo]?.nome || reserva.tipo;
     if (!COTA_DE[reserva.tipo]) {
@@ -9399,7 +9412,7 @@ async function camposDeCota() {
     }
     try {
       const c = await COTA_DE[reserva.tipo](reserva);
-      campos.push({ name: `Cota da ${nome} neste mês`, value: c ? barraDeCota(c) : "sem teto informado" });
+      campos.push({ name: `Cota da ${nome} neste mês`, value: c ? barraDeCota(c, porDia) : "sem teto informado" });
     } catch (e) {
       campos.push({ name: `Cota da ${nome} neste mês`,
         value: `_não consegui perguntar: ${String(e.message || e).slice(0, 60)}_` });
@@ -9581,13 +9594,29 @@ async function talvezOCartaoDoDia() {
   console.log(`diário: cartão de ${dia} publicado`);
 }
 
-function barraDeCota({ usado, teto }) {
+/* A barra ja' dizia quanto foi USADO. Faltava a outra metade da pergunta:
+   "quanto falta" -- e, mais util que o numero, POR QUANTO TEMPO ele dura.
+
+   43% e' a mesma frase no dia 3 do mes (problema) e no dia 28 (folga enorme).
+   O que separa os dois casos e' o ritmo, e sem ele quem le a tela ainda tem
+   que fazer a conta de cabeca -- que foi exatamente o relato.
+
+   `porDia` vem de fora, dos NOSSOS contadores. Sem ele a barra continua
+   inteira; so' nao projeta. */
+function barraDeCota({ usado, teto }, porDia = 0) {
   const pct = Math.round((usado / teto) * 100);
   const cheios = Math.min(10, Math.round(pct / 10));
   const barra = "█".repeat(cheios) + "░".repeat(10 - cheios);
   const alerta = pct >= 95 ? " 🔴" : pct >= 85 ? " 🟠" : pct >= 70 ? " 🟡" : "";
+  const resto = duracaoDoQueSobra(usado, teto, porDia);
+  let sobra = "";
+  if (resto) {
+    if (resto.sobra <= 0) sobra = "\n**acabou**";
+    else if (resto.dias === null) sobra = `\nsobram ${emK(resto.sobra)}`;
+    else sobra = `\nsobram ${emK(resto.sobra)} — dão ~${resto.dias} dia${resto.dias === 1 ? "" : "s"} neste ritmo`;
+  }
   return `\`${barra}\` **${pct}%**${alerta}\n` +
-    `${usado.toLocaleString("pt-BR")} de ${teto.toLocaleString("pt-BR")} caracteres`;
+    `${emK(usado)} de ${emK(teto)} caracteres` + sobra;
 }
 
 async function embedDeSaude() {
