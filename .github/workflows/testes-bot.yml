@@ -1,0 +1,75 @@
+# Os 3175 testes do bot, rodados por uma máquina em vez de pela memória de
+# alguém.
+#
+# Eles existiam e ninguém os disparava. O publicar.sh roda a suíte, mas é um
+# script LOCAL: só protege quem publica pela mão, do próprio computador. Quem
+# mescla um pull request pelo navegador do celular -- que é como este projeto
+# é tocado -- ia direto para o Fly sem que uma linha de teste rodasse.
+#
+# Uma suíte de 3175 testes que nada dispara é uma apólice que ninguém assinou.
+#
+# Roda em dois lugares, de propósito:
+#   - no pull request, para o defeito aparecer ANTES de virar decisão;
+#   - chamada pelo deploy (workflow_call), para que vermelho BLOQUEIE a subida.
+# Sem o segundo, o primeiro seria só decoração: dava para mesclar por cima.
+
+name: Testes do bot
+
+on:
+  pull_request:
+    paths:
+      - "discord-bot-gateway/**"
+      # A suíte não lê só a própria pasta: ela confere o SQL das migrações e a
+      # página do cyron. Sem estes caminhos aqui, mudar uma migração passaria
+      # sem rodar justamente o teste que existe para ela -- e o buraco seria
+      # invisível, porque a esteira ficaria verde por não ter rodado.
+      - "supabase/migracoes/**"
+      - "cyron/**"
+      - ".github/workflows/testes-bot.yml"
+      - ".github/workflows/deploy-bot.yml"
+  push:
+    branches: [main]
+    paths:
+      - "discord-bot-gateway/**"
+      # A suíte não lê só a própria pasta: ela confere o SQL das migrações e a
+      # página do cyron. Sem estes caminhos aqui, mudar uma migração passaria
+      # sem rodar justamente o teste que existe para ela -- e o buraco seria
+      # invisível, porque a esteira ficaria verde por não ter rodado.
+      - "supabase/migracoes/**"
+      - "cyron/**"
+      - ".github/workflows/testes-bot.yml"
+      - ".github/workflows/deploy-bot.yml"
+  workflow_call: # o deploy chama isto antes de subir
+  workflow_dispatch:
+
+jobs:
+  testes:
+    name: rodar os testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # A versão vem do package.json ("node": ">=18.17"). Fixar 20 aqui e não
+      # "latest": testar numa versão diferente da que o Fly roda testaria um
+      # bot que ninguém usa.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # `npm install` e não `npm ci`: este projeto não versiona lockfile, e o
+      # ci recusa sem ele. Uma dependência só (discord.js).
+      - name: Instalar as dependências
+        working-directory: discord-bot-gateway
+        run: npm install --no-audit --no-fund
+
+      # Antes dos testes: um erro de sintaxe derruba a suíte inteira com uma
+      # mensagem que fala do carregador, não do arquivo. Aqui ele aparece com o
+      # nome e a linha.
+      - name: Conferir se o index.js compila
+        working-directory: discord-bot-gateway
+        run: node --check index.js
+
+      - name: Rodar os testes
+        working-directory: discord-bot-gateway
+        run: node testes.js

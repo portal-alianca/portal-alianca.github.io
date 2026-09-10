@@ -2261,7 +2261,9 @@ function conferirCartao(onde, embed, componentes = []) {
    Discord exige. */
 {
   const { montarPainel } = carregar([
-    "porMolde", "falaFixa", "vereditoDoPainel", "comoEstaOMotor", "montarPainel"]);
+    "porMolde", "falaFixa", "vereditoDoPainel", "comoEstaOMotor",
+    "DIAS_DE_RITMO", "primeiroDiaDoMes", "ritmoDiario", "emK", "usoDoMes",
+    "montarPainel"]);
 
   globalThis.COR = 0xF5A623;
   globalThis.MOTOR_AUTO = { tipo: "auto" };
@@ -2286,6 +2288,9 @@ function conferirCartao(onde, embed, componentes = []) {
   globalThis.replicasOrfas = async () => [];
   globalThis.canaisElegiveis = async () => [{ id: "c9", name: "geral" }];
   globalThis.usoDeHoje = async () => ({ traducoes: 3, caracteres: 512, cache: 1 });
+  /* O mês existe no painel porque o teto de qualquer conta de tradutor é
+     mensal, e o cartão só falava do dia — a conta nunca fechava. */
+  globalThis.usoDoMes = async () => ({ traducoes: 1240, caracteres: 213000, cache: 88, porDia: 15000 });
   globalThis.jaGastouHoje = async () => 0;
   globalThis.sb = async (rota) => rota.includes("discord_fonte_replica")
     ? [{ canal_id: "c1", tipo: "texto" }]
@@ -2331,6 +2336,18 @@ function conferirCartao(onde, embed, componentes = []) {
      que aconteceu na primeira vez que conferi este bloco. */
   verdade("o campo do motor foi traduzido junto com o resto",
     String(motorDe.value).startsWith("<"));
+
+  /* O MÊS aparece no painel, e não só o dia.
+     A função usoDoMes() pode estar perfeita e nunca ser chamada — foi assim
+     que o painel ficou preso no dia enquanto o limite era mensal. Aqui se
+     confere o que chega na tela. */
+  const doMes = emCasa.embed.fields.find((f) => /Neste mês/.test(f.name));
+  verdade("o painel tem o campo do mês", !!doMes);
+  verdade("com o total de traduções do mês", /1240/.test(String(doMes?.value)));
+  verdade("e os caracteres em k, sem separador de milhar", /213k/.test(String(doMes?.value)));
+  /* O ritmo é o que diz se o mês fecha folgado ou apertado — sem ele o total
+     é só um número grande sem referência. */
+  verdade("e o ritmo da semana", /15k/.test(String(doMes?.value)));
 
   /* Os limites do Discord, agora que o cartão é montado inteiro. */
   for (const cartao of [emCasa, emAlemao]) {
@@ -3438,18 +3455,38 @@ function conferirCartao(onde, embed, componentes = []) {
   /* ---- o cartão do dia, no painel do dono ---- */
   {
     const { cartaoDoDia } = carregar([
-      "somaDoDia", "variacao", "ontemISO", "comoEstaACota", "cartaoDoDia"]);
+      "somaDoDia", "variacao", "ontemISO", "comoEstaACota",
+      "DIAS_DE_RITMO", "ritmoDiario", "duracaoDoQueSobra", "emK",
+      "linhaDaCota", "ritmoDaChaveDoDono", "cartaoDoDia"]);
     globalThis.cotaDoDono = new Map();
     globalThis.quandoFoi = () => "há 3 horas";
     globalThis.contar = async () => 1777;
+    /* A data é a de HOJE, e não uma fixa: o ritmo olha os últimos 7 dias, e
+       uma linha de 2026 congelada cairia fora da janela para sempre — o teste
+       da projeção passaria a não testar nada, calado. */
+    const diaDeHoje = new Date().toISOString().slice(0, 10);
     globalThis.sb = async () => ([
-      { dia: "2026-08-31", caracteres: 91234, traducoes: 812, do_cache: 90, motor: "dono-azure" },
-      { dia: "2026-08-31", caracteres: 0, traducoes: 7, do_cache: 0, motor: "sem:tamanho" },
+      { dia: diaDeHoje, caracteres: 91234, traducoes: 812, do_cache: 90, motor: "dono-azure" },
+      { dia: diaDeHoje, caracteres: 0, traducoes: 7, do_cache: 0, motor: "sem:tamanho" },
     ]);
-    conferirCartao("o cartão do dia", await cartaoDoDia());
+    /* A cota com teto CONHECIDO, para conferir o que aparece na tela.
+       Sem isto o teste passaria com a linha velha ("DeepL 42%") — a função
+       nova estaria correta e simplesmente não seria chamada, que é como um
+       recurso morre calado. */
+    globalThis.cotaDoDono = new Map([["deepl", { usado: 213000, teto: 500000, pct: 43 }]]);
+    const doDia = await cartaoDoDia();
+    conferirCartao("o cartão do dia", doDia);
+    const textoDoDia = JSON.stringify(doDia);
+    verdade("o cartão do dia diz quanto foi usado de quanto", /213k de 500k/.test(textoDoDia));
+    verdade("e quanto sobra", /sobram 287k/.test(textoDoDia));
+    /* 91234 caracteres do dono num único dia, janela de 7 → ~13k/dia;
+       287k / 13k ≈ 22 dias. O número exato importa menos que ele EXISTIR: é o
+       que separa "43%" de uma decisão. */
+    verdade("e por quantos dias o resto dura", /~\d+ dias? neste ritmo/.test(textoDoDia));
 
     /* Dia parado: o caminho em que quase todo campo fica vazio ou "—", e o
        Discord recusa campo com valor vazio tanto quanto um objeto. */
+    globalThis.cotaDoDono = new Map();
     globalThis.contar = async () => 0;
     globalThis.sb = async () => [];
     conferirCartao("o cartão de um dia parado", await cartaoDoDia());
@@ -5408,6 +5445,91 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("messageUpdate chama a segunda passada do GIF", ondeChama > -1);
   verdade("e chama antes do guard que descarta o evento da prévia",
     ondeChama > -1 && ondeGuard > -1 && ondeChama < ondeGuard);
+}
+
+/* O MES, e o "quanto falta" que a porcentagem nao respondia.
+ *
+ * O relato: "nao consigo entender o uso dos tokens: quanto ja' usamos do
+ * limite do mes, quanto falta". A conta nunca fechava porque o painel e o
+ * limite estavam em RELOGIOS DIFERENTES -- tudo que o bot mostrava era do dia,
+ * e o teto das contas de tradutor e' do mes. */
+{
+  const { primeiroDiaDoMes, diasNoMesDe, ritmoDiario, duracaoDoQueSobra, emK, linhaDaCota } =
+    carregar(["DIAS_DE_RITMO", "primeiroDiaDoMes", "diasNoMesDe", "ritmoDiario",
+              "duracaoDoQueSobra", "emK", "MOTORES", "linhaDaCota"]);
+
+  /* ---- a fatia do mes ---- */
+  ok("o mes comeca no dia 1", primeiroDiaDoMes("2026-09-10"), "2026-09-01");
+  ok("dezembro não vira janeiro", primeiroDiaDoMes("2026-12-31"), "2026-12-01");
+  /* Dia 0 do mes seguinte e' o ultimo deste: fevereiro e ano bissexto saem
+     certos sem tabela nenhuma. */
+  ok("setembro tem 30", diasNoMesDe("2026-09-10"), 30);
+  ok("fevereiro comum tem 28", diasNoMesDe("2026-02-05"), 28);
+  ok("fevereiro bissexto tem 29", diasNoMesDe("2024-02-05"), 29);
+
+  /* ---- o ritmo ---- */
+  const dia = (d, c) => ({ dia: d, caracteres: c });
+  ok("sem nenhum dia, ritmo zero", ritmoDiario([], "2026-09-10"), 0);
+  /* 7000 em 7 dias = 1000/dia. */
+  ok("sete dias iguais dão a média deles",
+    ritmoDiario([...Array(7)].map((_, i) => dia(`2026-09-${String(i + 4).padStart(2, "0")}`, 1000)),
+      "2026-09-10"), 1000);
+  /* Dia sem tradução é dia de consumo ZERO, e entra na conta: ignorá-lo
+     inflaria o ritmo de quem só traduz às quintas, e o painel diria que a cota
+     acaba antes do que acaba. */
+  ok("dia sem registro conta como zero",
+    ritmoDiario([dia("2026-09-10", 7000)], "2026-09-10"), 1000);
+  /* O que é velho demais não entra: a janela é justamente para responder "no
+     ritmo de AGORA". */
+  ok("fora da janela de 7 dias não conta",
+    ritmoDiario([dia("2026-09-01", 99999), dia("2026-09-10", 700)], "2026-09-10"), 100);
+  /* A janela ATRAVESSA a virada do mês. Dividir sete dias de consumo pelo dia
+     do mês (3) daria um ritmo mais que dobrado bem no começo do mês. */
+  ok("no dia 3, a janela pega o mês passado e ainda divide por 7",
+    ritmoDiario([dia("2026-08-29", 700), dia("2026-09-02", 700)], "2026-09-03"), 200);
+
+  /* ---- quanto falta, em dias ---- */
+  ok("sem teto conhecido, não invento projeção", duracaoDoQueSobra(100, 0, 10), null);
+  ok("cota estourada diz que acabou", duracaoDoQueSobra(600, 500, 10), { sobra: 0, dias: 0 });
+  /* Sem consumo não há o que projetar — e dizer "dura para sempre" seria pior
+     que não dizer nada. */
+  ok("sem consumo, sobra sim, projeção não",
+    duracaoDoQueSobra(100, 500, 0), { sobra: 400, dias: null });
+  ok("400 sobrando a 100 por dia dura 4 dias",
+    duracaoDoQueSobra(100, 500, 100), { sobra: 400, dias: 4 });
+  ok("arredonda para baixo: prometer o dia a mais é o erro que dói",
+    duracaoDoQueSobra(100, 500, 90).dias, 4);
+
+  /* ---- número curto, e igual nas duas línguas ---- */
+  /* Nada de toLocaleString: "1.240" é mil duzentos e quarenta em português e
+     um vírgula dois quatro em inglês, e este cartão é lido nas duas. */
+  ok("abaixo de mil sai inteiro", emK(940), "940");
+  ok("milhares saem em k", emK(213000), "213k");
+  ok("milhões saem em M", emK(2000000), "2.0M");
+  ok("número negativo não existe em consumo", emK(-5), "0");
+
+  /* ---- a linha que responde a pergunta inteira ---- */
+  /* Sem teto, a porcentagem é tudo que há — e é honesto dizer só isso. */
+  verdade("sem teto, fica só a porcentagem",
+    /42%/.test(linhaDaCota({ tipo: "deepl", pct: 42, usado: 1, teto: 0 }, 100))
+    && !/sobram/.test(linhaDaCota({ tipo: "deepl", pct: 42, usado: 1, teto: 0 }, 100)));
+
+  const cheia = linhaDaCota({ tipo: "deepl", pct: 43, usado: 213000, teto: 500000 }, 15000);
+  verdade("com teto, diz quanto foi usado de quanto", /213k de 500k/.test(cheia));
+  verdade("e quanto sobra", /sobram 287k/.test(cheia));
+  /* 287000 / 15000 = 19,1 -> 19. É este número que vira decisão: "43%" é a
+     mesma frase no dia 3 (problema) e no dia 28 (folga). */
+  verdade("e por quantos dias o resto dura", /~19 dias/.test(cheia));
+
+  verdade("cota estourada é dita com todas as letras",
+    /acabou/.test(linhaDaCota({ tipo: "deepl", pct: 100, usado: 500000, teto: 500000 }, 15000)));
+  /* Sem ritmo a linha ainda serve: o quanto sobra é fato, a projeção é que
+     depende de consumo. */
+  const semRitmo = linhaDaCota({ tipo: "deepl", pct: 43, usado: 213000, teto: 500000 }, 0);
+  verdade("sem ritmo, ainda diz quanto sobra", /sobram 287k/.test(semRitmo));
+  verdade("mas não inventa dias", !/dias/.test(semRitmo));
+  verdade("um dia só não sai no plural",
+    /~1 dia(?!s)/.test(linhaDaCota({ tipo: "deepl", pct: 90, usado: 450000, teto: 500000 }, 40000)));
 }
 
 let resumiu = false;
