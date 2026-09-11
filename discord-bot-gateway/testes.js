@@ -4388,8 +4388,14 @@ function conferirCartao(onde, embed, componentes = []) {
   const contar = fonte.slice(fonte.indexOf("async function contarQueVoltei"));
   verdade("batida recente é lida como morte, e não como publicação",
     /parado < 3 \* BATIDA/.test(contar));
+  /* O endereço passou a ser uma DECISÃO: morte no canal de erros, volta normal
+     no diário. Este teste existia e reprovou quando eu separei os dois — e a
+     intenção dele continua certa, só a forma é que era literal demais. Canal
+     de erro que recebe coisa normal ensina a duvidar dele. */
   verdade("o aviso de morte vai para o canal de erros",
-    /avisarNoPainel\(CANAL_ERROS/.test(contar.slice(0, 1400)));
+    /avisarNoPainel\(morreu \? CANAL_ERROS/.test(contar.slice(0, 2400)));
+  verdade("e a volta normal NÃO vai para lá",
+    /: CANAL_DIARIO/.test(contar.slice(0, 2400)));
   /* Primeira vez não tem batida anterior. Sem este ramo, o primeiro reinício
      depois de subir isto contaria uma morte que não houve. */
   verdade("primeira vez não vira morte", /parado === null/.test(contar));
@@ -5826,6 +5832,30 @@ function conferirCartao(onde, embed, componentes = []) {
   /* Repositório PÚBLICO: log do Fly carrega nome de servidor de cliente, id de
      pessoa e corpo de resposta do banco. A vigia só pode ler estado. */
   verdade("a vigia nunca lê o log do Fly", !/flyctl logs/.test(vigia));
+}
+
+/* CANAL DE ERRO SÓ RECEBE ERRO.
+ *
+ * O relato foi curto e certeiro: "erro que aparece agora", com o texto da
+ * publicação colado. Não era erro nenhum — era a mensagem VERDE dizendo que
+ * estava tudo bem. Mas ela caía dentro de um canal chamado 🐛-erros, e quem lê
+ * um canal de erros lê tudo ali como erro. A leitura estava certa; o lugar é
+ * que estava errado.
+ *
+ * Canal de erro que recebe aviso de coisa normal ensina a duvidar dele — e o
+ * dia em que a caveira de verdade aparecer, ela estará no meio de coisas que
+ * não eram nada. É o mesmo defeito da caveira em toda publicação, um andar
+ * acima: lá era a MENSAGEM errada, aqui é o ENDEREÇO errado. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const conta = fonte.slice(fonte.indexOf("async function contarQueVoltei"));
+  const corpo = conta.slice(0, conta.indexOf("\n}\n"));
+
+  /* O endereço é uma DECISÃO, e não um destino fixo. */
+  verdade("o aviso escolhe o canal pelo que aconteceu",
+    /avisarNoPainel\(morreu \? CANAL_ERROS : CANAL_DIARIO/.test(corpo));
+  verdade("morte ainda vai para o canal de erros", /CANAL_ERROS/.test(corpo));
+  verdade("e a volta normal vai para o diário", /CANAL_DIARIO/.test(corpo));
 }
 
 let resumiu = false;
