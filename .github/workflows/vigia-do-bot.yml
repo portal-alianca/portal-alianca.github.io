@@ -64,30 +64,45 @@ jobs:
 
           # O veredito sai de um parser de JSON, e não de um grep espertinho:
           # já custou uma ida e volta neste repositório um grep que não casava
-          # e terminava VERDE sem imprimir nada. Passo que falha em silêncio é
-          # pior que passo nenhum -- ainda mais num vigia.
-          saida=$(flyctl machine list --json 2>/dev/null | python3 -c '
+          # e terminava VERDE sem imprimir nada.
+          #
+          # E o python vai para um ARQUIVO, por heredoc, em vez de viver dentro
+          # de `python3 -c '...'`. A primeira versão morria com "syntax error
+          # near unexpected token" antes de perguntar qualquer coisa ao Fly: um
+          # comentário do python dizia "NAO e' sucesso", e aquele apóstrofo
+          # FECHAVA a aspa simples do shell -- o resto do código virava comando.
+          #
+          # Heredoc com 'PY' entre aspas não interpreta nada: apóstrofo, cifrão
+          # e crase passam intactos. Um vigia que morre calado é pior que vigia
+          # nenhum, e este morreu calado na primeira execução de verdade.
+          cat > /tmp/veredito.py <<'PY'
           import json, sys
           try:
-              ms = json.load(sys.stdin)
+              maquinas = json.load(sys.stdin)
           except Exception:
-              print("SEM RESPOSTA|o flyctl nao devolveu JSON"); raise SystemExit
-          if not ms:
-              # Nenhuma maquina NAO e' sucesso: seria o bot inexistente
+              print("SEM RESPOSTA|o flyctl nao devolveu JSON")
+              raise SystemExit
+          if not maquinas:
+              # Nenhuma maquina NAO conta como sucesso: seria o bot inexistente
               # passando por bot de pe.
-              print("FORA|nao existe maquina nenhuma neste app"); raise SystemExit
-          estados = sorted(m.get("state", "?") for m in ms)
+              print("FORA|nao existe maquina nenhuma neste app")
+              raise SystemExit
+          estados = sorted(m.get("state", "?") for m in maquinas)
           if all(e == "started" for e in estados):
               print("DE PE|" + ", ".join(estados))
           else:
               print("FORA|" + ", ".join(estados))
-          ' || echo "SEM RESPOSTA|nao consegui falar com o Fly")
+          PY
+
+          saida=$(flyctl machine list --json 2>/dev/null | python3 /tmp/veredito.py \
+            || echo "SEM RESPOSTA|nao consegui falar com o Fly")
 
           veredito="${saida%%|*}"
           detalhe="${saida#*|}"
           echo "veredito=$veredito" >> "$GITHUB_OUTPUT"
           echo "detalhe=$detalhe"   >> "$GITHUB_OUTPUT"
           echo "$veredito — $detalhe"
+
 
       # Avisar ANTES de falhar o job: um `exit 1` no passo anterior pularia o
       # aviso, e o aviso é o produto inteiro deste arquivo.
