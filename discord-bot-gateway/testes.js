@@ -5858,6 +5858,74 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e a volta normal vai para o diário", /CANAL_DIARIO/.test(corpo));
 }
 
+/* A VIGIA TEM QUE RODAR, E NÃO SÓ SER VÁLIDA.
+ *
+ * A primeira versão dela morreu na PRIMEIRA execução de verdade, com
+ * "syntax error near unexpected token", antes de perguntar qualquer coisa ao
+ * Fly. A causa: o python vivia dentro de `python3 -c '...'`, e um comentário
+ * dele dizia "NAO e' sucesso" — aquele apóstrofo FECHAVA a aspa simples do
+ * shell, e o resto do código virava comando.
+ *
+ * Eu tinha conferido o YAML e a lógica do veredito isoladamente, e NUNCA
+ * executado o passo. Vigia que morre calado é pior que vigia nenhum: ele deixa
+ * a sensação de que alguém está olhando.
+ *
+ * Estes testes RODAM o passo, com um flyctl falso, e conferem o veredito. */
+{
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync, chmodSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const yml = readFileSync(new URL("../.github/workflows/vigia-do-bot.yml", import.meta.url), "utf8");
+
+  /* Aspas simples em volta de código são uma armadilha de quoting: qualquer
+     apóstrofo dentro (e "e'", "ja'", "so'" são o estilo dos comentários desta
+     casa) quebra o shell. O heredoc é imune. */
+  /* Só as linhas de CÓDIGO: o comentário que explica este bug cita
+     `python3 -c` de propósito, e a primeira versão deste teste casava com ele
+     -- ficava verde por causa da prosa que descreve o defeito. É a terceira
+     vez hoje que escrevo um teste que lê comentário achando que lê código. */
+  const codigo = yml.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  verdade("a vigia não passa código por aspas simples do shell",
+    !/python3 -c '/.test(codigo));
+  verdade("ela usa heredoc, que não interpreta nada", /<<'PY'/.test(codigo));
+
+  /* O passo, executado. Sai do próprio YAML para não testar uma cópia que
+     envelhece longe do original. */
+  const passo = yml
+    .split("\n").slice(yml.split("\n").findIndex((l) => /id: estado/.test(l)))
+    .join("\n");
+  const corpo = passo.slice(passo.indexOf("run: |") + 6)
+    .split("\n").map((l) => l.replace(/^ {10}/, ""))
+    .join("\n").split("\n      - name:")[0];
+
+  const base = mkdtempSync(join(tmpdir(), "vigia-"));
+  mkdirSync(join(base, "bin"));
+  writeFileSync(join(base, "passo.sh"), corpo);
+
+  const rodar = (jsonDoFly) => {
+    writeFileSync(join(base, "bin", "flyctl"),
+      `#!/bin/sh\ncat <<'EOF'\n${jsonDoFly}\nEOF\n`);
+    chmodSync(join(base, "bin", "flyctl"), 0o755);
+    return execFileSync("bash", ["passo.sh"], {
+      cwd: base, encoding: "utf8",
+      env: { ...process.env, PATH: `${join(base, "bin")}:${process.env.PATH}`,
+             FLY_API_TOKEN: "fake", GITHUB_OUTPUT: join(base, "out.txt") },
+    }).trim().split("\n").pop();
+  };
+
+  verdade("máquina de pé é lida como de pé", /^DE PE/.test(rodar('[{"state":"started"}]')));
+  verdade("máquina parada é lida como fora", /^FORA/.test(rodar('[{"state":"stopped"}]')));
+  /* Uma de duas fora já é fora: meio bot no ar é bot fora para quem clicou. */
+  verdade("uma máquina fora entre várias já conta como fora",
+    /^FORA/.test(rodar('[{"state":"started"},{"state":"replacing"}]')));
+  /* Nenhuma máquina NÃO é sucesso: seria o bot inexistente passando por bot
+     de pé -- o caso mais silencioso de todos. */
+  verdade("app sem máquina nenhuma é fora", /^FORA/.test(rodar("[]")));
+  verdade("resposta corrompida não vira 'de pé'", /^SEM RESPOSTA/.test(rodar("nao sou json")));
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;
