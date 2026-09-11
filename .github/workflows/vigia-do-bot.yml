@@ -1,0 +1,141 @@
+# Quem vigia o vigia.
+#
+# O bot conta que morreu — DEPOIS que volta. Se ele não voltar, ninguém conta
+# nada: o Fly tenta reiniciar dez vezes (fly.toml), desiste, e a máquina fica
+# parada em silêncio. O dono descobre pelo cliente reclamando, que é a pior
+# forma de descobrir e a menos profissional.
+#
+# Nada neste repositório rodava sozinho: todos os workflows eram push ou
+# workflow_dispatch. Este é o primeiro que pergunta sem ninguém pedir.
+#
+# POR QUE O ALARME SAI POR WEBHOOK, E NÃO PELO BOT
+#
+# Porque o alarme existe justamente para o caso em que o bot está morto. Pedir
+# para ele avisar que morreu é o defeito que este arquivo conserta. Webhook do
+# Discord é do lado do Discord: funciona com o bot no chão.
+#
+# POR QUE SÓ O ESTADO DA MÁQUINA, E NUNCA O LOG
+#
+# Mesma regra do estado-do-bot.yml, e pelo mesmo motivo: este repositório é
+# PÚBLICO. `fly logs` carrega nome de servidor de cliente, id de pessoa e corpo
+# de resposta do banco. `machine list` mostra id, região e estado — nada de
+# ninguém. É a única coisa que este arquivo pode ler.
+#
+# O QUE ELE NÃO GARANTE (dito aqui para não virar falsa segurança)
+#
+#   - Máquina "started" não prova que o bot RESPONDE. Prova que o processo não
+#     está no chão, que é o caso que passava despercebido. O sinal melhor é a
+#     batida no banco, e ela exige as credenciais do Supabase, que hoje moram
+#     no cofre do Fly e não aqui.
+#   - Agendamento do GitHub é "quando der": atrasos de dez minutos ou mais são
+#     normais. Serve para "está fora há meia hora", não para "está fora há um
+#     minuto".
+#   - O GitHub DESLIGA workflow agendado depois de 60 dias sem commit no
+#     repositório. Num repo parado, a vigia para junto — e sem avisar.
+
+name: Vigia do bot
+
+on:
+  schedule:
+    # De 15 em 15 minutos. Não adianta apertar mais: o atraso do próprio
+    # agendador é maior que a diferença.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  vigiar:
+    name: a máquina está de pé?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Perguntar ao Fly
+        id: estado
+        working-directory: discord-bot-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Falta o secret FLY_API_TOKEN — a vigia não consegue perguntar nada."
+            exit 1
+          fi
+
+          # O veredito sai de um parser de JSON, e não de um grep espertinho:
+          # já custou uma ida e volta neste repositório um grep que não casava
+          # e terminava VERDE sem imprimir nada. Passo que falha em silêncio é
+          # pior que passo nenhum -- ainda mais num vigia.
+          saida=$(flyctl machine list --json 2>/dev/null | python3 -c '
+          import json, sys
+          try:
+              ms = json.load(sys.stdin)
+          except Exception:
+              print("SEM RESPOSTA|o flyctl nao devolveu JSON"); raise SystemExit
+          if not ms:
+              # Nenhuma maquina NAO e' sucesso: seria o bot inexistente
+              # passando por bot de pe.
+              print("FORA|nao existe maquina nenhuma neste app"); raise SystemExit
+          estados = sorted(m.get("state", "?") for m in ms)
+          if all(e == "started" for e in estados):
+              print("DE PE|" + ", ".join(estados))
+          else:
+              print("FORA|" + ", ".join(estados))
+          ' || echo "SEM RESPOSTA|nao consegui falar com o Fly")
+
+          veredito="${saida%%|*}"
+          detalhe="${saida#*|}"
+          echo "veredito=$veredito" >> "$GITHUB_OUTPUT"
+          echo "detalhe=$detalhe"   >> "$GITHUB_OUTPUT"
+          echo "$veredito — $detalhe"
+
+      # Avisar ANTES de falhar o job: um `exit 1` no passo anterior pularia o
+      # aviso, e o aviso é o produto inteiro deste arquivo.
+      - name: Gritar no Discord
+        if: steps.estado.outputs.veredito != 'DE PE'
+        env:
+          GANCHO: ${{ secrets.DISCORD_WEBHOOK_ERROS }}
+          DETALHE: ${{ steps.estado.outputs.detalhe }}
+          VEREDITO: ${{ steps.estado.outputs.veredito }}
+        run: |
+          if [ -z "$GANCHO" ]; then
+            echo "::warning::O bot parece fora do ar e NÃO existe um lugar para avisar."
+            echo "Para o alarme chegar no Discord, crie o segredo DISCORD_WEBHOOK_ERROS:"
+            echo "  1. Discord -> canal 🐛-erros -> Editar canal -> Integrações -> Webhooks"
+            echo "  2. Novo webhook -> Copiar URL"
+            echo "  3. Aqui: Settings -> Secrets and variables -> Actions -> New secret"
+            echo "     nome DISCORD_WEBHOOK_ERROS, valor a URL do passo 2"
+            echo "Os três passos funcionam pelo navegador do celular."
+            exit 0
+          fi
+          # O corpo sai do python para o JSON escapar sozinho: um estado com
+          # aspas ou acento quebraria um JSON montado na mão -- e quebraria
+          # justamente no dia do alarme, que é o único dia em que ele roda.
+          python3 - <<'PY' > /tmp/corpo.json
+          import json, os, sys
+          texto = (
+              "A vigia perguntou ao Fly e a máquina **não está de pé**.\n\n"
+              f"**Estado:** {os.environ.get('DETALHE', '?')}\n\n"
+              "Isto não é o bot avisando — ele não consegue. É a esteira do "
+              "GitHub, de fora, de 15 em 15 minutos.\n\n"
+              "Para religar: aba **Actions** do repositório → "
+              "**Ligar o bot** → Run workflow."
+          )
+          json.dump({"embeds": [{
+              "title": "🚨 O bot está fora do ar",
+              "color": 0xE03E3E,
+              "description": texto,
+          }]}, sys.stdout)
+          PY
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --data @/tmp/corpo.json "$GANCHO" >/dev/null \
+            && echo "avisei no Discord" \
+            || echo "::warning::nao consegui avisar no Discord"
+
+      # Falhar por último: deixa o X vermelho no histórico do Actions, que é o
+      # segundo lugar onde isto aparece. O aviso já saiu.
+      - name: Reprovar se estiver fora
+        if: steps.estado.outputs.veredito != 'DE PE'
+        run: |
+          echo "::error::Bot fora do ar — ${{ steps.estado.outputs.detalhe }}"
+          exit 1
