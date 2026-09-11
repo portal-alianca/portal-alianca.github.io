@@ -12690,7 +12690,22 @@ async function contarQueVoltei() {
   const despediu = despedi > 0 && Date.now() - despedi < 3 * BATIDA;
   const morreu = parado !== null && parado < 3 * BATIDA && !despediu;
 
-  await avisarNoPainel(CANAL_ERROS, {
+  /* MORTE vai para o canal de erros. VOLTA NORMAL, não.
+   *
+   * O relato foi curto e certeiro: "erro que aparece agora", com o texto da
+   * publicação colado. Não era erro nenhum -- era esta mensagem, verde, dizendo
+   * que estava tudo bem. Mas ela aparecia dentro de um canal chamado 🐛-erros,
+   * e quem lê um canal de erros lê tudo ali como erro. A leitura estava certa;
+   * o lugar é que estava errado.
+   *
+   * Canal de erro que recebe aviso de coisa normal ensina a duvidar dele, e aí
+   * o dia em que a caveira de verdade aparecer ela vai estar no meio de coisas
+   * que não eram nada. O mesmo defeito da caveira em toda publicação, só que um
+   * andar acima: lá era a MENSAGEM errada, aqui é o ENDEREÇO errado.
+   *
+   * A volta normal continua registrada -- no diário, que é onde mora o que
+   * aconteceu sem ter dado errado. */
+  await avisarNoPainel(morreu ? CANAL_ERROS : CANAL_DIARIO, {
     embeds: [{
       color: morreu ? 0xE03E3E : 0x5EBB83,
       title: morreu ? "💀 Eu morri e voltei" : "🔄 Subi de novo",
