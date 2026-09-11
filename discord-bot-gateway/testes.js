@@ -5787,6 +5787,47 @@ function conferirCartao(onde, embed, componentes = []) {
     !/varredura passou do tempo/i.test(String(nada?.titulo || "")));
 }
 
+/* A VIGIA PRECISA CONTINUAR AGENDADA.
+ *
+ * O bot conta que morreu DEPOIS que volta. Se ele não voltar, ninguém conta
+ * nada: o Fly desiste depois de dez tentativas e a máquina fica parada em
+ * silêncio — o dono descobre pelo cliente reclamando.
+ *
+ * Uma vigia que perde o `schedule:` vira um botão que ninguém aperta, e ela
+ * some sem deixar rastro: o arquivo continua lá, verde, sem nunca rodar. Por
+ * isso o agendamento é conferido aqui e não só na revisão do diff.
+ *
+ * O alarme sai por WEBHOOK e não pelo bot de propósito: ele existe justamente
+ * para o caso em que o bot está morto. Pedir para o morto avisar que morreu é
+ * o defeito que a vigia conserta. */
+{
+  const vigia = readFileSync(new URL("../.github/workflows/vigia-do-bot.yml", import.meta.url), "utf8");
+
+  verdade("a vigia roda sozinha, e não só na mão", /^\s*schedule:/m.test(vigia));
+  verdade("com um cron de verdade", /cron:\s*"[-\d*/, ]+"/.test(vigia));
+  /* `secrets.` de propósito: a primeira versão deste teste procurava só o
+     NOME do segredo, e ele aparece no texto de ajuda logo abaixo — então
+     apagar o uso real deixava o teste verde por causa de um comentário. */
+  verdade("o alarme não depende do bot estar vivo",
+    /secrets\.DISCORD_WEBHOOK_ERROS/.test(vigia));
+
+  /* Avisar ANTES de falhar: um exit 1 no passo do veredito pularia o aviso, e
+     o aviso é o produto inteiro do arquivo.
+
+     Os dois `> -1` não são zelo: indexOf devolve -1 quando não acha, e -1 é
+     menor que qualquer posição. Sem eles, RENOMEAR o passo do aviso fazia a
+     comparação passar — foi exatamente o que a sabotagem mostrou. */
+  const ondeAvisa = vigia.indexOf("Gritar no Discord");
+  const ondeReprova = vigia.indexOf("Reprovar se estiver fora");
+  verdade("o passo que avisa existe", ondeAvisa > -1);
+  verdade("o passo que reprova existe", ondeReprova > -1);
+  verdade("e o aviso vem antes da reprovação",
+    ondeAvisa > -1 && ondeReprova > -1 && ondeAvisa < ondeReprova);
+  /* Repositório PÚBLICO: log do Fly carrega nome de servidor de cliente, id de
+     pessoa e corpo de resposta do banco. A vigia só pode ler estado. */
+  verdade("a vigia nunca lê o log do Fly", !/flyctl logs/.test(vigia));
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;
