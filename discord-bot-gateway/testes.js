@@ -149,6 +149,25 @@ function carregar(nomes) {
   }
 }
 
+/* Comentário NÃO é código, e um teste que lê texto-fonte precisa saber disso.
+
+   Isto já custou quatro reprovações erradas neste arquivo, todas do mesmo
+   feitio: um teste procura uma frase no código, e a frase está no COMENTÁRIO
+   que explica por que ela não deve estar ali. O comentário cita o defeito, o
+   teste lê a citação como se fosse o defeito, e reprova código correto.
+
+   Pior que reprovar código correto: no outro sentido, APROVA código quebrado.
+   Um teste que confere "o código chama X" e casa com um comentário dizendo
+   "aqui não se chama X" fica verde para sempre, sem nunca ter olhado.
+
+   Então o padrão daqui em diante: todo teste que casa regra contra texto-fonte
+   passa o trecho por aqui primeiro. */
+function semComentarios(texto) {
+  return String(texto)
+    .replace(/\/\*[^]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
 /* ---- o placar ---- */
 let passou = 0; const falhou = [];
 function ok(nome, real, esperado) {
@@ -4419,11 +4438,24 @@ function conferirCartao(onde, embed, componentes = []) {
 
   verdade("a trava de HTTP é conferida mais de uma vez por partida",
     !/umaVezPorProcesso\("soltar-interacoes"\)/.test(corpo));
-  verdade("e a conferência entra na ronda de hora em hora",
-    /soltarAsInteracoes\(\)[^]{0,120}deHoraEmHora|deHoraEmHora[^]{0,400}soltarAsInteracoes\(\)/
-      .test(fonte));
+
+  /* A ronda saiu do deHoraEmHora e foi pra varredura, e o motivo é o 429: o
+     portão da hora cheia (`if (Date.now() - ultimaHora < 60*60*1000) return`)
+     barrava a volta rápida depois de uma pergunta que falhou. Agora quem
+     decide o ritmo é a própria função, e a varredura só oferece a carona. */
+  verdade("a conferência entra na varredura, e não no portão da hora cheia", (() => {
+    const u = fonte.indexOf("async function umaPassada");
+    return /soltarAsInteracoes\(\)/.test(
+      semComentarios(fonte.slice(u, fimDoBloco(fonte.indexOf("{", u)))));
+  })());
+  verdade("e saiu de dentro do deHoraEmHora", (() => {
+    const h = fonte.indexOf("async function deHoraEmHora");
+    return !/soltarAsInteracoes/.test(fonte.slice(h, fimDoBloco(fonte.indexOf("{", h))));
+  })());
+  /* O `true` é "agora, sem olhar o relógio". Sem ele, subir e perguntar
+     viraria duas coisas separadas outra vez. */
   verdade("continua sendo conferida ao subir também",
-    /clientReady[^]{0,1600}soltarAsInteracoes\(\)/.test(fonte));
+    /clientReady[^]{0,1800}soltarAsInteracoes\(true\)/.test(fonte));
 
   /* PATCH só quando há o que apagar: sem isto seria uma escrita por hora na
      configuração do aplicativo, para sempre, sem motivo. */
@@ -4436,8 +4468,182 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e o cartão diz o endereço que estava lá",
     /interactions_endpoint_url\)\.slice/.test(corpo));
 
-  /* Ela também não pode pendurar: é uma ida ao Discord dentro da ronda. */
-  ok("as duas idas ao Discord têm prazo", (corpo.match(/comPrazo\(/g) || []).length, 2);
+  /* Ela também não pode pendurar: é uma ida ao Discord dentro da ronda.
+
+     O prazo saiu daqui e entrou no chamarDiscord, que é por onde as duas idas
+     passam agora. A pergunta continua a mesma -- "as duas têm prazo?" -- só
+     que a resposta mora um andar acima, então confiro as duas coisas: que as
+     duas idas usam o chamarDiscord, e que o chamarDiscord põe prazo.
+
+     E confiro que NÃO sobrou `fetch(` cru aqui dentro: um dos dois passos ter
+     ficado para trás na migração é exatamente o defeito que este bloco
+     inteiro existe para pegar, e ele não daria sintoma nenhum até o dia do
+     429. */
+  ok("as duas idas ao Discord passam pelo chamarDiscord",
+    (corpo.match(/chamarDiscord\(/g) || []).length, 2);
+  verdade("e nenhuma ida crua de fetch sobrou aqui dentro", !/\bfetch\(/.test(corpo));
+  {
+    /* O corpo começa DEPOIS da lista de parâmetros: `opcoes = {}` tem chave
+       própria, e procurar a primeira `{` pegava esse par vazio -- o "corpo"
+       saía com dois caracteres e o teste reprovava função certa. */
+    const c = fonte.indexOf("async function chamarDiscord");
+    const chaveDoCorpo = fonte.indexOf("{", fimDoBloco(fonte.indexOf("(", c)));
+    verdade("o chamarDiscord põe prazo em toda ida",
+      /comPrazo\(opcoes\)/.test(semComentarios(fonte.slice(c, fimDoBloco(chaveDoCorpo)))));
+  }
+
+  /* A frase que assustava por engano.
+
+     Antes os dois passos moravam no mesmo `try`, e qualquer tropeço terminava
+     em "nenhum botão e nenhum comando chega até mim". Um 429 na PERGUNTA não
+     diz nada sobre os cliques: a trava quase sempre está desligada, e a única
+     coisa que aconteceu foi eu não ter conseguido olhar. O dono leu que o
+     produto estava parado quando ele estava de pé.
+
+     A regra: a frase catastrófica só pode aparecer DEPOIS do `if (!app...)`,
+     onde a trava ligada já é fato. */
+  {
+    /* Sem o semComentarios este bloco reprova na hora: o comentário que
+       explica a separação CITA a frase catastrófica, e a citação estava
+       no lado "antes". */
+    const limpo = semComentarios(corpo);
+    const marco = limpo.indexOf("if (!app.interactions_endpoint_url) return;");
+    const antes = limpo.slice(0, marco);
+    const depois = limpo.slice(marco);
+    verdade("antes de saber, não afirma que nada chega",
+      !/nenhum bot[ãa]o e nenhum comando chega/.test(antes));
+    verdade("e diz claramente que não sabe", /quer dizer que eu n[ãa]o sei/.test(antes));
+    verdade("depois de saber, afirma — porque aí é fato",
+      /nenhum bot[ãa]o e nenhum comando chega/.test(depois));
+  }
+
+  /* Falhar não pode custar uma hora de espera do caso bom. */
+  ok("os dois tropeços remarcam a ronda curta",
+    (corpo.match(/RONDA_INTERACOES_FALHA/g) || []).length, 2);
+}
+
+/* ====== 429 não é fracasso: é uma instrução ======
+
+   O log do dono, palavra por palavra:
+
+     interações: NÃO consegui limpar o endpoint HTTP: GET 429
+       {"message": "Service resource is being rate limited.", "retry_after": 3}
+     interações: enquanto isso, nenhum botão e nenhum comando chega até mim.
+
+   O Discord pediu TRÊS SEGUNDOS. Recebeu uma hora de silêncio, porque a ronda
+   só voltava de hora em hora e o 429 era tratado como erro final. A única
+   instrução útil da resposta -- o `retry_after` -- ia para o lixo.
+
+   O `esperar` é injetado para o teste conferir QUANTO eu esperaria sem
+   esperar de verdade: um teste que dorme três segundos ou não é escrito, ou é
+   desligado na primeira vez que atrasa a esteira. */
+{
+  const { esperaDo429, chamarDiscord, TENTATIVAS_DISCORD, ESPERA_MAX_DISCORD } =
+    carregar(["PRAZO_BANCO", "comPrazo", "API", "TENTATIVAS_DISCORD",
+      "ESPERA_MAX_DISCORD", "dormir", "esperaDo429", "chamarDiscord"]);
+
+  const semCabecalho = { headers: { get: () => null } };
+
+  ok("lê o retry_after do corpo, em segundos",
+    esperaDo429(semCabecalho, '{"retry_after": 3}'), 3500);
+  /* Meio segundo a mais de propósito: `retry_after` é o instante em que a
+     janela ABRE, e chegar exatamente nele leva outro 429. */
+  verdade("e chega depois da janela, nunca colado nela",
+    esperaDo429(semCabecalho, '{"retry_after": 3}') > 3000);
+  ok("cai no cabeçalho quando o corpo não diz",
+    esperaDo429({ headers: { get: (n) => (n === "retry-after" ? "2" : null) } }, "nada disso é JSON"),
+    2500);
+  /* Cabeçalho ausente volta como `null`, e `Number(null)` é ZERO -- um
+     "espere zero segundos" que ninguém disse. Tem que virar o padrão de um
+     segundo, e não zero salvo por clamp. */
+  ok("corpo que não é JSON e sem cabeçalho: um segundo, nunca zero",
+    esperaDo429(semCabecalho, "<html>502</html>"), 1500);
+  ok("cabeçalho vazio também cai no padrão, e não em zero",
+    esperaDo429({ headers: { get: () => "" } }, "nada"), 1500);
+  /* Zero viraria uma rajada em cima de quem acabou de pedir calma -- é assim
+     que um limite de rota vira limite global. */
+  verdade("retry_after zero não vira espera zero",
+    esperaDo429(semCabecalho, '{"retry_after": 0}') >= 1000);
+  /* Um retry_after de dez minutos (limite global) não pode prender a rotina
+     dez minutos: ela volta na ronda curta, que é melhor que ficar presa. */
+  ok("retry_after absurdo bate no teto",
+    esperaDo429(semCabecalho, '{"retry_after": 600}'), ESPERA_MAX_DISCORD);
+
+  /* --- e agora o comportamento, com um Discord de mentira --- */
+  const realFetch = globalThis.fetch;
+  const resposta = (status, corpo = "", cabecalhos = {}) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (n) => cabecalhos[String(n).toLowerCase()] ?? null },
+    text: async () => corpo,
+    json: async () => JSON.parse(corpo || "{}"),
+  });
+
+  const rodar = async (respostas) => {
+    const idas = [];
+    const esperas = [];
+    globalThis.fetch = async (url, opcoes) => {
+      idas.push(`${opcoes?.method || "GET"} ${url}`);
+      const r = respostas[idas.length - 1] ?? respostas[respostas.length - 1];
+      if (r instanceof Error) throw r;
+      return r;
+    };
+    try {
+      const r = await chamarDiscord("/applications/@me", {}, async (ms) => { esperas.push(ms); });
+      return { idas, esperas, veio: r.status, erro: null };
+    } catch (e) {
+      return { idas, esperas, veio: null, erro: e.message };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  {
+    const r = await rodar([resposta(200, "{}")]);
+    ok("passando de primeira, vai uma vez só", r.idas.length, 1);
+    ok("e não espera nada", r.esperas, []);
+  }
+  {
+    /* O caso do dono: 429 com retry_after 3, e depois passa. */
+    const r = await rodar([resposta(429, '{"retry_after": 3}'), resposta(200, "{}")]);
+    ok("429 com retry_after volta e passa", r.veio, 200);
+    ok("esperando o que o Discord mandou, e não uma hora", r.esperas, [3500]);
+    ok("sem erro nenhum no fim", r.erro, null);
+  }
+  {
+    /* 429 eterno: desiste, mas só depois de tentar -- e conta o que viu. */
+    const r = await rodar([resposta(429, '{"retry_after": 1}')]);
+    ok("429 que não passa nunca gasta todas as tentativas",
+      r.idas.length, TENTATIVAS_DISCORD);
+    /* Uma espera a menos que as idas: não adianta dormir depois da última. */
+    ok("e não dorme depois da última tentativa", r.esperas.length, TENTATIVAS_DISCORD - 1);
+    verdade("o erro final diz 429", /\b429\b/.test(r.erro || ""));
+  }
+  {
+    const r = await rodar([resposta(500, "boom"), resposta(200, "{}")]);
+    ok("5xx é do lado de lá e passa na volta", r.veio, 200);
+    ok("com espera dobrando, começando em um segundo", r.esperas, [1000]);
+  }
+  {
+    const r = await rodar([new Error("fetch failed"), resposta(200, "{}")]);
+    ok("rede caída também volta", r.veio, 200);
+  }
+  {
+    /* 401 é token errado, 403 é permissão, 404 é endereço errado. Repetir os
+       três só atrasa a hora de contar -- e gasta chamada em cima de um limite
+       que pode ser justamente o que está apertando. */
+    const r = await rodar([resposta(401, "token ruim")]);
+    ok("401 não é repetido", r.idas.length, 1);
+    verdade("e o erro nomeia o 401", /401/.test(r.erro || ""));
+  }
+  {
+    const r = await rodar([resposta(403, "sem permissão")]);
+    ok("403 também não é repetido", r.idas.length, 1);
+  }
+  {
+    const r = await rodar([resposta(404, "não existe")]);
+    ok("404 também não é repetido", r.idas.length, 1);
+  }
 }
 
 /* ====== o que o index.js importa tem que existir NA IMAGEM ======
@@ -5791,6 +5997,45 @@ function conferirCartao(onde, embed, componentes = []) {
   const nada = explicarErro("alguem", "escreveu a palavra varredura numa frase qualquer");
   verdade("frase sem sintoma nenhum não vira erro de varredura",
     !/varredura passou do tempo/i.test(String(nada?.titulo || "")));
+
+  /* ---- o 429 das interações ----
+
+     A regra geral de rate limit responde "a biblioteca espera e repete
+     sozinha". Isso é verdade pro discord.js e MENTIRA pra rotina da trava de
+     HTTP, que fala com a API por `fetch` cru — ela desistia na hora. O dono
+     foi tranquilizado por uma frase que descrevia outro código.
+
+     Repare no formato: explicarErro junta `onde` e `porque` SEM os dois
+     pontos, porque quem chama parte o texto neles. Se eu escrevesse a regra
+     esperando "interações:" ela nunca casaria, e passaria despercebido —
+     a regra ficaria no arquivo sem nunca ser usada, que é o defeito que mais
+     se repetiu por aqui. Por isso os dois casos abaixo entram exatamente
+     como o console.error os produz. */
+  const naoOlhei = explicarErro("interações",
+    "não consegui PERGUNTAR ao Discord se a trava de HTTP está ligada: GET 429 " +
+    '{"message": "Service resource is being rate limited.", "retry_after": 3}');
+  verdade("não ter conseguido olhar tem explicação própria", !!naoOlhei);
+  verdade("e ela NÃO é a da biblioteca que repete sozinha",
+    !/mais devagar/i.test(String(naoOlhei?.titulo)));
+  /* O ponto inteiro desta regra: separar "não sei" de "está quebrado". */
+  verdade("ela diz que isso não quer dizer que os botões pararam",
+    /não quer dizer que os botões pararam/i.test(String(naoOlhei?.oque)));
+  verdade("e não manda o dono fazer nada", naoOlhei?.precisaDeVoce === false);
+
+  const travaLigada = explicarErro("interações",
+    "a trava de HTTP ESTÁ ligada e eu NÃO consegui tirar: PATCH 429 devagar aí");
+  verdade("a trava ligada de verdade tem explicação própria", !!travaLigada);
+  verdade("e essa SIM chama o dono", travaLigada?.precisaDeVoce === true);
+  verdade("e ensina onde apagar na mão",
+    /Interactions Endpoint URL/.test(String(travaLigada?.fazer)));
+  verdade("as duas não são a mesma explicação", naoOlhei?.titulo !== travaLigada?.titulo);
+
+  /* As regras novas são estreitas de propósito. Soltas, elas roubariam TODO
+     429 do Discord — e explicação errada custa o tempo de quem foi procurar
+     no lugar indicado. */
+  const outro429 = explicarErro("espelho", "Too Many Requests ao postar no webhook");
+  verdade("429 de outro lugar continua caindo na regra geral",
+    /mais devagar/i.test(String(outro429?.titulo)));
 }
 
 /* A VIGIA PRECISA CONTINUAR AGENDADA.

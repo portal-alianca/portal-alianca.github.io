@@ -8510,6 +8510,42 @@ const EXPLICA_ERRO = [
     fazer: "Nada.",
   },
   {
+    /* ANTES da regra geral de rate limit, e por causa dela.
+
+       "Service resource is being rate limited" casa com /rate limit/, e a
+       regra geral responde "a biblioteca espera e repete sozinha". Isso e'
+       verdade pro discord.js e MENTIRA pra esta rotina, que fala por `fetch`
+       cru. O dono foi tranquilizado por uma frase que descrevia outro codigo.
+
+       Exijo a palavra `interações` junto: solta, esta regra roubaria todo
+       429 do Discord -- e explicacao errada custa mais que explicacao
+       nenhuma, porque manda procurar no lugar errado. */
+    quando: /intera[cç][oõ]es.{0,80}n[aã]o consegui PERGUNTAR/i,
+    titulo: "Não consegui conferir se os cliques estão chegando",
+    precisaDeVoce: false,
+    oque: "De tempos em tempos eu pergunto ao Discord se o **Interactions Endpoint URL** do " +
+      "aplicativo está preenchido — enquanto ele estiver, nenhum clique chega até mim. " +
+      "Desta vez a **pergunta** não passou (quase sempre o Discord pedindo para eu ir mais devagar).\n\n" +
+      "**Isso não quer dizer que os botões pararam.** Quer dizer que eu não olhei. " +
+      "Esse campo vive vazio, então o mais provável é que esteja tudo funcionando.",
+    fazer: "Nada. Eu pergunto de novo em 10 minutos, em vez de esperar a hora cheia. " +
+      "Se quiser tirar a dúvida na hora, clique em qualquer botão meu: se ele responder, está tudo certo.",
+  },
+  {
+    quando: /intera[cç][oõ]es.{0,80}trava de HTTP EST[AÁ] ligada/i,
+    titulo: "🚨 A trava de HTTP está ligada e eu não consegui tirar",
+    precisaDeVoce: true,
+    oque: "O aplicativo está com um **Interactions Endpoint URL** preenchido. Enquanto ele " +
+      "estiver ali, o Discord manda todo comando, botão e menu para aquele endereço em vez " +
+      "de me entregar — e eu continuo postando cartão normalmente, então pareço vivo. " +
+      "Para quem usa, **nada responde ao clique**.\n\n" +
+      "Eu tento apagar esse campo sozinho e desta vez não consegui. Esta é a falha mais cara " +
+      "que existe aqui: ela deixa cliente pagante sem produto sem deixar rastro.",
+    fazer: "Se repetir, apague na mão: Portal do Desenvolvedor → o aplicativo → **General Information** → " +
+      "esvazie **Interactions Endpoint URL** e salve. É o mesmo lugar da política de privacidade " +
+      "e dos termos — quem salvar aquela página com o campo preenchido derruba tudo de novo.",
+  },
+  {
     quando: /rate limit|Too Many Requests/i,
     titulo: "O Discord pediu para eu ir mais devagar",
     precisaDeVoce: false,
@@ -12416,46 +12452,181 @@ async function listaDeComandos(guildId) {
    Uma pergunta por hora, e PATCH so' se estiver setado. */
 const API = "https://discord.com/api/v10";
 
-async function soltarAsInteracoes() {
-  const cabecalho = { Authorization: `Bot ${TOKEN}`, "Content-Type": "application/json" };
+/* ---------------- Chamar o Discord sem desistir no primeiro "calma" ----
+
+   429 NAO e' fracasso: e' o Discord dizendo quanto esperar, e dizendo em
+   numero. Quem trata 429 como erro joga fora a unica instrucao util que
+   recebeu naquela resposta.
+
+   Era o que acontecia aqui. O log do dono mostrou:
+
+     interações: NÃO consegui limpar o endpoint HTTP: GET 429
+       {"message": "Service resource is being rate limited.", "retry_after": 3}
+     interações: enquanto isso, nenhum botão e nenhum comando chega até mim.
+
+   Tres segundos de espera viravam UMA HORA de botao morto, porque a ronda so'
+   volta de hora em hora. O Discord pediu tres segundos e recebeu sessenta
+   minutos de silencio.
+
+   Pior: o painel explicava esse 429 com "a biblioteca espera e repete
+   sozinha" -- verdade pro discord.js, mentira aqui, porque esta rotina fala
+   com a API por `fetch` cru. O dono era tranquilizado com uma frase que
+   descrevia outro codigo. */
+const TENTATIVAS_DISCORD = 4;
+
+/* Teto de espera por tentativa. Um `retry_after` de dez minutos (acontece no
+   limite global) nao pode prender esta rotina dez minutos: acima do teto eu
+   espero o teto, gasto a tentativa e, se nao passar, volto na ronda curta --
+   ficar preso nao e' melhor que voltar. */
+const ESPERA_MAX_DISCORD = 30000;
+
+function dormir(ms) {
+  return new Promise((pronto) => setTimeout(pronto, ms));
+}
+
+/* Quanto esperar num 429.
+
+   Duas fontes dizem a mesma coisa e podem discordar: o corpo traz
+   `retry_after` em SEGUNDOS (3 = tres segundos) e o cabecalho `retry-after`
+   tambem. Leio o corpo primeiro, porque e' o que o Discord documenta neste
+   endpoint; caio no cabecalho; e caio em um segundo se nenhum dos dois vier.
+
+   Nunca em zero: repetir na mesma hora em cima de quem acabou de pedir calma
+   e' como o limite global de verdade comeca. */
+function esperaDo429(resposta, corpo) {
+  let segundos = null;
   try {
-    const r = await fetch(`${API}/applications/@me`, comPrazo({ headers: cabecalho }));
-    if (!r.ok) throw new Error(`GET ${r.status} ${(await r.text()).slice(0, 200)}`);
-    const app = await r.json();
+    const j = JSON.parse(corpo);
+    if (typeof j?.retry_after === "number") segundos = j.retry_after;
+  } catch { /* corpo que nao e' JSON: sobra o cabecalho */ }
+  if (segundos === null) {
+    /* Cabecalho AUSENTE volta como null, e `Number(null)` e' ZERO -- um
+       "espere zero segundos" que ninguem disse. O clamp la' embaixo salvava o
+       resultado, mas por acidente: a intencao aqui e' so' aceitar numero que
+       o Discord tenha de fato escrito. */
+    const cru = resposta?.headers?.get?.("retry-after");
+    const h = Number(cru);
+    if (typeof cru === "string" && cru.trim() !== "" && Number.isFinite(h) && h >= 0) segundos = h;
+  }
+  if (segundos === null || !Number.isFinite(segundos) || segundos < 0) segundos = 1;
+  /* Meio segundo a mais de propósito: `retry_after` e' o instante em que a
+     janela abre, e chegar exatamente nele leva outro 429. */
+  return Math.min(ESPERA_MAX_DISCORD, Math.max(1000, Math.round(segundos * 1000) + 500));
+}
 
-    if (!app.interactions_endpoint_url) return;
+/* O `esperar` e' parametro para o teste poder conferir QUANTO eu esperaria
+   sem esperar de verdade -- um teste que dorme tres segundos de verdade ou
+   nao e' escrito, ou e' desligado na primeira vez que atrasa a esteira. */
+async function chamarDiscord(caminho, opcoes = {}, esperar = dormir) {
+  const metodo = opcoes.method || "GET";
+  let ultimo = null;
 
-    console.log(`interações: tirando a trava de HTTP (${app.interactions_endpoint_url})`);
-    const p = await fetch(`${API}/applications/@me`, comPrazo({
+  for (let tentativa = 1; tentativa <= TENTATIVAS_DISCORD; tentativa++) {
+    let r = null;
+    try {
+      r = await fetch(`${API}${caminho}`, comPrazo(opcoes));
+    } catch (e) {
+      /* Rede caida, prazo estourado: e' do meio do caminho e passa. */
+      ultimo = new Error(`${metodo} ${caminho}: ${e?.message || e}`);
+    }
+
+    if (r) {
+      if (r.ok) return r;
+      const corpo = await r.text().catch(() => "");
+      ultimo = new Error(`${metodo} ${r.status} ${corpo.slice(0, 300)}`);
+
+      /* 4xx que nao seja 429 nao melhora com repeticao: 401 e' token errado,
+         403 e' permissao, 404 e' endereco errado. Repetir os tres so' atrasa
+         a hora de contar, e gasta chamada em cima de um limite. */
+      if (r.status !== 429 && r.status < 500) throw ultimo;
+
+      if (r.status === 429) {
+        if (tentativa >= TENTATIVAS_DISCORD) break;
+        await esperar(esperaDo429(r, corpo));
+        continue;
+      }
+    }
+
+    /* 5xx e queda de rede: dobrando, 1s, 2s, 4s. */
+    if (tentativa >= TENTATIVAS_DISCORD) break;
+    await esperar(Math.min(ESPERA_MAX_DISCORD, 1000 * 2 ** (tentativa - 1)));
+  }
+
+  throw ultimo || new Error(`${metodo} ${caminho}: sem resposta`);
+}
+
+/* De hora em hora quando deu certo; de dez em dez minutos quando NAO deu.
+
+   O ritmo mora aqui dentro, e nao no relogio de quem chama, justamente por
+   causa do 429: se a pergunta falhou, esperar a hora cheia e' esperar o
+   tempo do caso bom no caso ruim. Dez minutos e' a varredura, entao a
+   tentativa seguinte pega carona e nao abre relogio novo. */
+const RONDA_INTERACOES_OK = 60 * 60 * 1000;
+const RONDA_INTERACOES_FALHA = 10 * 60 * 1000;
+let proximaRondaDeInteracoes = 0;
+
+async function soltarAsInteracoes(agora = false) {
+  if (!agora && Date.now() < proximaRondaDeInteracoes) return;
+  proximaRondaDeInteracoes = Date.now() + RONDA_INTERACOES_OK;
+  const cabecalho = { Authorization: `Bot ${TOKEN}`, "Content-Type": "application/json" };
+  /* Os dois passos tem `catch` SEPARADOS, e isso e' o conserto de uma frase
+     que assustava por engano.
+
+     Antes os dois moravam no mesmo `try`, e qualquer tropeço terminava em
+     "nenhum botão e nenhum comando chega até mim". So' que um 429 na PERGUNTA
+     nao diz nada sobre os cliques: a trava quase sempre esta desligada, e a
+     unica coisa que aconteceu foi eu nao ter conseguido OLHAR. O dono leu que
+     o produto estava parado quando ele provavelmente estava de pe.
+
+     "Nao sei" e "esta quebrado" sao noticias diferentes e merecem palavras
+     diferentes. Afirmar a pior das duas sem prova gasta o susto do dono -- e
+     o susto e' um recurso que acaba. */
+  let app = null;
+  try {
+    app = await (await chamarDiscord("/applications/@me", { headers: cabecalho })).json();
+  } catch (e) {
+    proximaRondaDeInteracoes = Date.now() + RONDA_INTERACOES_FALHA;
+    console.error("interações: não consegui PERGUNTAR ao Discord se a trava de HTTP está ligada:", e?.message || e);
+    console.error("interações: isso não quer dizer que os cliques pararam — quer dizer que eu não sei. Pergunto de novo em 10 minutos.");
+    return;
+  }
+
+  if (!app.interactions_endpoint_url) return;
+
+  /* Daqui para baixo a trava ESTA ligada -- isso e' fato, nao suspeita. */
+  console.log(`interações: tirando a trava de HTTP (${app.interactions_endpoint_url})`);
+  try {
+    await chamarDiscord("/applications/@me", {
       method: "PATCH",
       headers: cabecalho,
       body: JSON.stringify({ interactions_endpoint_url: null }),
-    }));
-    if (!p.ok) throw new Error(`PATCH ${p.status} ${(await p.text()).slice(0, 300)}`);
-    console.log("interações: trava removida; comandos e botões agora vêm direto pro bot");
-
-    /* Isto merece cartao, e nao so' linha de log: enquanto a URL esteve la',
-       ninguem conseguiu clicar em nada. E' a falha mais cara que existe aqui,
-       e a unica que nao deixa rastro nenhum sozinha -- o bot parece vivo. */
-    await avisarNoPainel(CANAL_ERROS, {
-      embeds: [{
-        color: 0xE03E3E,
-        title: "🚨 Achei a trava de HTTP ligada — e tirei",
-        description:
-          "Enquanto o aplicativo tem um **Interactions Endpoint URL**, o Discord não " +
-          "entrega interação nenhuma pelo gateway: todo comando, botão e menu vira um " +
-          "POST para aquele endereço. Postar cartão continua funcionando, então o bot " +
-          "parece vivo — e **nada responde ao clique**.\n\n" +
-          `Estava apontando para \`${String(app.interactions_endpoint_url).slice(0, 150)}\`.\n\n` +
-          "Esse campo fica na mesma página do Portal do Desenvolvedor onde se põem a " +
-          "política de privacidade e os termos.",
-        timestamp: new Date().toISOString(),
-      }],
-    }).catch(() => {});
+    });
   } catch (e) {
-    console.error("interações: NÃO consegui limpar o endpoint HTTP:", e?.message || e);
-    console.error("interações: enquanto isso, nenhum botão e nenhum comando chega até mim.");
+    proximaRondaDeInteracoes = Date.now() + RONDA_INTERACOES_FALHA;
+    console.error("interações: a trava de HTTP ESTÁ ligada e eu NÃO consegui tirar:", e?.message || e);
+    console.error("interações: enquanto ela estiver ligada, nenhum botão e nenhum comando chega até mim.");
+    return;
   }
+  console.log("interações: trava removida; comandos e botões agora vêm direto pro bot");
+
+  /* Isto merece cartao, e nao so' linha de log: enquanto a URL esteve la',
+     ninguem conseguiu clicar em nada. E' a falha mais cara que existe aqui,
+     e a unica que nao deixa rastro nenhum sozinha -- o bot parece vivo. */
+  await avisarNoPainel(CANAL_ERROS, {
+    embeds: [{
+      color: 0xE03E3E,
+      title: "🚨 Achei a trava de HTTP ligada — e tirei",
+      description:
+        "Enquanto o aplicativo tem um **Interactions Endpoint URL**, o Discord não " +
+        "entrega interação nenhuma pelo gateway: todo comando, botão e menu vira um " +
+        "POST para aquele endereço. Postar cartão continua funcionando, então o bot " +
+        "parece vivo — e **nada responde ao clique**.\n\n" +
+        `Estava apontando para \`${String(app.interactions_endpoint_url).slice(0, 150)}\`.\n\n` +
+        "Esse campo fica na mesma página do Portal do Desenvolvedor onde se põem a " +
+        "política de privacidade e os termos.",
+      timestamp: new Date().toISOString(),
+    }],
+  }).catch(() => {});
 }
 
 /* Publica o /cyron se ele ainda nao existir.
@@ -12609,6 +12780,11 @@ async function umaPassada() {
   await atualizarEventos().catch((e) => console.error("eventos: passada falhou:", e?.message || e));
   await montarPainelDoDono().catch((e) => console.error("painel: montagem falhou:", e?.message || e));
   await rodarComandosAgendados().catch((e) => console.error("agendado: passada falhou:", e?.message || e));
+  /* A trava de HTTP sai do relogio da hora e passa pra ca'.
+     Ela se agenda sozinha (hora em hora quando da' certo, dez minutos quando
+     nao da'), e o portao da hora cheia impedia justamente a volta rapida
+     depois de um 429 -- a passada de dez minutos chegava e era barrada. */
+  await soltarAsInteracoes().catch((e) => console.error("interações: ronda falhou:", e?.message || e));
   await deHoraEmHora().catch((e) => console.error("hora: passada falhou:", e?.message || e));
   ultimaPassada = Date.now();
   duracaoPassada = ultimaPassada - comecou;
@@ -12624,9 +12800,6 @@ let ultimaHora = 0;
 async function deHoraEmHora() {
   if (Date.now() - ultimaHora < 60 * 60 * 1000) return;
   ultimaHora = Date.now();
-  /* A trava de HTTP entra na ronda da hora: ela pode ser ligada a qualquer
-     momento no Portal, e enquanto estiver ligada nenhum clique chega aqui. */
-  await soltarAsInteracoes().catch((e) => console.error("interações: ronda falhou:", e?.message || e));
   await olharAsCotas().catch((e) => console.error("cota: passada falhou:", e?.message || e));
   await talvezOCartaoDoDia().catch((e) => console.error("diário: cartão falhou:", e?.message || e));
 }
@@ -12759,7 +12932,10 @@ client.once("clientReady", () => {
   separarComandos()
     .then(() => garantirComandosGlobais())
     .then(() => arrumarOndeMoraOAdmin());
-  soltarAsInteracoes();
+  /* `true` = agora, sem olhar o relogio: ao subir eu quero a resposta, e o
+     relogio ainda esta zerado de qualquer jeito. Dito explicitamente pra
+     ninguem "limpar" essa chamada achando que a varredura ja cobre. */
+  soltarAsInteracoes(true);
   /* Uma vez ao subir, pra quem mexeu em algo com o bot fora do ar nao ficar
      esperando dez minutos, e depois de tempos em tempos. */
   recarregarAjustes().then(() => umaPassada());
