@@ -4453,9 +4453,16 @@ function conferirCartao(onde, embed, componentes = []) {
     return !/soltarAsInteracoes/.test(fonte.slice(h, fimDoBloco(fonte.indexOf("{", h))));
   })());
   /* O `true` é "agora, sem olhar o relógio". Sem ele, subir e perguntar
-     viraria duas coisas separadas outra vez. */
-  verdade("continua sendo conferida ao subir também",
-    /clientReady[^]{0,1800}soltarAsInteracoes\(true\)/.test(fonte));
+     viraria duas coisas separadas outra vez.
+
+     Olha o BLOCO do clientReady inteiro, e não uma janela de N caracteres: a
+     janela reprovou sozinha quando outro trecho cresceu lá dentro, e um teste
+     que quebra por causa do tamanho do vizinho ensina a ignorá-lo. */
+  verdade("continua sendo conferida ao subir também", (() => {
+    const r = fonte.indexOf('client.once("clientReady"');
+    return /soltarAsInteracoes\(true\)/.test(
+      semComentarios(fonte.slice(r, fimDoBloco(fonte.indexOf("{", fonte.indexOf("=>", r))))));
+  })());
 
   /* PATCH só quando há o que apagar: sem isto seria uma escrita por hora na
      configuração do aplicativo, para sempre, sem motivo. */
@@ -5923,6 +5930,147 @@ function conferirCartao(onde, embed, componentes = []) {
   const corpo = conta.slice(0, conta.indexOf("\n}"));
   verdade("e quem conta a morte lê a MESMA chave", /visto_mb/.test(corpo));
   verdade("e usa a frase medida, em vez de texto fixo", /fraseDaMemoria/.test(corpo));
+}
+
+/* O OUVIDO: A ÚNICA QUEDA QUE PASSAVA POR TODOS OS ALARMES.
+ *
+ * O bot escutava mensagem, clique e entrada em servidor. Não escutava NADA
+ * sobre a própria conexão. Se o gateway caísse e não voltasse:
+ *
+ *   - o processo continuava vivo (há timers, então o Node não sai);
+ *   - a máquina continuava `started`, então o Fly não reiniciava;
+ *   - a vigia perguntava ao Fly e respondia DE PE;
+ *   - a batida no banco seguia escrevendo "estou vivo" a cada 2 minutos;
+ *   - e nada chegava: nem mensagem, nem clique, nem comando.
+ *
+ * Todos os sinais verdes, o produto parado.
+ *
+ * A BATIDA MENTIA. Ela gravava a hora sem nunca perguntar se ainda havia
+ * ouvido -- então o único sinal honesto sobre estar vivo era, na verdade, um
+ * sinal de "o processo não terminou", que é outra coisa. */
+{
+  const { vereditoDoOuvido, GRACA_SEM_OUVIDO } =
+    carregar(["GRACA_SEM_OUVIDO", "vereditoDoOuvido"]);
+
+  const t0 = 1_000_000_000_000;
+
+  ok("com ouvido, não há o que contar",
+    vereditoDoOuvido(0, t0), { ouvindo: true, ha: 0, morrer: false });
+
+  /* Surdo há pouco NÃO morre: uma reconexão de três segundos é rotina, e
+     reiniciar por causa dela trocaria um soluço por uma queda de verdade. */
+  const cedo = vereditoDoOuvido(t0, t0 + 3000);
+  ok("surdo há 3s: conta, mas não mata", { ouvindo: cedo.ouvindo, morrer: cedo.morrer },
+    { ouvindo: false, morrer: false });
+  ok("e sabe dizer há quanto tempo", cedo.ha, 3000);
+
+  /* Passada a graça, morre. Quem reconecta é a biblioteca; se ela não
+     conseguiu em cinco minutos, não vai conseguir no sexto. */
+  verdade("no limite da graça, morre", vereditoDoOuvido(t0, t0 + GRACA_SEM_OUVIDO).morrer);
+  verdade("um milissegundo antes, ainda não",
+    !vereditoDoOuvido(t0, t0 + GRACA_SEM_OUVIDO - 1).morrer);
+  verdade("muito depois, também morre", vereditoDoOuvido(t0, t0 + 60 * 60 * 1000).morrer);
+
+  /* Relógio que anda para trás (o Fly move a máquina, o NTP corrige) não pode
+     virar um `ha` negativo que faz a conta toda passar a valer zero. */
+  ok("relógio para trás não vira tempo negativo", vereditoDoOuvido(t0, t0 - 5000).ha, 0);
+
+  /* A graça é injetável para o teste não depender do número de produção -- mas
+     o número de produção também tem que ser sensato. */
+  verdade("a graça é de minutos, não de segundos nem de horas",
+    GRACA_SEM_OUVIDO >= 60_000 && GRACA_SEM_OUVIDO <= 15 * 60_000);
+}
+
+/* A LIGAÇÃO: o ouvido só serve se alguém escutar os eventos.
+ *
+ * vereditoDoOuvido() pode estar perfeito e nunca ser chamado -- e aí o buraco
+ * continua aberto, com um teste verde por cima dizendo que não. É o defeito
+ * que mais se repetiu neste projeto: função certa que ninguém liga. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+
+  /* Os índices saem do texto ORIGINAL e o comentário sai depois, nesta ordem.
+     Ao contrário, `fimDoBloco` -- que conta chaves no texto original -- recebe
+     posições de um texto encurtado pela remoção dos comentários, e devolve um
+     pedaço que não é o corpo de função nenhuma. Dois testes deste bloco
+     PASSARAM assim, casando com sobras aleatórias: falso verde, que é o pior
+     resultado possível num teste de fiação. */
+  const corpoDe = (abre, deParametros = true) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    const chave = fonte.indexOf("{", deParametros ? fonte.indexOf("(", i) : fonte.indexOf("=>", i));
+    return semComentarios(fonte.slice(i, fimDoBloco(chave)));
+  };
+
+  /* Os eventos de queda. shardDisconnect é o fim da linha do lado da
+     biblioteca; shardReconnecting ainda tem esperança; invalidated é
+     terminal. Nenhum dos três existia. */
+  for (const evento of ["shardDisconnect", "shardReconnecting", "shardResume",
+                        "shardReady", "invalidated"]) {
+    verdade(`o bot escuta ${evento}`,
+      new RegExp(`client\\.on\\("${evento}"`).test(codigo));
+  }
+
+  /* Os dois sentidos. Só marcar a queda deixaria o bot achando-se surdo para
+     sempre depois do primeiro soluço, e ele se mataria sozinho a cada 5 min. */
+  verdade("queda marca a surdez", /function ficouSurdo/.test(codigo));
+  verdade("e a volta desmarca", /function voltouAOuvir/.test(codigo));
+  verdade("voltar a ouvir zera o relógio da surdez",
+    /surdoDesde = 0/.test(corpoDe("function voltouAOuvir")));
+
+  /* A BATIDA. Este é o ponto: ela tem que PERGUNTAR antes de gravar. */
+  {
+    const b = codigo.indexOf("const bater =");
+    const corpo = codigo.slice(b, codigo.indexOf("setInterval(bater", b));
+    verdade("a batida pergunta se ainda há ouvido", /vereditoDoOuvido\(/.test(corpo));
+    /* A ordem importa: gravar e depois conferir seria gravar a mentira. */
+    verdade("e pergunta ANTES de gravar",
+      corpo.indexOf("vereditoDoOuvido(") < corpo.indexOf('porAjuste("visto"'));
+    verdade("bot surdo morre em vez de bater", /morrerPorSurdez\(/.test(corpo));
+  }
+
+  /* Morrer é o conserto: de dentro não há o que fazer, e o Fly sabe subir um
+     processo novo (fly.toml, policy = always). */
+  {
+    const corpo = corpoDe("async function morrerPorSurdez");
+    verdade("morrer por surdez sai com ERRO, para o Fly reiniciar",
+      /process\.exit\(1\)/.test(corpo));
+    verdade("e tenta avisar antes de sair", /avisarNoPainel\(CANAL_ERROS/.test(corpo));
+    /* Sem prazo, um avisarNoPainel pendurado (o gateway está no chão!) seguraria
+       o reinício para sempre -- o conserto preso pelo aviso. */
+    verdade("mas com prazo, porque o aviso não pode segurar o reinício",
+      /Promise\.race/.test(corpo) && /setTimeout/.test(corpo));
+  }
+
+  /* invalidated não tem graça nenhuma: a sessão morreu de um jeito que não se
+     retoma, e esperar 5 minutos seria 5 minutos de produto parado por nada. */
+  {
+    const corpo = corpoDe('client.on("invalidated"', false);
+    verdade("sessão invalidada mata na hora, sem esperar a graça",
+      /morrerPorSurdez\(0\)/.test(corpo));
+  }
+
+  /* O BILHETE. Sem ele, morrer surdo e morrer de memória deixam o mesmo
+     rastro -- e a mensagem chutava memória nos dois casos. */
+  {
+    const corpo = corpoDe("function ficouSurdo");
+    verdade("ficar surdo anota no banco na hora", /porAjuste\("surdo"/.test(corpo));
+    verdade("e anota também o motivo", /porAjuste\("surdo_porque"/.test(corpo));
+  }
+  {
+    const corpo = corpoDe("async function contarQueVoltei");
+    verdade("quem conta a volta lê o MESMO bilhete", /guardado\["surdo"\]/.test(corpo));
+    verdade("e diz que foi surdez, e não chuta memória", /fraseDaSurdez\(/.test(corpo));
+    /* Bilhete velho não pode pintar de surdez a publicação da semana que vem. */
+    verdade("o bilhete da surdez vale uma vez só",
+      /porAjuste\("surdo", "0"\)/.test(corpo));
+    /* Um bot surdo PARA de bater, então quando ele volta a última batida já
+       está velha. Pela regra antiga isso passaria por "publicação" -- a queda
+       mais silenciosa que existe sairia pintada de troca de versão. */
+    verdade("surdez conta como morte mesmo com a batida velha",
+      /morreuSurdo \|\|/.test(corpo));
+  }
 }
 
 /* PUBLICAÇÃO NÃO É MORTE.
