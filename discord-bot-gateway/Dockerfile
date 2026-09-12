@@ -1,7 +1,17 @@
 FROM public.ecr.aws/docker/library/node:20-alpine
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
+# O lockfile ENTRA na imagem, e a instalação é `ci`.
+#
+# Com `npm install` e só o package.json, esta linha resolvia a árvore de
+# dependências por conta própria, no dia do build -- separada da que o CI
+# tinha acabado de testar. "Testado e aprovado" valia para uma árvore e o
+# Discord recebia outra.
+#
+# `ci` instala EXATAMENTE o que está no lockfile, e recusa se ele discordar do
+# package.json. É a linha que faz os testes da esteira valerem para o processo
+# que realmente sobe.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 # A pasta inteira, e nao uma lista de arquivos.
 #

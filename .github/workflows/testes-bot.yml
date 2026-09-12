@@ -57,11 +57,22 @@ jobs:
         with:
           node-version: "20"
 
-      # `npm install` e não `npm ci`: este projeto não versiona lockfile, e o
-      # ci recusa sem ele. Uma dependência só (discord.js).
+      # `npm ci` e não `npm install`, e agora existe lockfile.
+      #
+      # Antes daqui, o package.json pedia "^14.16.3" e mais nada era fixado.
+      # Quer dizer que ESTE passo e o `npm install` do Dockerfile resolviam a
+      # árvore de dependências SEPARADAMENTE, em momentos diferentes: a versão
+      # que passava nos testes não era necessariamente a versão que subia para
+      # o Fly. Quando o lockfile foi gerado pela primeira vez, o npm trouxe
+      # discord.js 14.27.0 -- onze versões minor à frente do que o arquivo
+      # pedia. A deriva não era teórica, já tinha acontecido.
+      #
+      # `ci` também RECUSA rodar se o package.json e o lockfile discordarem,
+      # em vez de "consertar" silenciosamente. Divergência entre os dois vira
+      # vermelho aqui, e não surpresa em produção.
       - name: Instalar as dependências
         working-directory: discord-bot-gateway
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       # Antes dos testes: um erro de sintaxe derruba a suíte inteira com uma
       # mensagem que fala do carregador, não do arquivo. Aqui ele aparece com o

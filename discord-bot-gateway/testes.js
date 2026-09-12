@@ -168,6 +168,13 @@ function semComentarios(texto) {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
+/* A mesma armadilha, na outra língua: YAML e shell comentam com `#`.
+   Separada da de cima de propósito -- em JavaScript `#` abre campo privado,
+   e apagar linhas por causa dele apagaria código. */
+function semComentariosDeGrade(texto) {
+  return String(texto).split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+}
+
 /* ---- o placar ---- */
 let passou = 0; const falhou = [];
 function ok(nome, real, esperado) {
@@ -4696,6 +4703,48 @@ function conferirCartao(onde, embed, componentes = []) {
     .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   verdade("o node_modules de fora fica fora da imagem", ignorados.includes("node_modules"));
 
+  /* ---- A MESMA ÁRVORE DE DEPENDÊNCIAS NA ESTEIRA E NO FLY ----
+
+     Antes disto, o package.json pedia "^14.16.3" e não havia lockfile. Quer
+     dizer que o `npm install` do CI e o `npm install` do Dockerfile resolviam
+     a árvore SEPARADAMENTE, em momentos diferentes: a versão que passava nos
+     testes não era necessariamente a versão que subia. Quando o lockfile foi
+     gerado, o npm trouxe discord.js 14.27.0 -- onze versões minor à frente do
+     que o arquivo pedia. A deriva não era teórica; já tinha acontecido.
+
+     Vale mais do que arrumação: é o que faz 3433 testes verdes significarem
+     alguma coisa sobre o processo que atende os clientes. */
+  verdade("existe lockfile", existsSync(`${aqui}/package-lock.json`));
+  verdade("e ele entra na imagem", /^COPY\s+package\.json\s+package-lock\.json/m.test(dockerfile));
+  verdade("e o lockfile NÃO está no .dockerignore",
+    !ignorados.some((l) => l.replace(/^\/+/, "") === "package-lock.json"));
+
+  /* `ci` e não `install`, nos dois lugares: `install` pode atualizar o
+     lockfile e seguir em frente, que é justamente a deriva silenciosa. `ci`
+     instala o que está escrito, e RECUSA se os dois arquivos discordarem. */
+  verdade("a imagem instala com `npm ci`", /RUN npm ci\b/.test(dockerfile));
+  verdade("e não com `npm install`", !/RUN npm install\b/.test(dockerfile));
+  {
+    /* `semComentariosDeGrade` e não `semComentarios`: o comentário que explica
+       esta troca cita `npm install` de propósito, e YAML comenta com `#`. Sem
+       isto o teste reprova por causa da própria prosa que o justifica -- pela
+       quinta vez neste arquivo. */
+    const esteira = semComentariosDeGrade(
+      readFileSync(new URL("../.github/workflows/testes-bot.yml", import.meta.url), "utf8"));
+    verdade("a esteira também instala com `npm ci`", /npm ci\b/.test(esteira));
+    verdade("e a esteira não usa `npm install`", !/npm install\b/.test(esteira));
+  }
+
+  /* O lockfile tem que travar a dependência que existe de verdade. Um
+     lockfile vazio passaria em tudo acima e não travaria nada. */
+  {
+    const trava = JSON.parse(readFileSync(`${aqui}/package-lock.json`, "utf8"));
+    const pego = trava.packages?.["node_modules/discord.js"]?.version || "";
+    verdade("o lockfile fixa uma versão exata da discord.js", /^\d+\.\d+\.\d+/.test(pego));
+    /* Major errado não é detalhe: a v15 muda a API inteira. */
+    verdade("e é a major que o package.json pede", pego.startsWith("14."));
+  }
+
   /* O catálogo pelo nome, porque foi ele que faltou. Um teste que fala do
      caso concreto sobrevive a refatoração melhor do que um que só fala da
      regra. */
@@ -6317,6 +6366,81 @@ function conferirCartao(onde, embed, componentes = []) {
      de pé -- o caso mais silencioso de todos. */
   verdade("app sem máquina nenhuma é fora", /^FORA/.test(rodar("[]")));
   verdade("resposta corrompida não vira 'de pé'", /^SEM RESPOSTA/.test(rodar("nao sou json")));
+
+  /* ---- O DEPLOY TEM A MESMA ARMADILHA, E DOERIA MAIS ----
+
+     O passo que espera a máquina ligar guardava o python numa variável entre
+     aspas SIMPLES. Funcionava por sorte: não havia apóstrofo nenhum lá dentro.
+     Mas o estilo de comentário desta casa é "e'", "ja'", "so'" -- exatamente o
+     que matou a vigia.
+
+     Aqui o estrago é maior: é o passo que decide se o deploy passa. Um
+     apóstrofo novo num comentário e toda publicação reprova; ou pior, o passo
+     morre e o bot sobe sem ninguém conferir se ligou -- que já aconteceu neste
+     repositório, com doze horas fora do ar e todos os deploys em verde.
+
+     E de novo: EXECUTADO, não conferido de olho. Foi ter conferido de olho que
+     deixou a vigia morrer calada. */
+  {
+    const dep = readFileSync(new URL("../.github/workflows/deploy-bot.yml", import.meta.url), "utf8");
+    const codigoDep = semComentariosDeGrade(dep);
+
+    verdade("o deploy não guarda código entre aspas simples do shell",
+      !/veredito='/.test(codigoDep));
+    verdade("ele usa heredoc, que não interpreta nada", /<<'PY'/.test(codigoDep));
+
+    const linhas = dep.split("\n");
+    const i = linhas.findIndex((l) => /name: Esperar a maquina ligar de verdade/.test(l));
+    verdade("o passo que espera a máquina continua existindo", i > -1);
+    const passoDep = linhas.slice(i).join("\n");
+    const corpoDep = passoDep.slice(passoDep.indexOf("run: |") + 6)
+      .split("\n").map((l) => l.replace(/^ {10}/, ""))
+      .join("\n").split("\n      - name:")[0];
+
+    /* `sleep` de 5s vezes 30 tentativas não cabe num teste: o caso "ainda não"
+       é substituído por um sleep que não dorme. O que está sendo testado é o
+       VEREDITO, não a paciência. */
+    writeFileSync(join(base, "deploy.sh"), `sleep() { :; }\n${corpoDep}`);
+    const rodarDep = (jsonDoFly) => {
+      writeFileSync(join(base, "bin", "flyctl"),
+        `#!/bin/sh\ncat <<'EOF'\n${jsonDoFly}\nEOF\n`);
+      chmodSync(join(base, "bin", "flyctl"), 0o755);
+      try {
+        return { saida: execFileSync("bash", ["deploy.sh"], {
+          cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, PATH: `${join(base, "bin")}:${process.env.PATH}`,
+                 FLY_API_TOKEN: "fake" },
+        }), codigo: 0 };
+      } catch (e) {
+        return { saida: String(e.stdout || "") + String(e.stderr || ""), codigo: e.status };
+      }
+    };
+
+    {
+      const r = rodarDep('[{"state":"started"}]');
+      ok("máquina de pé aprova o deploy", r.codigo, 0);
+      verdade("e diz isso no log", /TODAS DE PE/.test(r.saida));
+    }
+    {
+      /* O caso que importa: máquina que nunca liga TEM que reprovar. Este
+         passo existe porque um check que não pode falhar é pior que check
+         nenhum -- ele ensina a confiar nele. */
+      const r = rodarDep('[{"state":"replacing"}]');
+      verdade("máquina que não liga REPROVA o deploy", r.codigo !== 0);
+      verdade("e o erro diz que o bot pode estar fora", /pode estar fora do ar/.test(r.saida));
+    }
+    {
+      /* Nenhuma máquina não é sucesso: seria o bot inexistente passando. */
+      const r = rodarDep("[]");
+      verdade("app sem máquina nenhuma reprova", r.codigo !== 0);
+      verdade("e é nomeado como tal", /NENHUMA MAQUINA/.test(r.saida));
+    }
+    {
+      const r = rodarDep("isto nao e json");
+      verdade("resposta corrompida reprova, em vez de passar", r.codigo !== 0);
+      verdade("e não é confundida com sucesso", !/TODAS DE PE/.test(r.saida));
+    }
+  }
 }
 
 let resumiu = false;

@@ -114,7 +114,23 @@ jobs:
           #
           # Maquina nenhuma na lista NAO e' sucesso: seria o bot inexistente
           # passando como bot de pe.
-          veredito='
+          #
+          # E O PYTHON VAI PARA UM ARQUIVO, POR HEREDOC.
+          #
+          # Ele morava dentro de uma variavel entre aspas SIMPLES. Funcionava
+          # por sorte: nao havia nenhum apostrofo la' dentro. Mas o estilo de
+          # comentario desta casa e' exatamente "e'", "ja'", "so'" -- e foi
+          # assim que a vigia morreu, com "syntax error near unexpected token"
+          # antes de perguntar qualquer coisa ao Fly, porque um comentario
+          # dizia "NAO e' sucesso" e aquele apostrofo FECHOU a aspa do shell.
+          #
+          # Aqui doeria mais: e' o passo que decide se o deploy passa. Um
+          # apostrofo novo num comentario, e toda publicacao reprova -- ou,
+          # pior, o passo morre e o bot sobe sem ninguem conferir se ligou.
+          #
+          # Heredoc com 'PY' entre aspas nao interpreta nada: apostrofo, cifrao
+          # e crase passam intactos. Sorte nao e' configuracao.
+          cat > /tmp/veredito.py <<'PY'
           import json, sys
           try:
               ms = json.load(sys.stdin)
@@ -125,9 +141,9 @@ jobs:
           estados = [m.get("state", "?") for m in ms]
           print(("TODAS DE PE: " if all(e == "started" for e in estados) else "AINDA NAO: ")
                 + ", ".join(estados))
-          '
+          PY
           for tentativa in $(seq 1 30); do
-            saida=$(flyctl machine list --json 2>/dev/null | python3 -c "$(echo "$veredito" | sed 's/^          //')" || echo "SEM RESPOSTA")
+            saida=$(flyctl machine list --json 2>/dev/null | python3 /tmp/veredito.py || echo "SEM RESPOSTA")
             echo "tentativa $tentativa: $saida"
             case "$saida" in
               "TODAS DE PE: "*) exit 0 ;;
