@@ -6443,6 +6443,188 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* O BACKUP, EXECUTADO — E O QUE ELE NÃO PODE LEVAR JUNTO.
+ *
+ * Não havia cópia de nada. O `supabase/migracoes/` guarda o esquema, e nem
+ * ele inteiro; os dados existiam num lugar só. Quem são os clientes, o que
+ * cada um assinou, os comandos que o dono escreveu: um `delete` errado e
+ * acabava.
+ *
+ * Dois perigos moram neste arquivo, e os dois são piores que não ter backup:
+ *
+ *   1. ESTE REPOSITÓRIO É PÚBLICO. Artefato de Actions aqui é baixável por
+ *      quem tiver o link. Um pacote em texto puro trocaria "sem backup" por
+ *      "vazamento diário de dado de cliente".
+ *   2. Conversa de gente não é configuração. A página de privacidade promete
+ *      prazo de guarda e o bot apaga o que passa dele. Um backup de 90 dias
+ *      com as falas dentro esticaria aquele prazo por fora, sem ninguém ter
+ *      combinado.
+ *
+ * Por isso a lista é BRANCA: tabela nova nasce de fora, e alguém decide que
+ * ela entra. Uma lista preta faria toda tabela nova de conversa entrar
+ * sozinha. */
+{
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync: ler } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const yml = readFileSync(new URL("../.github/workflows/backup-do-banco.yml", import.meta.url), "utf8");
+  const codigo = semComentariosDeGrade(yml);
+
+  verdade("o backup roda sozinho", /^\s*schedule:/m.test(yml));
+  verdade("com um cron de verdade", /cron:\s*"[-\d*/, ]+"/.test(yml));
+
+  /* Cifrado ANTES de virar artefato -- e a ordem é o produto inteiro. */
+  const ondeCifra = codigo.indexOf("--symmetric");
+  const ondeSobe = codigo.indexOf("upload-artifact");
+  verdade("o pacote é cifrado", ondeCifra > -1);
+  verdade("o artefato é subido", ondeSobe > -1);
+  verdade("e ele é cifrado ANTES de subir", ondeCifra > -1 && ondeSobe > -1 && ondeCifra < ondeSobe);
+  verdade("o que sobe é o arquivo CIFRADO, e não o tar puro",
+    /path:\s*\/tmp\/backup\.tar\.gz\.gpg/.test(codigo));
+  /* O texto puro tem que sair do disco do runner no mesmo passo. */
+  verdade("o texto puro é destruído depois de cifrar", /shred -u \/tmp\/backup\.tar\.gz\b/.test(codigo));
+  verdade("e a frase-secreta também", /shred -u \/tmp\/frase/.test(codigo));
+
+  /* A armadilha do apóstrofo, pela terceira vez neste repositório. */
+  verdade("o backup não passa código por aspas simples do shell",
+    !/python3 -c '/.test(codigo));
+  verdade("ele usa heredoc", /<<'PY'/.test(codigo));
+
+  /* Sem os segredos ele tem que REPROVAR, e não passar verde sem fazer nada:
+     backup que falha calado é a pior das três opções. */
+  verdade("sem segredo, reprova em vez de passar", /::error::Sem backup nenhum/.test(codigo));
+
+  /* ---- e agora o passo de cópia, EXECUTADO contra um Supabase falso ---- */
+  const linhas = yml.split("\n");
+  const i = linhas.findIndex((l) => /name: Buscar as tabelas/.test(l));
+  verdade("o passo que busca as tabelas existe", i > -1);
+  const passo = linhas.slice(i).join("\n");
+  const corpo = passo.slice(passo.indexOf("run: |") + 6)
+    .split("\n").map((l) => l.replace(/^ {10}/, ""))
+    .join("\n").split("\n      - name:")[0];
+
+  const base = mkdtempSync(join(tmpdir(), "backup-"));
+  writeFileSync(join(base, "passo.sh"), corpo);
+
+  /* Um PostgREST de mentira: devolve duas linhas na primeira página e nada na
+     segunda, para qualquer tabela. Assim o teste exercita a paginação de
+     verdade em vez de supor que ela funciona.
+
+     E ele roda NOUTRO PROCESSO, o que não é firula.
+
+     A primeira versão subia o servidor aqui dentro e chamava o passo com
+     `execFileSync`. Trava: `execFileSync` bloqueia o event loop do Node, então
+     o servidor não conseguia atender ENQUANTO o teste esperava a resposta
+     dele. Os dois ficavam se esperando até o timeout, e o sintoma -- um
+     TimeoutError dentro do urllib -- tinha cara de rede bloqueada, que me fez
+     procurar proxy por um bom tempo. O defeito era o abraço entre os dois. */
+  const { spawn } = await import("node:child_process");
+  const registro = join(base, "pedidos.txt");
+  writeFileSync(join(base, "falso.js"), `
+    const { createServer } = require("http");
+    const { appendFileSync } = require("fs");
+    createServer((req, res) => {
+      appendFileSync(${JSON.stringify(registro)}, req.url + "\\n");
+      const u = new URL(req.url, "http://x");
+      const offset = Number(u.searchParams.get("offset") || 0);
+      const limite = Number(u.searchParams.get("limit") || 1000);
+      res.setHeader("content-type", "application/json");
+      /* Uma tabela ENCHE a primeira página. Sem isso o laço vê página curta
+         logo de cara, para, e a paginação nunca é exercitada -- o teste
+         afirmaria que ela funciona sem nunca ter pedido uma segunda página. */
+      const cheia = req.url.includes("/cyron_servidor?");
+      if (cheia && offset === 0) {
+        const muitas = [];
+        for (let i = 0; i < limite; i++) muitas.push({ id: i, segredo: "nao vaze" });
+        return res.end(JSON.stringify(muitas));
+      }
+      res.end(JSON.stringify(offset === 0 ? [{ id: 1, segredo: "nao vaze" }, { id: 2 }] : []));
+    }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });
+  `);
+  const falso = spawn("node", [join(base, "falso.js")], { stdio: ["ignore", "pipe", "ignore"] });
+  const porta = await new Promise((pronto, falhar) => {
+    const desistir = setTimeout(() => falhar(new Error("o servidor falso não subiu")), 10000);
+    falso.stdout.once("data", (d) => { clearTimeout(desistir); pronto(String(d).trim()); });
+  });
+
+  /* Sujeira PLANTADA no destino antes de rodar. Se o passo não limpar, ela
+     entra no pacote passando por dado de hoje -- backup que mistura duas datas
+     é pior que backup nenhum, porque ninguém desconfia dele. */
+  mkdirSync(join(base, "saida"), { recursive: true });
+  writeFileSync(join(base, "saida", "sobra_de_ontem.json"), '[{"velho":true}]');
+
+  let saida = "", codigoDeSaida = 0;
+  try {
+    saida = execFileSync("bash", ["passo.sh"], {
+      cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      /* Sem proxy: o `urllib` do Python obedece http_proxy, e num ambiente que
+         tem um configurado ele mandaria a chamada para 127.0.0.1 PELO PROXY --
+         que pendura. O runner do GitHub não tem proxy nenhum; isto é só para o
+         teste rodar igual em qualquer máquina. */
+      env: { ...process.env, SB_URL: `http://127.0.0.1:${porta}`, SB_KEY: "chave-falsa",
+             no_proxy: "127.0.0.1,localhost", NO_PROXY: "127.0.0.1,localhost",
+             http_proxy: "", HTTP_PROXY: "", https_proxy: "", HTTPS_PROXY: "",
+             /* Pasta própria: apontar para a /tmp/backup de produção fazia o
+                resultado depender do que uma execução ANTERIOR tinha deixado
+                lá -- verde ou vermelho por causa de sobra, que é o oposto de
+                um teste. */
+             DESTINO: join(base, "saida") },
+    });
+  } catch (e) {
+    saida = String(e.stdout || "") + String(e.stderr || "");
+    codigoDeSaida = e.status;
+  }
+  falso.kill();
+  const pedidos = ler(registro, "utf8").split("\n").filter(Boolean);
+
+  ok("o passo de cópia roda de verdade, sem erro de shell", codigoDeSaida, 0);
+  verdade("e ele copia alguma coisa", /tabela\(s\) copiadas/.test(saida));
+  /* A página cheia tem que levar a um segundo pedido, com offset no tamanho
+     da página. Sem isto, uma tabela com mais de mil linhas entraria no backup
+     PELA METADE, e o pacote sairia verde do mesmo tamanho. */
+  verdade("a paginação é real: pede a segunda página",
+    pedidos.some((u) => /cyron_servidor\?.*offset=1000\b/.test(u)));
+  verdade("e junta as duas páginas numa tabela só", (() => {
+    /* Defensivo de propósito: se cyron_servidor sumir da lista branca, este
+       teste tem que REPROVAR com nome, e não explodir e derrubar a bateria
+       inteira -- foi o que aconteceu na primeira sabotagem. */
+    try { return JSON.parse(ler(join(base, "saida", "cyron_servidor.json"), "utf8")).length === 1000; }
+    catch { return false; }
+  })());
+
+  /* A limpeza do destino, provada: a sobra plantada não pode ter sobrevivido. */
+  verdade("sobra de execução anterior NÃO entra no pacote",
+    !readdirSync(join(base, "saida")).includes("sobra_de_ontem.json"));
+
+  /* O LOG NÃO PODE CARREGAR CONTEÚDO. O log de um repositório público é
+     público -- é o mesmo motivo pelo qual a vigia nunca pode ler `fly logs`. */
+  verdade("o log diz nomes e contagens, não conteúdo", !/nao vaze/.test(saida));
+  verdade("mas diz as contagens", /2 linha\(s\)/.test(saida));
+
+  /* O QUE FOI PARADO NO DISCO: a prova de que a lista branca vale. */
+  const copiadas = readdirSync(join(base, "saida")).map((f) => f.replace(/\.json$/, ""));
+  verdade("o cliente pagante entra", copiadas.includes("cyron_servidor"));
+  verdade("os ajustes vivos entram", copiadas.includes("cyron_ajuste"));
+  verdade("os comandos escritos pelo dono entram", copiadas.includes("cyron_comando"));
+
+  /* Estas são as que NÃO podem entrar, cada uma pelo seu motivo. */
+  for (const proibida of ["discord_fala_espelhada", "discord_msg_traducao"]) {
+    verdade(`conversa de gente NÃO entra no backup (${proibida})`, !copiadas.includes(proibida));
+  }
+  verdade("cache não entra: refaz-se sozinho", !copiadas.includes("discord_traducao_cache"));
+  for (const passageira of ["login_ponte", "discord_link_codes", "discord_sessions"]) {
+    verdade(`credencial de passagem não entra (${passageira})`, !copiadas.includes(passageira));
+  }
+
+  /* E a lista é branca de verdade, escrita no arquivo -- não uma consulta que
+     pega tudo e filtra depois. Filtro esquecido deixa passar; lista branca
+     esquecida deixa de fora, que é o lado seguro de errar. */
+  verdade("a lista de tabelas é branca, escrita no arquivo", /TABELAS = \[/.test(codigo));
+  verdade("e não existe um 'pega tudo' escondido", !/information_schema|pg_tables/.test(codigo));
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;
