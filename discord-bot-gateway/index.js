@@ -12851,17 +12851,86 @@ function fraseDaMemoria(mb) {
     "Procure noutro lugar — a máquina pode ter sido movida pelo Fly, ou o processo caiu por outra causa.";
 }
 
+/* ---------------- O ouvido: eu ainda escuto o Discord? ----------------
+
+   ESTE E' O BURACO QUE PASSAVA POR TODOS OS ALARMES.
+
+   O bot escutava messageCreate, interactionCreate, guildCreate e error. NAO
+   escutava NADA sobre a propria conexao. Se o gateway caisse e nao voltasse:
+
+     - o processo continuava vivo (o event loop tem timers, entao o Node nao sai);
+     - a maquina continuava `started`, entao o Fly nao reiniciava;
+     - a vigia perguntava ao Fly e respondia DE PE;
+     - a batida no banco seguia escrevendo "estou vivo" de dois em dois minutos;
+     - e nenhuma mensagem, nenhum clique e nenhum comando chegava.
+
+   Todos os sinais verdes, o produto parado. E' a unica queda que nao aparecia
+   em lugar nenhum.
+
+   A BATIDA MENTIA, E ESSA E' A PARTE GRAVE
+
+   `bater()` gravava a hora e os MB sem nunca perguntar se o bot ainda ouvia.
+   Quer dizer que o unico sinal honesto que existia sobre estar vivo era, na
+   verdade, um sinal de "o processo nao terminou" -- que e' outra coisa. Um bot
+   surdo escrevia "estou bem" no banco para sempre.
+
+   Agora a batida so' bate quando ha' ouvido. "Ultima batida" volta a
+   significar "ultima vez que eu escutei o Discord", que e' o que qualquer um
+   que le esse numero pensa que ele significa.
+
+   POR QUE MORRER E' MELHOR QUE AVISAR
+
+   Um bot surdo nao tem conserto de dentro: quem reconecta e' a biblioteca, e
+   se ela nao conseguiu em cinco minutos nao vai conseguir no sexto. Sair com
+   codigo 1 entrega o problema pro Fly, que sabe fazer a unica coisa que
+   resolve -- subir um processo novo, com sessao nova.
+
+   Alarme pede alguem acordado pra ler. Reinicio nao pede ninguem. Entre
+   avisar o dono e se consertar, um produto profissional se conserta. */
+const GRACA_SEM_OUVIDO = 5 * 60 * 1000;
+
+/* 0 = estou ouvindo. Qualquer outro numero e' o instante em que fiquei surdo. */
+let surdoDesde = 0;
+let motivoDaSurdez = "";
+
+/* Separada da porcaria toda para poder ser testada: e' a decisao de matar o
+   processo, e decisao dessas nao pode morar so' dentro de um handler de
+   evento que nenhum teste alcanca. */
+function vereditoDoOuvido(surdoDesde, agora, graca = GRACA_SEM_OUVIDO) {
+  if (!surdoDesde) return { ouvindo: true, ha: 0, morrer: false };
+  const ha = Math.max(0, agora - surdoDesde);
+  return { ouvindo: false, ha, morrer: ha >= graca };
+}
+
+function fraseDaSurdez(ha, motivo) {
+  return `**Foi a conexão com o Discord**: eu fiquei surdo por ${Math.round(ha / 1000)}s ` +
+    `(${motivo || "sem motivo anotado"}) e a biblioteca não reconectou. ` +
+    "Saí de propósito, com erro, para o Fly subir um processo novo — de dentro não tinha conserto.\n\n" +
+    "Enquanto isso o processo estava vivo e a máquina ligada: **nenhum alarme antigo pegava este caso.**";
+}
+
 async function contarQueVoltei() {
   const guardado = await ajustes().catch(() => ({}));
   const antes = Number(guardado["visto"]) || 0;
   const mbAntes = Number(guardado["visto_mb"]) || 0;
   const despedi = Number(guardado["despedi"]) || 0;
+  /* O bilhete da surdez: quem sai por nao ouvir mais anota antes de sair, e e'
+     isso que separa "morri surdo" de "morri por memoria". Sem ele, as duas
+     mortes deixavam o mesmo rastro e a mensagem chutava memoria nas duas. */
+  const surdo = Number(guardado["surdo"]) || 0;
+  const surdoPorQue = String(guardado["surdo_porque"] || "");
   const parado = antes ? Date.now() - antes : null;
   /* Despedida fresca = a saida foi de proposito (publicacao, reinicio na mao).
      Fresca importa: uma despedida velha, de dias atras, nao pode ficar
      desculpando uma morte de agora. */
   const despediu = despedi > 0 && Date.now() - despedi < 3 * BATIDA;
-  const morreu = parado !== null && parado < 3 * BATIDA && !despediu;
+  /* Surdez fresca conta como morte SEMPRE, mesmo com a batida velha -- e tem
+     que ser assim: um bot surdo PARA de bater (a batida agora exige ouvido),
+     entao quando ele volta a ultima batida ja' esta' com os cinco minutos da
+     graca em cima. Pela regra antiga isso passaria por "publicacao", e a queda
+     mais silenciosa que existe sairia pintada de troca de versao. */
+  const morreuSurdo = surdo > 0 && Date.now() - surdo < 30 * 60 * 1000;
+  const morreu = morreuSurdo || (parado !== null && parado < 3 * BATIDA && !despediu);
 
   /* MORTE vai para o canal de erros. VOLTA NORMAL, não.
    *
@@ -12881,8 +12950,14 @@ async function contarQueVoltei() {
   await avisarNoPainel(morreu ? CANAL_ERROS : CANAL_DIARIO, {
     embeds: [{
       color: morreu ? 0xE03E3E : 0x5EBB83,
-      title: morreu ? "💀 Eu morri e voltei" : "🔄 Subi de novo",
-      description: morreu
+      title: morreuSurdo ? "💀 Eu fiquei surdo e me reiniciei"
+        : morreu ? "💀 Eu morri e voltei" : "🔄 Subi de novo",
+      description: morreuSurdo
+        ? "A conexão com o Discord caiu e não voltou. Eu continuava **de pé** — processo vivo, " +
+          "máquina ligada, vigia dizendo que estava tudo bem — e **nada chegava até mim**: " +
+          "nenhuma mensagem, nenhum clique, nenhum comando.\n\n" +
+          fraseDaSurdez(Date.now() - surdo, surdoPorQue)
+        : morreu
         ? "O processo anterior não se despediu: a última batida foi há " +
           `${Math.round(parado / 1000)}s e elas são de ${BATIDA / 1000} em ${BATIDA / 1000}s.\n\n` +
           "Quem clicou em algo nesse intervalo viu **“não respondeu a tempo”**.\n\n" +
@@ -12901,6 +12976,9 @@ async function contarQueVoltei() {
      desculpando qualquer morte que acontecesse logo depois de uma publicacao
      -- que e' justamente quando uma versao nova costuma quebrar. */
   if (despedi > 0) await porAjuste("despedi", "0").catch(() => {});
+  /* O bilhete da surdez tambem vale uma vez so'. Deixado la', ele pintaria de
+     "morri surdo" a proxima meia hora de reinicios, inclusive publicacao. */
+  if (surdo > 0) await porAjuste("surdo", "0").catch(() => {});
 }
 
 client.once("clientReady", () => {
@@ -12914,10 +12992,21 @@ client.once("clientReady", () => {
          por outra coisa deixam exatamente o mesmo rastro -- que foi o caso das
          tres quedas de hoje. Sao duas escritas na mesma tabela, a cada dois
          minutos: barato ao lado de nao saber por que o bot morre. */
-      const bater = () => Promise.all([
-        porAjuste("visto", String(Date.now())),
-        porAjuste("visto_mb", String(Math.round(process.memoryUsage().rss / 1048576))),
-      ]).catch((e) => console.error("batida: nao consegui bater:", e?.message || e));
+      /* A batida agora PERGUNTA se ainda ha' ouvido antes de bater.
+         Sem isto ela grava "estou vivo" de dois em dois minutos mesmo com o
+         gateway no chao -- e era o unico sinal em que todo o resto confiava. */
+      const bater = async () => {
+        const v = vereditoDoOuvido(surdoDesde, Date.now());
+        if (v.ouvindo) {
+          await Promise.all([
+            porAjuste("visto", String(Date.now())),
+            porAjuste("visto_mb", String(Math.round(process.memoryUsage().rss / 1048576))),
+          ]).catch((e) => console.error("batida: nao consegui bater:", e?.message || e));
+          return;
+        }
+        console.error(`gateway: surdo há ${Math.round(v.ha / 1000)}s (${motivoDaSurdez}) — não bato enquanto não ouvir.`);
+        if (v.morrer) await morrerPorSurdez(v.ha);
+      };
       bater();
       setInterval(bater, BATIDA);
     });
@@ -13070,6 +13159,88 @@ console.error = (...partes) => {
 };
 
 client.on("error", (e) => console.error("erro do client:", e?.message || e));
+
+/* ---------------- Os ouvidos ----------------
+
+   Um por evento, e nenhum deles existia. A conexao com o Discord podia cair,
+   tentar voltar, desistir e morrer sem que uma linha fosse escrita em lugar
+   nenhum -- nem no log, nem no banco, nem no canal de erros. */
+
+function ficouSurdo(motivo) {
+  if (surdoDesde) return;            // ja' estava surdo: mantem o inicio
+  surdoDesde = Date.now();
+  motivoDaSurdez = String(motivo || "sem motivo").slice(0, 200);
+  console.error(`gateway: perdi a conexão com o Discord (${motivoDaSurdez}). A partir de agora nada chega até mim.`);
+  /* Anotado JA', e nao so' na hora de morrer: se o processo for morto pelo Fly
+     no meio da surdez, o bilhete ja' esta' no banco e a proxima subida sabe
+     dizer o que aconteceu. */
+  porAjuste("surdo", String(surdoDesde)).catch(() => {});
+  porAjuste("surdo_porque", motivoDaSurdez).catch(() => {});
+}
+
+function voltouAOuvir(como) {
+  if (!surdoDesde) return;
+  const ha = Date.now() - surdoDesde;
+  console.log(`gateway: voltei a ouvir (${como}) depois de ${Math.round(ha / 1000)}s surdo.`);
+  surdoDesde = 0;
+  motivoDaSurdez = "";
+  /* Apagar os dois: uma reconexao bem-sucedida NAO e' morte, e deixar o
+     bilhete la' faria a proxima publicacao normal sair como "morri surdo". */
+  porAjuste("surdo", "0").catch(() => {});
+  porAjuste("surdo_porque", "").catch(() => {});
+}
+
+/* Sair com 1 e' o conserto, nao a desistencia.
+
+   Quem reconecta e' a biblioteca. Se ela nao conseguiu em cinco minutos, nao
+   vai conseguir no sexto -- o que resolve e' sessao nova, e sessao nova pede
+   processo novo. O Fly reinicia em saida de erro (fly.toml, policy = always).
+
+   Tento avisar antes, mas com prazo curto e sem depender disso: postar e'
+   REST e costuma funcionar com o gateway no chao, so' que "costuma" nao segura
+   um reinicio. O bilhete no banco e' o aviso que nao depende de nada. */
+async function morrerPorSurdez(ha) {
+  console.error(`gateway: surdo há ${Math.round(ha / 1000)}s. Saindo com erro para o Fly subir um processo novo.`);
+  await Promise.race([
+    avisarNoPainel(CANAL_ERROS, {
+      embeds: [{
+        color: 0xE03E3E,
+        title: "💀 Fiquei surdo — estou me reiniciando",
+        description: fraseDaSurdez(ha, motivoDaSurdez),
+        timestamp: new Date().toISOString(),
+      }],
+    }).catch(() => {}),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]);
+  process.exit(1);
+}
+
+/* shardDisconnect e' o fim da linha do lado da biblioteca: ela desconectou e
+   NAO vai tentar de novo sozinha. shardReconnecting ainda tem esperanca. */
+client.on("shardDisconnect", (evento, id) => {
+  ficouSurdo(`shard ${id} desconectou, código ${evento?.code ?? "?"}`);
+});
+client.on("shardReconnecting", (id) => {
+  ficouSurdo(`shard ${id} tentando reconectar`);
+});
+client.on("shardError", (e, id) => {
+  console.error(`gateway: erro no shard ${id}:`, e?.message || e);
+});
+
+/* Os dois caminhos de volta: resume aproveita a sessao antiga (nada se perde),
+   ready abriu sessao nova. Para este arquivo os dois valem a mesma coisa --
+   voltei a escutar. */
+client.on("shardResume", (id) => voltouAOuvir(`shard ${id} retomou a sessão`));
+client.on("shardReady", (id) => voltouAOuvir(`shard ${id} pronto`));
+
+/* invalidated e' terminal: a sessao morreu de um jeito que nao se retoma
+   (token trocado, sessao derrubada pelo Discord). A propria discord.js manda
+   destruir o client. Nao existe graca aqui -- esperar cinco minutos seria
+   cinco minutos de produto parado por nada. */
+client.on("invalidated", () => {
+  ficouSurdo("sessão invalidada pelo Discord");
+  morrerPorSurdez(0).catch(() => process.exit(1));
+});
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
 
 /* Nao conseguir entrar tem que doer.

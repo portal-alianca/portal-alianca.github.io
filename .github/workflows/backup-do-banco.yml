@@ -1,0 +1,237 @@
+# A cópia do que não dá para refazer.
+#
+# O `supabase/migracoes/` guarda o ESQUEMA -- e nem ele inteiro. Não guarda
+# NADA dos dados. Quem são os servidores clientes, o que cada um assinou, os
+# comandos que o dono escreveu, os ajustes vivos do CYRON: tudo isso existia
+# num lugar só, sem cópia em lugar nenhum. Um `delete` errado, um projeto
+# pausado ou uma conta perdida e acabou, sem volta.
+#
+# O plano grátis do Supabase não tem backup automático. Então ou existe este
+# arquivo, ou não existe backup.
+#
+# ---------------------------------------------------------------------------
+# POR QUE O ARQUIVO SAI CIFRADO, E NÃO EM TEXTO PURO
+#
+# ESTE REPOSITÓRIO É PÚBLICO. Artefato de Actions em repositório público é
+# baixável por quem tiver o link da execução. Subir `cyron_servidor` em texto
+# puro ali seria publicar id de servidor de cliente, estado de assinatura e
+# configuração de gente que paga -- trocar "sem backup" por "vazamento
+# diário", que é pior.
+#
+# Então o pacote é cifrado com gpg simétrico ANTES de virar artefato. Sem a
+# frase-secreta ele é um bloco de bytes.
+#
+# ---------------------------------------------------------------------------
+# O QUE ENTRA E, PRINCIPALMENTE, O QUE NÃO ENTRA
+#
+# Entra o que é CONFIGURAÇÃO e NEGÓCIO: quem é cliente, o que assinou, o que
+# o dono configurou. É o que não se refaz.
+#
+# NÃO entra conversa de ninguém. `discord_fala_espelhada` (3.9 mil linhas) e
+# `discord_traducao_cache` (5.6 mil) são conteúdo de mensagem de gente que nem
+# sabe que o CYRON existe. A página de privacidade promete um prazo de guarda,
+# e o index.js apaga o que passa dele todo dia. Copiar isso para um artefato
+# que vive 90 dias ESTICARIA aquele prazo por fora, sem ninguém ter combinado
+# -- uma promessa quebrada disfarçada de zelo.
+#
+# Cache também não entra por um motivo mais simples: ele se refaz sozinho.
+# Backup de cache é peso sem seguro.
+#
+# ---------------------------------------------------------------------------
+# O QUE ISTO NÃO RESOLVE (dito aqui para não virar falsa segurança)
+#
+#   - Não é backup do ESQUEMA. Restaurar num projeto novo e vazio exige
+#     recriar as tabelas antes, e as migrações versionadas cobrem só parte
+#     delas. Esquema completo pede `pg_dump`, que pede a senha do banco.
+#   - Não é backup das Edge Functions nem das policies de RLS.
+#   - Agendamento do GitHub é "quando der", e ele DESLIGA workflow agendado
+#     depois de 60 dias sem commit no repositório. Num repo parado, o backup
+#     para junto -- e sem avisar.
+
+name: Backup do banco
+
+on:
+  schedule:
+    # Uma vez por dia, de madrugada em Brasília (03:20 UTC-3 = 06:20 UTC).
+    # Minuto quebrado de propósito: a hora cheia é quando o mundo inteiro
+    # agenda, e a fila do GitHub anda mais devagar lá.
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  copiar:
+    name: guardar o que não se refaz
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir se os segredos existem
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FRASE: ${{ secrets.BACKUP_FRASE_SECRETA }}
+        run: |
+          faltam=""
+          [ -z "$SB_URL" ] && faltam="$faltam SUPABASE_URL"
+          [ -z "$SB_KEY" ] && faltam="$faltam SUPABASE_SERVICE_ROLE_KEY"
+          [ -z "$FRASE"  ] && faltam="$faltam BACKUP_FRASE_SECRETA"
+          if [ -n "$faltam" ]; then
+            echo "::error::Sem backup nenhum: faltam os segredos$faltam"
+            echo ""
+            echo "Enquanto faltar qualquer um deles, ESTE ARQUIVO NÃO PROTEGE NADA."
+            echo "Para ligar, em Settings -> Secrets and variables -> Actions -> New secret:"
+            echo "  SUPABASE_URL                 https://<ref>.supabase.co"
+            echo "  SUPABASE_SERVICE_ROLE_KEY    Supabase -> Project Settings -> API -> service_role"
+            echo "  BACKUP_FRASE_SECRETA         uma frase longa, guardada FORA do GitHub"
+            echo ""
+            echo "A frase é a única chave do pacote. Perdida a frase, o backup vira lixo:"
+            echo "guarde-a onde você guardaria a senha do banco, e NUNCA num chat."
+            exit 1
+          fi
+          echo "Os três segredos estão no lugar."
+
+      # O python vai para um ARQUIVO, por heredoc. Nunca dentro de aspas
+      # simples: o estilo de comentário desta casa é "e'", "ja'", "so'", e um
+      # apóstrofo desses FECHA a aspa do shell -- foi assim que a vigia morreu
+      # calada na primeira execução de verdade. Heredoc com 'PY' entre aspas
+      # não interpreta apóstrofo, cifrão nem crase.
+      - name: Buscar as tabelas
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cat > /tmp/copiar.py <<'PY'
+          import json, os, shutil, sys, urllib.request, pathlib
+
+          # A lista é branca, e não preta, de propósito: tabela nova nasce DE
+          # FORA do backup e alguem precisa decidir que ela entra. Uma lista
+          # preta faria toda tabela nova de conversa entrar sozinha no pacote.
+          TABELAS = [
+              # --- o negócio: quem é cliente e o que assinou ---
+              "cyron_servidor", "cyron_ajuste", "cyron_comando", "cyron_codigo",
+              "cyron_stripe_evento", "cyron_uso_diario",
+              "cyron_arena", "cyron_evento", "cyron_evento_presenca",
+              # --- configuração do portal e do bot ---
+              "aliancas", "alianca_discord", "alianca_discord_canais",
+              "discord_config", "discord_gifs", "discord_segredo",
+              "discord_heroi", "discord_canal_idioma", "discord_fonte_replica",
+              "discord_chat_espelho", "discord_convite_idioma",
+              "discord_idioma_jogador",
+              # --- conteúdo escrito pelo dono, que ninguém refaz de cabeça ---
+              "top_config", "top_missoes", "top_loja", "top_dicas",
+              "top_eventos", "top_tutorial_passos", "top_inscricoes",
+              "top_membros", "top_convites",
+          ]
+
+          # NAO entram, e o motivo importa:
+          #   discord_fala_espelhada, discord_msg_traducao  -> conversa de
+          #     gente. A pagina de privacidade promete prazo de guarda e o bot
+          #     apaga o que passa dele. Copiar aqui esticaria esse prazo por
+          #     fora, sem ninguem ter combinado.
+          #   discord_traducao_cache  -> cache; refaz-se sozinho.
+          #   login_ponte, discord_link_codes, discord_sessions -> credencial
+          #     de passagem, de vida curta. Guardar so' aumenta o estrago de
+          #     um vazamento.
+
+          base = os.environ["SB_URL"].rstrip("/")
+          chave = os.environ["SB_KEY"]
+          pagina = 1000
+
+          # O destino comeca VAZIO, sempre.
+          #
+          # No runner do GitHub o /tmp ja' nasce limpo, entao isto parece
+          # zelo inutil -- ate' a primeira vez que alguem rodar duas vezes na
+          # mesma maquina. Uma sobra de execucao anterior seria empacotada
+          # junto e passaria por dado de hoje: backup que mistura duas datas
+          # e' pior que backup nenhum, porque ninguem desconfia dele.
+          #
+          # O caminho sai do ambiente para o teste poder apontar para a pasta
+          # dele em vez de disputar uma pasta fixa com as outras execucoes.
+          destino = pathlib.Path(os.environ.get("DESTINO", "/tmp/backup"))
+          if destino.exists():
+              shutil.rmtree(destino)
+          destino.mkdir(parents=True)
+
+          def buscar(tabela, de):
+              url = f"{base}/rest/v1/{tabela}?select=*&limit={pagina}&offset={de}"
+              pedido = urllib.request.Request(url, headers={
+                  "apikey": chave, "Authorization": f"Bearer {chave}",
+              })
+              with urllib.request.urlopen(pedido, timeout=60) as r:
+                  return json.load(r)
+
+          resumo = []
+          problemas = []
+          for tabela in TABELAS:
+              linhas = []
+              try:
+                  while True:
+                      lote = buscar(tabela, len(linhas))
+                      linhas.extend(lote)
+                      if len(lote) < pagina:
+                          break
+              except Exception as e:
+                  # Uma tabela que falha NAO pode derrubar o backup das outras,
+                  # mas tambem nao pode passar calada: o pacote sairia menor e
+                  # igualmente verde.
+                  problemas.append(f"{tabela}: {type(e).__name__}")
+                  continue
+              (destino / f"{tabela}.json").write_text(
+                  json.dumps(linhas, ensure_ascii=False, indent=1), encoding="utf8")
+              resumo.append((tabela, len(linhas)))
+
+          # So' nomes e CONTAGENS no log. Nunca conteudo: o log de um
+          # repositorio publico e' publico, e foi por isso que a vigia nunca
+          # pode ler `fly logs`.
+          for tabela, n in resumo:
+              print(f"  {tabela}: {n} linha(s)")
+          print(f"{len(resumo)} tabela(s) copiadas.")
+
+          if problemas:
+              print("::error::NÃO consegui copiar: " + "; ".join(problemas))
+              sys.exit(1)
+          if not resumo:
+              print("::error::Nenhuma tabela copiada -- backup vazio não é backup.")
+              sys.exit(1)
+          PY
+          python3 /tmp/copiar.py
+
+      # Cifrar ANTES de virar artefato, e num passo separado para que uma
+      # falha aqui NUNCA caia no passo de subir.
+      - name: Fechar o pacote com chave
+        env:
+          FRASE: ${{ secrets.BACKUP_FRASE_SECRETA }}
+        run: |
+          tar -czf /tmp/backup.tar.gz -C /tmp/backup .
+          printf '%s' "$FRASE" > /tmp/frase
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+              --passphrase-file /tmp/frase \
+              --output /tmp/backup.tar.gz.gpg /tmp/backup.tar.gz
+          shred -u /tmp/frase
+          # O texto puro sai do disco do runner antes de qualquer outro passo
+          # existir. O runner é descartado no fim, mas "é descartado depois"
+          # não é o mesmo que "não está mais lá".
+          shred -u /tmp/backup.tar.gz
+          rm -rf /tmp/backup
+          ls -lh /tmp/backup.tar.gz.gpg | awk '{print "pacote cifrado: " $5}'
+
+      - name: Guardar
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-cyron-${{ github.run_id }}
+          path: /tmp/backup.tar.gz.gpg
+          # 90 dias é o teto do GitHub. Backup que expira em 1 dia só protege
+          # de acidente descoberto no mesmo dia, e quase nada se descobre no
+          # mesmo dia.
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Como abrir isto de volta
+        run: |
+          echo "Para restaurar, com a frase-secreta em mãos:"
+          echo "  gpg --decrypt backup.tar.gz.gpg > backup.tar.gz"
+          echo "  tar -xzf backup.tar.gz"
+          echo "Cada tabela vira um .json de linhas, pronto para um insert."
+          echo ""
+          echo "Isto NÃO restaura o esquema: as tabelas precisam existir antes."

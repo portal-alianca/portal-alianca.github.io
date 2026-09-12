@@ -168,6 +168,13 @@ function semComentarios(texto) {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
+/* A mesma armadilha, na outra língua: YAML e shell comentam com `#`.
+   Separada da de cima de propósito -- em JavaScript `#` abre campo privado,
+   e apagar linhas por causa dele apagaria código. */
+function semComentariosDeGrade(texto) {
+  return String(texto).split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+}
+
 /* ---- o placar ---- */
 let passou = 0; const falhou = [];
 function ok(nome, real, esperado) {
@@ -4453,9 +4460,16 @@ function conferirCartao(onde, embed, componentes = []) {
     return !/soltarAsInteracoes/.test(fonte.slice(h, fimDoBloco(fonte.indexOf("{", h))));
   })());
   /* O `true` é "agora, sem olhar o relógio". Sem ele, subir e perguntar
-     viraria duas coisas separadas outra vez. */
-  verdade("continua sendo conferida ao subir também",
-    /clientReady[^]{0,1800}soltarAsInteracoes\(true\)/.test(fonte));
+     viraria duas coisas separadas outra vez.
+
+     Olha o BLOCO do clientReady inteiro, e não uma janela de N caracteres: a
+     janela reprovou sozinha quando outro trecho cresceu lá dentro, e um teste
+     que quebra por causa do tamanho do vizinho ensina a ignorá-lo. */
+  verdade("continua sendo conferida ao subir também", (() => {
+    const r = fonte.indexOf('client.once("clientReady"');
+    return /soltarAsInteracoes\(true\)/.test(
+      semComentarios(fonte.slice(r, fimDoBloco(fonte.indexOf("{", fonte.indexOf("=>", r))))));
+  })());
 
   /* PATCH só quando há o que apagar: sem isto seria uma escrita por hora na
      configuração do aplicativo, para sempre, sem motivo. */
@@ -4688,6 +4702,48 @@ function conferirCartao(onde, embed, componentes = []) {
   const ignorados = readFileSync(`${aqui}/.dockerignore`, "utf8")
     .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   verdade("o node_modules de fora fica fora da imagem", ignorados.includes("node_modules"));
+
+  /* ---- A MESMA ÁRVORE DE DEPENDÊNCIAS NA ESTEIRA E NO FLY ----
+
+     Antes disto, o package.json pedia "^14.16.3" e não havia lockfile. Quer
+     dizer que o `npm install` do CI e o `npm install` do Dockerfile resolviam
+     a árvore SEPARADAMENTE, em momentos diferentes: a versão que passava nos
+     testes não era necessariamente a versão que subia. Quando o lockfile foi
+     gerado, o npm trouxe discord.js 14.27.0 -- onze versões minor à frente do
+     que o arquivo pedia. A deriva não era teórica; já tinha acontecido.
+
+     Vale mais do que arrumação: é o que faz 3433 testes verdes significarem
+     alguma coisa sobre o processo que atende os clientes. */
+  verdade("existe lockfile", existsSync(`${aqui}/package-lock.json`));
+  verdade("e ele entra na imagem", /^COPY\s+package\.json\s+package-lock\.json/m.test(dockerfile));
+  verdade("e o lockfile NÃO está no .dockerignore",
+    !ignorados.some((l) => l.replace(/^\/+/, "") === "package-lock.json"));
+
+  /* `ci` e não `install`, nos dois lugares: `install` pode atualizar o
+     lockfile e seguir em frente, que é justamente a deriva silenciosa. `ci`
+     instala o que está escrito, e RECUSA se os dois arquivos discordarem. */
+  verdade("a imagem instala com `npm ci`", /RUN npm ci\b/.test(dockerfile));
+  verdade("e não com `npm install`", !/RUN npm install\b/.test(dockerfile));
+  {
+    /* `semComentariosDeGrade` e não `semComentarios`: o comentário que explica
+       esta troca cita `npm install` de propósito, e YAML comenta com `#`. Sem
+       isto o teste reprova por causa da própria prosa que o justifica -- pela
+       quinta vez neste arquivo. */
+    const esteira = semComentariosDeGrade(
+      readFileSync(new URL("../.github/workflows/testes-bot.yml", import.meta.url), "utf8"));
+    verdade("a esteira também instala com `npm ci`", /npm ci\b/.test(esteira));
+    verdade("e a esteira não usa `npm install`", !/npm install\b/.test(esteira));
+  }
+
+  /* O lockfile tem que travar a dependência que existe de verdade. Um
+     lockfile vazio passaria em tudo acima e não travaria nada. */
+  {
+    const trava = JSON.parse(readFileSync(`${aqui}/package-lock.json`, "utf8"));
+    const pego = trava.packages?.["node_modules/discord.js"]?.version || "";
+    verdade("o lockfile fixa uma versão exata da discord.js", /^\d+\.\d+\.\d+/.test(pego));
+    /* Major errado não é detalhe: a v15 muda a API inteira. */
+    verdade("e é a major que o package.json pede", pego.startsWith("14."));
+  }
 
   /* O catálogo pelo nome, porque foi ele que faltou. Um teste que fala do
      caso concreto sobrevive a refatoração melhor do que um que só fala da
@@ -5925,6 +5981,147 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e usa a frase medida, em vez de texto fixo", /fraseDaMemoria/.test(corpo));
 }
 
+/* O OUVIDO: A ÚNICA QUEDA QUE PASSAVA POR TODOS OS ALARMES.
+ *
+ * O bot escutava mensagem, clique e entrada em servidor. Não escutava NADA
+ * sobre a própria conexão. Se o gateway caísse e não voltasse:
+ *
+ *   - o processo continuava vivo (há timers, então o Node não sai);
+ *   - a máquina continuava `started`, então o Fly não reiniciava;
+ *   - a vigia perguntava ao Fly e respondia DE PE;
+ *   - a batida no banco seguia escrevendo "estou vivo" a cada 2 minutos;
+ *   - e nada chegava: nem mensagem, nem clique, nem comando.
+ *
+ * Todos os sinais verdes, o produto parado.
+ *
+ * A BATIDA MENTIA. Ela gravava a hora sem nunca perguntar se ainda havia
+ * ouvido -- então o único sinal honesto sobre estar vivo era, na verdade, um
+ * sinal de "o processo não terminou", que é outra coisa. */
+{
+  const { vereditoDoOuvido, GRACA_SEM_OUVIDO } =
+    carregar(["GRACA_SEM_OUVIDO", "vereditoDoOuvido"]);
+
+  const t0 = 1_000_000_000_000;
+
+  ok("com ouvido, não há o que contar",
+    vereditoDoOuvido(0, t0), { ouvindo: true, ha: 0, morrer: false });
+
+  /* Surdo há pouco NÃO morre: uma reconexão de três segundos é rotina, e
+     reiniciar por causa dela trocaria um soluço por uma queda de verdade. */
+  const cedo = vereditoDoOuvido(t0, t0 + 3000);
+  ok("surdo há 3s: conta, mas não mata", { ouvindo: cedo.ouvindo, morrer: cedo.morrer },
+    { ouvindo: false, morrer: false });
+  ok("e sabe dizer há quanto tempo", cedo.ha, 3000);
+
+  /* Passada a graça, morre. Quem reconecta é a biblioteca; se ela não
+     conseguiu em cinco minutos, não vai conseguir no sexto. */
+  verdade("no limite da graça, morre", vereditoDoOuvido(t0, t0 + GRACA_SEM_OUVIDO).morrer);
+  verdade("um milissegundo antes, ainda não",
+    !vereditoDoOuvido(t0, t0 + GRACA_SEM_OUVIDO - 1).morrer);
+  verdade("muito depois, também morre", vereditoDoOuvido(t0, t0 + 60 * 60 * 1000).morrer);
+
+  /* Relógio que anda para trás (o Fly move a máquina, o NTP corrige) não pode
+     virar um `ha` negativo que faz a conta toda passar a valer zero. */
+  ok("relógio para trás não vira tempo negativo", vereditoDoOuvido(t0, t0 - 5000).ha, 0);
+
+  /* A graça é injetável para o teste não depender do número de produção -- mas
+     o número de produção também tem que ser sensato. */
+  verdade("a graça é de minutos, não de segundos nem de horas",
+    GRACA_SEM_OUVIDO >= 60_000 && GRACA_SEM_OUVIDO <= 15 * 60_000);
+}
+
+/* A LIGAÇÃO: o ouvido só serve se alguém escutar os eventos.
+ *
+ * vereditoDoOuvido() pode estar perfeito e nunca ser chamado -- e aí o buraco
+ * continua aberto, com um teste verde por cima dizendo que não. É o defeito
+ * que mais se repetiu neste projeto: função certa que ninguém liga. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+
+  /* Os índices saem do texto ORIGINAL e o comentário sai depois, nesta ordem.
+     Ao contrário, `fimDoBloco` -- que conta chaves no texto original -- recebe
+     posições de um texto encurtado pela remoção dos comentários, e devolve um
+     pedaço que não é o corpo de função nenhuma. Dois testes deste bloco
+     PASSARAM assim, casando com sobras aleatórias: falso verde, que é o pior
+     resultado possível num teste de fiação. */
+  const corpoDe = (abre, deParametros = true) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    const chave = fonte.indexOf("{", deParametros ? fonte.indexOf("(", i) : fonte.indexOf("=>", i));
+    return semComentarios(fonte.slice(i, fimDoBloco(chave)));
+  };
+
+  /* Os eventos de queda. shardDisconnect é o fim da linha do lado da
+     biblioteca; shardReconnecting ainda tem esperança; invalidated é
+     terminal. Nenhum dos três existia. */
+  for (const evento of ["shardDisconnect", "shardReconnecting", "shardResume",
+                        "shardReady", "invalidated"]) {
+    verdade(`o bot escuta ${evento}`,
+      new RegExp(`client\\.on\\("${evento}"`).test(codigo));
+  }
+
+  /* Os dois sentidos. Só marcar a queda deixaria o bot achando-se surdo para
+     sempre depois do primeiro soluço, e ele se mataria sozinho a cada 5 min. */
+  verdade("queda marca a surdez", /function ficouSurdo/.test(codigo));
+  verdade("e a volta desmarca", /function voltouAOuvir/.test(codigo));
+  verdade("voltar a ouvir zera o relógio da surdez",
+    /surdoDesde = 0/.test(corpoDe("function voltouAOuvir")));
+
+  /* A BATIDA. Este é o ponto: ela tem que PERGUNTAR antes de gravar. */
+  {
+    const b = codigo.indexOf("const bater =");
+    const corpo = codigo.slice(b, codigo.indexOf("setInterval(bater", b));
+    verdade("a batida pergunta se ainda há ouvido", /vereditoDoOuvido\(/.test(corpo));
+    /* A ordem importa: gravar e depois conferir seria gravar a mentira. */
+    verdade("e pergunta ANTES de gravar",
+      corpo.indexOf("vereditoDoOuvido(") < corpo.indexOf('porAjuste("visto"'));
+    verdade("bot surdo morre em vez de bater", /morrerPorSurdez\(/.test(corpo));
+  }
+
+  /* Morrer é o conserto: de dentro não há o que fazer, e o Fly sabe subir um
+     processo novo (fly.toml, policy = always). */
+  {
+    const corpo = corpoDe("async function morrerPorSurdez");
+    verdade("morrer por surdez sai com ERRO, para o Fly reiniciar",
+      /process\.exit\(1\)/.test(corpo));
+    verdade("e tenta avisar antes de sair", /avisarNoPainel\(CANAL_ERROS/.test(corpo));
+    /* Sem prazo, um avisarNoPainel pendurado (o gateway está no chão!) seguraria
+       o reinício para sempre -- o conserto preso pelo aviso. */
+    verdade("mas com prazo, porque o aviso não pode segurar o reinício",
+      /Promise\.race/.test(corpo) && /setTimeout/.test(corpo));
+  }
+
+  /* invalidated não tem graça nenhuma: a sessão morreu de um jeito que não se
+     retoma, e esperar 5 minutos seria 5 minutos de produto parado por nada. */
+  {
+    const corpo = corpoDe('client.on("invalidated"', false);
+    verdade("sessão invalidada mata na hora, sem esperar a graça",
+      /morrerPorSurdez\(0\)/.test(corpo));
+  }
+
+  /* O BILHETE. Sem ele, morrer surdo e morrer de memória deixam o mesmo
+     rastro -- e a mensagem chutava memória nos dois casos. */
+  {
+    const corpo = corpoDe("function ficouSurdo");
+    verdade("ficar surdo anota no banco na hora", /porAjuste\("surdo"/.test(corpo));
+    verdade("e anota também o motivo", /porAjuste\("surdo_porque"/.test(corpo));
+  }
+  {
+    const corpo = corpoDe("async function contarQueVoltei");
+    verdade("quem conta a volta lê o MESMO bilhete", /guardado\["surdo"\]/.test(corpo));
+    verdade("e diz que foi surdez, e não chuta memória", /fraseDaSurdez\(/.test(corpo));
+    /* Bilhete velho não pode pintar de surdez a publicação da semana que vem. */
+    verdade("o bilhete da surdez vale uma vez só",
+      /porAjuste\("surdo", "0"\)/.test(corpo));
+    /* Um bot surdo PARA de bater, então quando ele volta a última batida já
+       está velha. Pela regra antiga isso passaria por "publicação" -- a queda
+       mais silenciosa que existe sairia pintada de troca de versão. */
+    verdade("surdez conta como morte mesmo com a batida velha",
+      /morreuSurdo \|\|/.test(corpo));
+  }
+}
+
 /* PUBLICAÇÃO NÃO É MORTE.
  *
  * O caso real, e o mais constrangedor do dia: quatro deploys numa tarde
@@ -6169,6 +6366,263 @@ function conferirCartao(onde, embed, componentes = []) {
      de pé -- o caso mais silencioso de todos. */
   verdade("app sem máquina nenhuma é fora", /^FORA/.test(rodar("[]")));
   verdade("resposta corrompida não vira 'de pé'", /^SEM RESPOSTA/.test(rodar("nao sou json")));
+
+  /* ---- O DEPLOY TEM A MESMA ARMADILHA, E DOERIA MAIS ----
+
+     O passo que espera a máquina ligar guardava o python numa variável entre
+     aspas SIMPLES. Funcionava por sorte: não havia apóstrofo nenhum lá dentro.
+     Mas o estilo de comentário desta casa é "e'", "ja'", "so'" -- exatamente o
+     que matou a vigia.
+
+     Aqui o estrago é maior: é o passo que decide se o deploy passa. Um
+     apóstrofo novo num comentário e toda publicação reprova; ou pior, o passo
+     morre e o bot sobe sem ninguém conferir se ligou -- que já aconteceu neste
+     repositório, com doze horas fora do ar e todos os deploys em verde.
+
+     E de novo: EXECUTADO, não conferido de olho. Foi ter conferido de olho que
+     deixou a vigia morrer calada. */
+  {
+    const dep = readFileSync(new URL("../.github/workflows/deploy-bot.yml", import.meta.url), "utf8");
+    const codigoDep = semComentariosDeGrade(dep);
+
+    verdade("o deploy não guarda código entre aspas simples do shell",
+      !/veredito='/.test(codigoDep));
+    verdade("ele usa heredoc, que não interpreta nada", /<<'PY'/.test(codigoDep));
+
+    const linhas = dep.split("\n");
+    const i = linhas.findIndex((l) => /name: Esperar a maquina ligar de verdade/.test(l));
+    verdade("o passo que espera a máquina continua existindo", i > -1);
+    const passoDep = linhas.slice(i).join("\n");
+    const corpoDep = passoDep.slice(passoDep.indexOf("run: |") + 6)
+      .split("\n").map((l) => l.replace(/^ {10}/, ""))
+      .join("\n").split("\n      - name:")[0];
+
+    /* `sleep` de 5s vezes 30 tentativas não cabe num teste: o caso "ainda não"
+       é substituído por um sleep que não dorme. O que está sendo testado é o
+       VEREDITO, não a paciência. */
+    writeFileSync(join(base, "deploy.sh"), `sleep() { :; }\n${corpoDep}`);
+    const rodarDep = (jsonDoFly) => {
+      writeFileSync(join(base, "bin", "flyctl"),
+        `#!/bin/sh\ncat <<'EOF'\n${jsonDoFly}\nEOF\n`);
+      chmodSync(join(base, "bin", "flyctl"), 0o755);
+      try {
+        return { saida: execFileSync("bash", ["deploy.sh"], {
+          cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, PATH: `${join(base, "bin")}:${process.env.PATH}`,
+                 FLY_API_TOKEN: "fake" },
+        }), codigo: 0 };
+      } catch (e) {
+        return { saida: String(e.stdout || "") + String(e.stderr || ""), codigo: e.status };
+      }
+    };
+
+    {
+      const r = rodarDep('[{"state":"started"}]');
+      ok("máquina de pé aprova o deploy", r.codigo, 0);
+      verdade("e diz isso no log", /TODAS DE PE/.test(r.saida));
+    }
+    {
+      /* O caso que importa: máquina que nunca liga TEM que reprovar. Este
+         passo existe porque um check que não pode falhar é pior que check
+         nenhum -- ele ensina a confiar nele. */
+      const r = rodarDep('[{"state":"replacing"}]');
+      verdade("máquina que não liga REPROVA o deploy", r.codigo !== 0);
+      verdade("e o erro diz que o bot pode estar fora", /pode estar fora do ar/.test(r.saida));
+    }
+    {
+      /* Nenhuma máquina não é sucesso: seria o bot inexistente passando. */
+      const r = rodarDep("[]");
+      verdade("app sem máquina nenhuma reprova", r.codigo !== 0);
+      verdade("e é nomeado como tal", /NENHUMA MAQUINA/.test(r.saida));
+    }
+    {
+      const r = rodarDep("isto nao e json");
+      verdade("resposta corrompida reprova, em vez de passar", r.codigo !== 0);
+      verdade("e não é confundida com sucesso", !/TODAS DE PE/.test(r.saida));
+    }
+  }
+}
+
+/* O BACKUP, EXECUTADO — E O QUE ELE NÃO PODE LEVAR JUNTO.
+ *
+ * Não havia cópia de nada. O `supabase/migracoes/` guarda o esquema, e nem
+ * ele inteiro; os dados existiam num lugar só. Quem são os clientes, o que
+ * cada um assinou, os comandos que o dono escreveu: um `delete` errado e
+ * acabava.
+ *
+ * Dois perigos moram neste arquivo, e os dois são piores que não ter backup:
+ *
+ *   1. ESTE REPOSITÓRIO É PÚBLICO. Artefato de Actions aqui é baixável por
+ *      quem tiver o link. Um pacote em texto puro trocaria "sem backup" por
+ *      "vazamento diário de dado de cliente".
+ *   2. Conversa de gente não é configuração. A página de privacidade promete
+ *      prazo de guarda e o bot apaga o que passa dele. Um backup de 90 dias
+ *      com as falas dentro esticaria aquele prazo por fora, sem ninguém ter
+ *      combinado.
+ *
+ * Por isso a lista é BRANCA: tabela nova nasce de fora, e alguém decide que
+ * ela entra. Uma lista preta faria toda tabela nova de conversa entrar
+ * sozinha. */
+{
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync: ler } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const yml = readFileSync(new URL("../.github/workflows/backup-do-banco.yml", import.meta.url), "utf8");
+  const codigo = semComentariosDeGrade(yml);
+
+  verdade("o backup roda sozinho", /^\s*schedule:/m.test(yml));
+  verdade("com um cron de verdade", /cron:\s*"[-\d*/, ]+"/.test(yml));
+
+  /* Cifrado ANTES de virar artefato -- e a ordem é o produto inteiro. */
+  const ondeCifra = codigo.indexOf("--symmetric");
+  const ondeSobe = codigo.indexOf("upload-artifact");
+  verdade("o pacote é cifrado", ondeCifra > -1);
+  verdade("o artefato é subido", ondeSobe > -1);
+  verdade("e ele é cifrado ANTES de subir", ondeCifra > -1 && ondeSobe > -1 && ondeCifra < ondeSobe);
+  verdade("o que sobe é o arquivo CIFRADO, e não o tar puro",
+    /path:\s*\/tmp\/backup\.tar\.gz\.gpg/.test(codigo));
+  /* O texto puro tem que sair do disco do runner no mesmo passo. */
+  verdade("o texto puro é destruído depois de cifrar", /shred -u \/tmp\/backup\.tar\.gz\b/.test(codigo));
+  verdade("e a frase-secreta também", /shred -u \/tmp\/frase/.test(codigo));
+
+  /* A armadilha do apóstrofo, pela terceira vez neste repositório. */
+  verdade("o backup não passa código por aspas simples do shell",
+    !/python3 -c '/.test(codigo));
+  verdade("ele usa heredoc", /<<'PY'/.test(codigo));
+
+  /* Sem os segredos ele tem que REPROVAR, e não passar verde sem fazer nada:
+     backup que falha calado é a pior das três opções. */
+  verdade("sem segredo, reprova em vez de passar", /::error::Sem backup nenhum/.test(codigo));
+
+  /* ---- e agora o passo de cópia, EXECUTADO contra um Supabase falso ---- */
+  const linhas = yml.split("\n");
+  const i = linhas.findIndex((l) => /name: Buscar as tabelas/.test(l));
+  verdade("o passo que busca as tabelas existe", i > -1);
+  const passo = linhas.slice(i).join("\n");
+  const corpo = passo.slice(passo.indexOf("run: |") + 6)
+    .split("\n").map((l) => l.replace(/^ {10}/, ""))
+    .join("\n").split("\n      - name:")[0];
+
+  const base = mkdtempSync(join(tmpdir(), "backup-"));
+  writeFileSync(join(base, "passo.sh"), corpo);
+
+  /* Um PostgREST de mentira: devolve duas linhas na primeira página e nada na
+     segunda, para qualquer tabela. Assim o teste exercita a paginação de
+     verdade em vez de supor que ela funciona.
+
+     E ele roda NOUTRO PROCESSO, o que não é firula.
+
+     A primeira versão subia o servidor aqui dentro e chamava o passo com
+     `execFileSync`. Trava: `execFileSync` bloqueia o event loop do Node, então
+     o servidor não conseguia atender ENQUANTO o teste esperava a resposta
+     dele. Os dois ficavam se esperando até o timeout, e o sintoma -- um
+     TimeoutError dentro do urllib -- tinha cara de rede bloqueada, que me fez
+     procurar proxy por um bom tempo. O defeito era o abraço entre os dois. */
+  const { spawn } = await import("node:child_process");
+  const registro = join(base, "pedidos.txt");
+  writeFileSync(join(base, "falso.js"), `
+    const { createServer } = require("http");
+    const { appendFileSync } = require("fs");
+    createServer((req, res) => {
+      appendFileSync(${JSON.stringify(registro)}, req.url + "\\n");
+      const u = new URL(req.url, "http://x");
+      const offset = Number(u.searchParams.get("offset") || 0);
+      const limite = Number(u.searchParams.get("limit") || 1000);
+      res.setHeader("content-type", "application/json");
+      /* Uma tabela ENCHE a primeira página. Sem isso o laço vê página curta
+         logo de cara, para, e a paginação nunca é exercitada -- o teste
+         afirmaria que ela funciona sem nunca ter pedido uma segunda página. */
+      const cheia = req.url.includes("/cyron_servidor?");
+      if (cheia && offset === 0) {
+        const muitas = [];
+        for (let i = 0; i < limite; i++) muitas.push({ id: i, segredo: "nao vaze" });
+        return res.end(JSON.stringify(muitas));
+      }
+      res.end(JSON.stringify(offset === 0 ? [{ id: 1, segredo: "nao vaze" }, { id: 2 }] : []));
+    }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });
+  `);
+  const falso = spawn("node", [join(base, "falso.js")], { stdio: ["ignore", "pipe", "ignore"] });
+  const porta = await new Promise((pronto, falhar) => {
+    const desistir = setTimeout(() => falhar(new Error("o servidor falso não subiu")), 10000);
+    falso.stdout.once("data", (d) => { clearTimeout(desistir); pronto(String(d).trim()); });
+  });
+
+  /* Sujeira PLANTADA no destino antes de rodar. Se o passo não limpar, ela
+     entra no pacote passando por dado de hoje -- backup que mistura duas datas
+     é pior que backup nenhum, porque ninguém desconfia dele. */
+  mkdirSync(join(base, "saida"), { recursive: true });
+  writeFileSync(join(base, "saida", "sobra_de_ontem.json"), '[{"velho":true}]');
+
+  let saida = "", codigoDeSaida = 0;
+  try {
+    saida = execFileSync("bash", ["passo.sh"], {
+      cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      /* Sem proxy: o `urllib` do Python obedece http_proxy, e num ambiente que
+         tem um configurado ele mandaria a chamada para 127.0.0.1 PELO PROXY --
+         que pendura. O runner do GitHub não tem proxy nenhum; isto é só para o
+         teste rodar igual em qualquer máquina. */
+      env: { ...process.env, SB_URL: `http://127.0.0.1:${porta}`, SB_KEY: "chave-falsa",
+             no_proxy: "127.0.0.1,localhost", NO_PROXY: "127.0.0.1,localhost",
+             http_proxy: "", HTTP_PROXY: "", https_proxy: "", HTTPS_PROXY: "",
+             /* Pasta própria: apontar para a /tmp/backup de produção fazia o
+                resultado depender do que uma execução ANTERIOR tinha deixado
+                lá -- verde ou vermelho por causa de sobra, que é o oposto de
+                um teste. */
+             DESTINO: join(base, "saida") },
+    });
+  } catch (e) {
+    saida = String(e.stdout || "") + String(e.stderr || "");
+    codigoDeSaida = e.status;
+  }
+  falso.kill();
+  const pedidos = ler(registro, "utf8").split("\n").filter(Boolean);
+
+  ok("o passo de cópia roda de verdade, sem erro de shell", codigoDeSaida, 0);
+  verdade("e ele copia alguma coisa", /tabela\(s\) copiadas/.test(saida));
+  /* A página cheia tem que levar a um segundo pedido, com offset no tamanho
+     da página. Sem isto, uma tabela com mais de mil linhas entraria no backup
+     PELA METADE, e o pacote sairia verde do mesmo tamanho. */
+  verdade("a paginação é real: pede a segunda página",
+    pedidos.some((u) => /cyron_servidor\?.*offset=1000\b/.test(u)));
+  verdade("e junta as duas páginas numa tabela só", (() => {
+    /* Defensivo de propósito: se cyron_servidor sumir da lista branca, este
+       teste tem que REPROVAR com nome, e não explodir e derrubar a bateria
+       inteira -- foi o que aconteceu na primeira sabotagem. */
+    try { return JSON.parse(ler(join(base, "saida", "cyron_servidor.json"), "utf8")).length === 1000; }
+    catch { return false; }
+  })());
+
+  /* A limpeza do destino, provada: a sobra plantada não pode ter sobrevivido. */
+  verdade("sobra de execução anterior NÃO entra no pacote",
+    !readdirSync(join(base, "saida")).includes("sobra_de_ontem.json"));
+
+  /* O LOG NÃO PODE CARREGAR CONTEÚDO. O log de um repositório público é
+     público -- é o mesmo motivo pelo qual a vigia nunca pode ler `fly logs`. */
+  verdade("o log diz nomes e contagens, não conteúdo", !/nao vaze/.test(saida));
+  verdade("mas diz as contagens", /2 linha\(s\)/.test(saida));
+
+  /* O QUE FOI PARADO NO DISCO: a prova de que a lista branca vale. */
+  const copiadas = readdirSync(join(base, "saida")).map((f) => f.replace(/\.json$/, ""));
+  verdade("o cliente pagante entra", copiadas.includes("cyron_servidor"));
+  verdade("os ajustes vivos entram", copiadas.includes("cyron_ajuste"));
+  verdade("os comandos escritos pelo dono entram", copiadas.includes("cyron_comando"));
+
+  /* Estas são as que NÃO podem entrar, cada uma pelo seu motivo. */
+  for (const proibida of ["discord_fala_espelhada", "discord_msg_traducao"]) {
+    verdade(`conversa de gente NÃO entra no backup (${proibida})`, !copiadas.includes(proibida));
+  }
+  verdade("cache não entra: refaz-se sozinho", !copiadas.includes("discord_traducao_cache"));
+  for (const passageira of ["login_ponte", "discord_link_codes", "discord_sessions"]) {
+    verdade(`credencial de passagem não entra (${passageira})`, !copiadas.includes(passageira));
+  }
+
+  /* E a lista é branca de verdade, escrita no arquivo -- não uma consulta que
+     pega tudo e filtra depois. Filtro esquecido deixa passar; lista branca
+     esquecida deixa de fora, que é o lado seguro de errar. */
+  verdade("a lista de tabelas é branca, escrita no arquivo", /TABELAS = \[/.test(codigo));
+  verdade("e não existe um 'pega tudo' escondido", !/information_schema|pg_tables/.test(codigo));
 }
 
 let resumiu = false;
