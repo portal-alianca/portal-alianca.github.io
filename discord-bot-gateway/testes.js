@@ -6342,7 +6342,8 @@ function conferirCartao(onde, embed, componentes = []) {
       "MAX_IMAGENS_LEMBRADAS", "conferirVisao"]);
     /* `let visaoDoDono` e o cache não saem pelo carregar: moram no global. */
     globalThis.textoDasImagens = new Map();
-    const { explicarImagem } = carregar(["falhaDeLeitura", "lerImagemDaMensagem", "explicarImagem"]);
+    const { explicarImagem, paragrafosDaLeitura, traduzirParagrafos } = carregar(["textoTorto", "falhaDeLeitura", "lerImagemDaMensagem",
+      "agruparEmParagrafos", "paragrafosDaLeitura", "traduzirParagrafos", "explicarImagem"]);
 
     /* ---- de onde vem a chave ---- */
     {
@@ -6418,6 +6419,46 @@ function conferirCartao(onde, embed, componentes = []) {
       verdade("e o aviso sai no idioma de quem clicou", r.title.startsWith("<ar>"));
     }
     globalThis.visaoDoDono = visao;
+
+    /* ---- o 📝 e o 🖼️ pagam a tradução UMA vez ----
+       A memória de traduções guarda pedaço por pedaço. O 📝 traduzia o texto
+       inteiro num bloco e o 🖼️, depois, parágrafo por parágrafo: pedaços
+       diferentes, e a mesma imagem saía paga duas vezes. */
+    {
+      const caixa = (x0, y0, x1, y1) => [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+      const comPosicao = { readResult: { blocks: [{ lines: [
+        { text: "O Governador mais Forte", boundingPolygon: caixa(24, 158, 343, 186) },
+        { text: "Cada Reino pode competir", boundingPolygon: caixa(24, 192, 368, 210) },
+        { text: "pela glória.", boundingPolygon: caixa(24, 212, 200, 230) },
+        { text: "20:00", boundingPolygon: caixa(24, 400, 80, 418) },
+      ] }] } };
+      const pedidos = [];
+      const antes = globalThis.traduzirLongo;
+      globalThis.traduzirLongo = async (t, idioma) => { pedidos.push(t); return `[${idioma}] ${t}`; };
+      globalThis.textoDasImagens = new Map();
+      const doPrint = { attachments: new Map([["77", { id: "77", name: "g.png", contentType: "image/png", url: "https://cdn/g.png" }]]) };
+      const r = await explicarImagem(doPrint, "en", "g", azure(200, comPosicao));
+      const doTexto = new Set(pedidos);
+      verdade("o 📝 traduz por parágrafo (as duas linhas da frase juntas)",
+        doTexto.has("Cada Reino pode competir pela glória.") && doTexto.has("O Governador mais Forte"));
+      verdade("hora sem letra não vai ao tradutor, mas aparece no texto",
+        !doTexto.has("20:00") && /20:00/.test(r.description));
+      verdade("e a resposta traz as traduções", /\[en\] Cada Reino pode competir pela glória\./.test(r.description));
+
+      /* O 🖼️ pede exatamente os pedaços que o cliqueVerNaImagem pede. */
+      pedidos.length = 0;
+      const leituraGuardada = globalThis.textoDasImagens.get("77");
+      await traduzirParagrafos(paragrafosDaLeitura(leituraGuardada).map((q) => q.texto), "en", {});
+      verdade(`o 🖼️ só pede pedaços que o 📝 já traduziu — achados na memória, sem pagar (${pedidos.length})`,
+        pedidos.length > 0 && pedidos.every((t) => doTexto.has(t)));
+      globalThis.traduzirLongo = antes;
+    }
+    {
+      const clique = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+      const ver = clique.slice(clique.indexOf("async function cliqueVerNaImagem"), clique.indexOf("async function cliqueTraduzirMsg"));
+      verdade("o 🖼️ escolhe os parágrafos pela MESMA função do 📝",
+        /const paragrafos = paragrafosDaLeitura\(leitura\)/.test(ver) && /traduzirParagrafos\(paragrafos\.map/.test(ver));
+    }
     {
       globalThis.textoDasImagens = new Map();
       const f = azure(200, leitura);
