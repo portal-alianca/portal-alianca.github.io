@@ -10,6 +10,10 @@ WORKDIR /app
 # `ci` instala EXATAMENTE o que está no lockfile, e recusa se ele discordar do
 # package.json. É a linha que faz os testes da esteira valerem para o processo
 # que realmente sobe.
+# fontconfig para a imagem traduzida (botao 🖼️). A FONTE vem com o bot, em
+# fontes/; isto e' so' a configuracao que o desenhista le para achar arquivo
+# de fonte. Sem ela, o texto desenhado pode sair vazio sem erro nenhum.
+RUN apk add --no-cache fontconfig
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
