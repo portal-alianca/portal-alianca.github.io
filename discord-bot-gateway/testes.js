@@ -1040,7 +1040,11 @@ function conferirCartao(onde, embed, componentes = []) {
     globalThis.clienteDoWebhook = (url) => ({
       send: async (o) => {
         const id = `m${++seq}`;
-        mensagens.set(id, { canal: url, embed: o.embeds[0], mencoes: o.allowedMentions?.users || [] });
+        /* `embeds?.` porque agora existe mensagem SEM cartão (o vídeo). O
+           brinquedo antigo lia `o.embeds[0]` e estouraria ali — dentro de um
+           .catch, calado, e o teste do vídeo passaria sem vídeo nenhum. */
+        mensagens.set(id, { canal: url, embed: o.embeds?.[0], content: o.content,
+                            mencoes: o.allowedMentions?.users || [] });
         salas.get(url).lastMessageId = id;
         return { id };
       },
@@ -1108,6 +1112,50 @@ function conferirCartao(onde, embed, componentes = []) {
       /I'm about to go in\nI was tweaking my translation system\n😅/.test(emIngles.embed.description));
     verdade("a assinatura aparece uma vez só",
       emIngles.embed.description.split("discord.com/users/").length - 1 === 1);
+  }
+
+  /* O VÍDEO NUMA MENSAGEM PRÓPRIA, SEM CARTÃO.
+   *
+   * A primeira versão pendurava a URL no content da mesma mensagem do cartão,
+   * e tinha um teste de regex conferindo exatamente isso — verde. No aparelho,
+   * o Discord não desdobrou: mensagem com embed próprio não ganha prévia de
+   * link. O teste conferia que o código fazia o que eu tinha escrito, não que
+   * o que eu escrevi funcionava.
+   *
+   * Este olha as MENSAGENS que saem, não as linhas do código: numa sala, um
+   * cartão e depois uma mensagem que é só a URL, sem embed — o formato de uma
+   * fala de gente, que é o que o Discord desdobra (visto no print: a fala
+   * original do Fernando com player, a cópia com cartão sem). */
+  {
+    ultimaFalaDaSala.clear();
+    const mundo = montarMundo();
+    const url = "https://youtu.be/3h-fP4zSH40";
+    await falar(mundo, `Vou testar aqui ${url}`, { content: `Vou testar aqui ${url}` });
+
+    const naSala = (sala) => [...mundo.mensagens.entries()]
+      .filter(([, m]) => m.canal === sala).map(([id, m]) => ({ id, ...m }));
+    for (const sala of ["en", "es"]) {
+      const saiu = naSala(sala);
+      ok(`em ${sala}: cartão e vídeo, duas mensagens`, saiu.length, 2);
+      const [cartao, video] = saiu;
+      verdade(`em ${sala}: primeiro o cartão, com a frase`, !!cartao?.embed
+        && /Vou testar aqui/.test(cartao.embed.description));
+      /* O coração do conserto: SEM embed. Com embed, o Discord não desdobra. */
+      verdade(`em ${sala}: o vídeo vem numa mensagem SEM cartão`, video && !video.embed);
+      ok(`em ${sala}: e ela é só a URL, como uma fala de gente`, video?.content, url);
+      /* O cartão sem a URL no content: foi assim que a primeira versão ficou,
+         com o link azul pelado em cima do cartão e nada de player. */
+      verdade(`em ${sala}: o cartão não carrega a URL no content`,
+        !String(cartao?.content || "").includes(url));
+    }
+
+    /* A próxima fala não pode emendar no cartão de cima: entre os dois agora
+       há um vídeo, e o texto novo pularia para cima dele. */
+    await falar(mundo, "gostaram?");
+    const depois = naSala("en");
+    ok("a fala seguinte abre cartão novo, embaixo do vídeo", depois.length, 3);
+    verdade("e o cartão do vídeo continua só com a frase dele",
+      !/gostaram/.test(depois[0].embed.description));
   }
 
   /* Figurinha abre cartão novo pelo mesmo motivo do anexo: a imagem vive presa
@@ -6264,10 +6312,18 @@ function conferirCartao(onde, embed, componentes = []) {
      trocada no id do vídeo derruba o player. */
   verdade("o vídeo é lido do texto original, não do traduzido",
     /videoQueODiscordToca\(msg\.content \|\| ""\)/.test(esp));
-  /* O ponto inteiro: no content, ao lado das menções, que é onde o Discord
-     trabalha. Dentro do embed não nasce player nenhum. */
-  verdade("e viaja no content, junto das menções",
-    /content: \[chamados, video\]\.filter\(Boolean\)/.test(esp));
+  /* AQUI MORAVA O TESTE QUE APROVOU A VERSÃO ERRADA.
+
+     Ele exigia `content: [chamados, video]` — a URL no content da mensagem do
+     cartão. O código fazia isso, o teste ficou verde, e no aparelho não nasceu
+     player nenhum: o Discord não desdobra link numa mensagem que já traz
+     embed. Um teste que confere a linha que eu escrevi só prova que eu escrevi
+     a linha.
+
+     A prova de verdade está no teste do Discord de brinquedo, lá em cima, que
+     olha as MENSAGENS que saem. Aqui fica só a trava contra a volta do erro. */
+  verdade("o vídeo NÃO volta para o content da mensagem do cartão",
+    !/content: \[chamados, video\]/.test(esp));
   /* Sem isto a mesma miniatura aparece duas vezes: uma no cartão, morta, e
      outra no player que o Discord desenha embaixo. */
   verdade("e a prévia sai do cartão para não duplicar a foto",

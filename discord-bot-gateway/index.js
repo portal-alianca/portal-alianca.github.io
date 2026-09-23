@@ -2588,12 +2588,13 @@ function figurinhaDe(msg) {
    Nao da' pra um bot MONTAR um player: o campo `video` de um embed feito por
    bot e' ignorado pelo Discord, e nao ha' volta por ai'. Quem monta o player
    e' o proprio Discord, quando acha a URL solta no `content` e desdobra
-   sozinho -- e ele faz isso para webhook igual faz para gente.
+   sozinho -- e ele faz isso para webhook igual faz para gente, DESDE QUE a
+   mensagem nao traga embed proprio.
 
-   E' a MESMA forma do defeito das mencoes, algumas telas abaixo: dentro de um
-   embed o Discord nao toca sino, nao desdobra link, nao desenha previa. O
-   embed e' desenho; o `content` e' a parte viva da mensagem. Ali ja' viajam as
-   mencoes pelo mesmo motivo, e o video passa a viajar junto.
+   Essa condicao custou uma volta ao ar. A primeira versao pendurava a URL no
+   content da mesma mensagem do cartao, e o Discord nao desdobrou: mensagem com
+   embed nao ganha previa de link. Por isso o video vai numa mensagem SEPARADA,
+   so' com a URL -- que e' o formato de uma fala de gente.
 
    A lista e' CURTA e fechada de proposito. Ela nao e' "links de video" -- e'
    "o que o Discord sabe tocar dentro dele". Mandar para o content um link que
@@ -2770,8 +2771,8 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      fala continua sendo o cartao, que e' o desenho do produto. */
   const chamados = [avisaTodos, ...marcados.map((id) => `<@${id}>`)].filter(Boolean).join(" ");
 
-  /* O video viaja no content junto com as mencoes, e pelo mesmo motivo: e' o
-     unico lugar da mensagem onde o Discord trabalha. Lido do texto ORIGINAL,
+  /* O video vai numa mensagem propria, logo depois do cartao (ver o envio,
+     mais abaixo, e o porque). Lido do texto ORIGINAL,
      nunca do traduzido -- tradutor mexe em URL, e uma letra trocada no id do
      video derruba o player. */
   const video = videoQueODiscordToca(msg.content || "");
@@ -3043,7 +3044,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         /* As mencoes vivem AQUI, e nao no embed: e' a unica parte da mensagem
            em que o Discord toca sino. Vazio vira undefined -- content vazio o
            Discord recusa. */
-        content: [chamados, video].filter(Boolean).join("\n") || undefined,
+        content: chamados || undefined,
         embeds: [montar(linhaNova, cabecalho)],
         /* Cargo continua barrado: os cargos daqui sao os das salas por idioma,
            e repetir um cargo da sala de origem chamaria o publico errado.
@@ -3054,6 +3055,35 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], falas, cabecalho, traduzido: traduziuAqui });
         guardarFalas(posta.id, falas);
         lembrarFala(familia, destino.canal_id, posta.id, familiaId, servidorId);
+      }
+      /* O VIDEO VAI SOZINHO, NUMA MENSAGEM SEM CARTAO -- e a primeira versao
+         disto estava errada.
+
+         Ela mandava a URL no content da MESMA mensagem do cartao, apostando
+         que o Discord desdobraria ali como desdobra para gente. Nao desdobra:
+         mensagem que ja' traz embed proprio nao ganha previa de link. Medido
+         no aparelho, com os dois lados na tela -- a fala original do Fernando
+         na sala em ingles com player, a copia na sala em portugues com o link
+         azul pelado em cima do cartao, e o cartao sem miniatura, porque eu a
+         tinha tirado contando com o player. Ficou pior que antes.
+
+         Mensagem SEM embed e' exatamente o que uma pessoa manda, e ai' o
+         Discord monta o player. Mesmo webhook, mesmo nome e foto: para quem
+         le e' a mesma pessoa, com o video logo abaixo da fala -- que e' como
+         aparece no original.
+
+         Depois do cartao, e nunca antes: o player embaixo da frase e' a
+         ordem que o leitor espera. E a proxima fala nao emenda no cartao por
+         cima do video: emendaNestaSala exige que o cartao seja o
+         lastMessageId da sala, e agora nao e' mais. */
+      if (video && posta?.id) {
+        await webhook.send({
+          username: nome,
+          avatarURL: foto,
+          content: video,
+          allowedMentions: { parse: [] },
+        }).catch((e) => console.error("espelho: nao consegui mandar o video em", destino.idioma,
+          e?.message || e));
       }
     } catch (e) {
       console.error("espelho: nao consegui postar em", destino.idioma, e?.message || e);
