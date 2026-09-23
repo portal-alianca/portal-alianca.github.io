@@ -11903,6 +11903,13 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isButton() && inter.customId === "como-funciona") {
       return await comandoAjuda(inter);
     }
+    /* O 📝 embaixo de um print. E' um BOTAO -- a primeira versao desta linha
+       morava dentro do bloco dos menus de selecao, logo abaixo, onde botao
+       nenhum entra. O clique chegava, ninguem respondia, e o Discord mostrava
+       "CYRON nao respondeu a tempo" no primeiro teste de verdade. */
+    if (inter.isButton() && inter.customId === "img:ler") {
+      return await cliqueLerImagem(inter);
+    }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:palavras") return await salvarPalavras(inter);
@@ -11918,7 +11925,6 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
-      if (inter.customId === "img:ler") return await cliqueLerImagem(inter);
       if (inter.customId.startsWith("traduzir-fixo:")) return await cliqueTraduzirFixo(inter);
       return;
     }
