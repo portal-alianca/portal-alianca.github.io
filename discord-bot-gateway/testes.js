@@ -6536,9 +6536,9 @@ function conferirCartao(onde, embed, componentes = []) {
   const FONTE = new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url).pathname;
   const d = carregar(["textoTorto", "DESENHA_EM", "desenhaEm", "agruparEmParagrafos", "MAX_PIXELS_DESENHO",
     "desenharTraducao", "naFilaDeDesenho", "linhasDaLeitura", "ROTULO_VER_NA_IMAGEM", "botaoVerNaImagem",
-    "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem"]);
+    "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem", "MAX_NUMEROS_NA_IMAGEM", "legendaDosNumeros"]);
 
-  /* A função devolve { imagem, desenhados, pulados }; a maioria dos testes só
+  /* A função devolve { imagem, desenhados, pulados, legenda }; a maioria dos testes só
      quer a imagem. */
   const desenhar = async (...a) => (await d.desenharTraducao(...a)).imagem;
 
@@ -6668,14 +6668,21 @@ function conferirCartao(onde, embed, componentes = []) {
 
     const base = await fazerImagem(300, 120);
     const r = await d.desenharTraducao(base, [{ texto: "Olá mundo", caixa: [20, 20, 180, 44], torta: true }], ["Hello world"], sharp, FONTE);
-    verdade("texto torto não é redesenhado: fica o original", r.imagem === null && r.pulados === 1);
+    verdade("texto torto não é redesenhado", r.desenhados === 0 && r.pulados === 1);
+    /* O bot é de qualquer servidor, não só de jogo: a imagem NÃO é recusada.
+       O trecho fica intacto e ganha um número; a tradução vai na legenda. */
+    verdade("mas a imagem volta mesmo assim", Buffer.isBuffer(r.imagem));
+    ok("com a tradução na legenda", r.legenda, ["Hello world"]);
+    verdade("o texto original ficou intacto (branco)", perto(await pixel(r.imagem, 120, 32), [255, 255, 255], 30));
+    verdade("e o número está no canto do trecho (círculo azul)", perto(await pixel(r.imagem, 20, 13), [88, 101, 242], 50));
 
     /* Texto em cima de DESENHO: nenhuma cor domina em volta. */
     const ruido = Buffer.alloc(300 * 120 * 3);
     for (let i = 0; i < ruido.length; i++) ruido[i] = Math.floor(Math.random() * 256);
     const arte = await sharp(ruido, { raw: { width: 300, height: 120, channels: 3 } }).png().toBuffer();
     const r2 = await d.desenharTraducao(arte, [{ texto: "Olá mundo", caixa: [20, 20, 180, 44] }], ["Hello world"], sharp, FONTE);
-    verdade("texto em cima de desenho não ganha retângulo liso", r2.imagem === null && r2.pulados === 1);
+    verdade("texto em cima de desenho não ganha retângulo liso", r2.desenhados === 0 && r2.pulados === 1);
+    verdade("ganha um número, e a imagem volta", Buffer.isBuffer(r2.imagem) && r2.legenda[0] === "Hello world");
 
     /* Dois textos encavalados: o segundo não pode apagar o primeiro. */
     const r3 = await d.desenharTraducao(base, [
@@ -6683,6 +6690,18 @@ function conferirCartao(onde, embed, componentes = []) {
       { texto: "Mais forte", caixa: [60, 26, 200, 46] },
     ], ["Hello world", "Stronger"], sharp, FONTE);
     verdade("o texto encavalado no já desenhado fica de fora", r3.desenhados === 1 && r3.pulados === 1);
+    ok("e vai para a legenda", r3.legenda, ["Stronger"]);
+
+    /* Vários trechos no mesmo canto: os números não podem nascer um em cima
+       do outro. E mais de 20 vira confete: o resto fica no 📝. */
+    const muitos = Array.from({ length: 25 }, (_, q) => ({ texto: `Olá ${q}`, caixa: [20, 20, 180, 44], torta: true }));
+    const r5 = await d.desenharTraducao(await fazerImagem(600, 400), muitos, muitos.map((_, q) => `Hi ${q}`), sharp, FONTE);
+    ok("no máximo 20 números na imagem", r5.legenda.length, d.MAX_NUMEROS_NA_IMAGEM);
+    verdade("mas conta todos os que ficaram de fora", r5.pulados === 25);
+    const azul = [];
+    for (let x = 0; x < 600; x += 2) { const c = await pixel(r5.imagem, x, 13); if (perto(c, [88, 101, 242], 50)) azul.push(x); }
+    /* Um círculo só teria azul numa faixa de ~20px; vinte lado a lado, bem mais. */
+    verdade(`os números andam para o lado em vez de empilhar (${azul.length} pontos azuis)`, azul.length > 60);
 
     /* Alargar não pode invadir o vizinho: foi assim que "Crescimento",
        "Jogadores de longo prazo" e "JUNTE-SE A NÓS" se atropelaram. */
@@ -6709,12 +6728,16 @@ function conferirCartao(onde, embed, componentes = []) {
     }
     ok("rótulo com vizinho do lado não alarga", fora, 0);
 
-    /* A resposta: mais pulado que desenhado é arte, e aí vale o texto. */
+    /* A resposta nunca recusa a imagem por ser "arte": o bot é universal. */
     const src = semComentarios(readFileSync(new URL("./index.js", import.meta.url), "utf8"));
-    verdade("imagem com mais trechos pulados que desenhados responde com o texto",
-      /if \(!r2\.imagem \|\| r2\.pulados > r2\.desenhados\)/.test(src) && /Essa imagem é arte, não tela de jogo/.test(src));
-    verdade("e quando manda a imagem, avisa quantos trechos ficaram como estavam",
-      /Deixei \$\{r2\.pulados\} trecho\(s\) como estavam/.test(src));
+    verdade("nenhuma resposta fala em tela de jogo", !/tela de jogo/.test(src));
+    ok("a legenda numera as traduções", d.legendaDosNumeros(["Hello", "Stronger  together"]), "**1.** Hello\n**2.** Stronger together");
+    ok("sem trecho numerado, sem legenda", d.legendaDosNumeros([]), undefined);
+    const enorme = d.legendaDosNumeros(Array.from({ length: 20 }, () => "x".repeat(400)));
+    verdade(`a legenda cabe nas 2000 letras do Discord (${enorme.length})`, enorme.length <= 2000 && enorme.endsWith("…"));
+    const clique = src.slice(src.indexOf("async function cliqueVerNaImagem"));
+    verdade("a imagem vai com a legenda dos números",
+      /content: legendaDosNumeros\(r2\.legenda\)/.test(clique.slice(0, clique.indexOf("async function cliqueTraduzirMsg"))));
   }
 
   /* ---- rótulo curto com tradução comprida ---- */

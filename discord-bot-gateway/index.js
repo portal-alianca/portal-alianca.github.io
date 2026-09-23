@@ -2926,6 +2926,8 @@ function naFilaDeDesenho(f) {
 /* Acima disto a imagem e' reduzida antes de desenhar: um print de celular tem
    ~2,5 milhoes de pixels, e o que passar muito disso e' foto, nao print. */
 const MAX_PIXELS_DESENHO = 3_000_000;
+/* Mais que isso vira confete; o resto continua no texto do 📝. */
+const MAX_NUMEROS_NA_IMAGEM = 20;
 /* E acima disto de memoria o botao recusa em vez de arriscar o processo. */
 const MEMORIA_PARA_DESENHAR = 185 * 1024 * 1024;
 
@@ -2970,7 +2972,8 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
   const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
 
   const camadas = [];
-  let desenhados = 0, pulados = 0;
+  let desenhados = 0;
+  const marcar = [];     // trechos que nao da' para redesenhar: ganham um numero
   const ocupadas = [];   // caixas ja' desenhadas, para ninguem atropelar ninguem
   const todas = paragrafos.map((p) => p.caixa.map((v) => Math.round(v * fator)));
   const cruza = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]))
@@ -2985,13 +2988,13 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
        muito melhor que um caixote preto por cima do desenho -- que foi o que
        o primeiro banner de verdade mostrou. Cada `pulados++` abaixo e' um
        caso daquele banner. */
-    if (paragrafos[k].torta) { pulados++; continue; }
     const [a0, b0, a1, b1] = todas[k];
+    if (paragrafos[k].torta) { marcar.push({ x: a0, y: b0, texto: novo }); continue; }
     let x0 = Math.max(0, a0), x1 = Math.min(W - 1, a1);
     const y0 = Math.max(0, b0), y1 = Math.min(H - 1, b1);
     if (x1 - x0 < 8 || y1 - y0 < 6) continue;
     /* Encavalado em algo ja' desenhado: desenhar por cima apagaria o vizinho. */
-    if (ocupadas.some((o) => cruza(o, [x0, y0, x1, y1]) > area([x0, y0, x1, y1]) * 0.2)) { pulados++; continue; }
+    if (ocupadas.some((o) => cruza(o, [x0, y0, x1, y1]) > area([x0, y0, x1, y1]) * 0.2)) { marcar.push({ x: x0, y: y0, texto: novo }); continue; }
 
     /* Fundo: a cor mais comum numa faixa fina FORA do texto, nos quatro
        lados. O que encosta num lado so' (icone, margem) perde a votacao. */
@@ -3009,10 +3012,10 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
     }
     const venc = [...votos.values()].sort((p, q) => q.n - p.n)[0];
     /* Texto em cima de DESENHO: nenhuma cor domina a borda. Retangulo liso
-       ali fica pior que o original. Em tela de jogo (fundo liso) a cor
-       vencedora passa folgada de metade; no banner, nem de um quarto. */
+       ali fica pior que o original. Em fundo liso (print, cartaz, documento)
+       a cor vencedora passa folgada de metade; no banner, nem de um quarto. */
     const dominio = venc.n / Math.max(1, amostras);
-    if (dominio < 0.3) { pulados++; continue; }
+    if (dominio < 0.3) { marcar.push({ x: x0, y: y0, texto: novo }); continue; }
     const fundo = venc.s.map((t) => Math.round(t / venc.n));
 
     /* Rotulo de UMA linha cuja traducao e' mais comprida ("Em breve" ->
@@ -3063,10 +3066,40 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
       top: y0 + Math.max(0, Math.floor((h - forma.info.height) / 2)) });
     desenhados++;
   }
-  /* Quantos entraram e quantos ficaram de fora: quem chama decide se a
-     imagem vale a pena ou se o texto do 📝 serve melhor. */
-  if (!desenhados) return { imagem: null, desenhados, pulados };
-  return { imagem: await img.composite(camadas).jpeg({ quality: 86 }).toBuffer(), desenhados, pulados };
+  /* O QUE NAO DA' PARA REDESENHAR GANHA UM NUMERO. O bot serve qualquer
+     servidor: meme, banner, cartaz, arte -- nao so' print de jogo. Texto
+     inclinado ou em cima de desenho fica intacto, com um circulo numerado no
+     canto, e a traducao vai na legenda da mensagem ("1. ..."). Assim nenhuma
+     imagem e' recusada e nenhuma e' estragada. */
+  const legenda = [];
+  const r = Math.max(10, Math.min(22, Math.round(Math.min(W, H) * 0.025)));
+  const pinos = [];
+  for (const m of marcar.slice(0, MAX_NUMEROS_NA_IMAGEM)) {
+    let cx = Math.min(W - r, Math.max(r, m.x)), cy = Math.min(H - r, Math.max(r, m.y));
+    /* Dois numeros no mesmo canto: o segundo anda para o lado. */
+    for (let t = 0; t < 40 && pinos.some((q) => Math.hypot(q[0] - cx, q[1] - cy) < 2 * r + 2); t++) {
+      cx += 2 * r + 2;
+      if (cx > W - r) { cx = r; cy = Math.min(H - r, cy + 2 * r + 2); }
+    }
+    pinos.push([cx, cy]);
+    const n = legenda.push(m.texto);
+    const d = 2 * r;
+    camadas.push({ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}">` +
+      `<circle cx="${r}" cy="${r}" r="${r - 1}" fill="#5865F2" stroke="#ffffff" stroke-width="2"/></svg>`),
+      left: Math.round(cx - r), top: Math.round(cy - r) });
+    const forma = await sharp({ text: { text: String(n), font: "DejaVu Sans Bold", fontfile,
+      width: Math.round(r * 1.3), height: Math.round(r * 1.1), rgba: true } })
+      .extractChannel(3).raw().toBuffer({ resolveWithObject: true });
+    const tinta = await sharp({ create: { width: forma.info.width, height: forma.info.height, channels: 3,
+      background: { r: 255, g: 255, b: 255 } } })
+      .joinChannel(forma.data, { raw: { width: forma.info.width, height: forma.info.height, channels: 1 } })
+      .png().toBuffer();
+    camadas.push({ input: tinta, left: Math.max(0, Math.round(cx - forma.info.width / 2)),
+      top: Math.max(0, Math.round(cy - forma.info.height / 2)) });
+  }
+  const pulados = marcar.length;
+  if (!desenhados && !legenda.length) return { imagem: null, desenhados, pulados, legenda };
+  return { imagem: await img.composite(camadas).jpeg({ quality: 86 }).toBuffer(), desenhados, pulados, legenda };
 }
 
 function midiaDeLink(msg) {
@@ -11335,6 +11368,19 @@ async function traduzirParagrafos(textos, idioma, motor) {
   return fora;
 }
 
+/* A legenda dos circulos numerados, dentro do teto de 2000 letras do
+   Discord. O que nao coube tem o texto inteiro no 📝. */
+function legendaDosNumeros(legenda) {
+  if (!legenda?.length) return undefined;
+  let fora = "";
+  for (let n = 0; n < legenda.length; n++) {
+    const linha = `**${n + 1}.** ${String(legenda[n]).replace(/\s+/g, " ").slice(0, 400)}\n`;
+    if (fora.length + linha.length > 1900) { fora += "…"; break; }
+    fora += linha;
+  }
+  return fora.trim();
+}
+
 async function cliqueVerNaImagem(inter, buscar = fetch) {
   await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
@@ -11373,22 +11419,11 @@ async function cliqueVerNaImagem(inter, buscar = fetch) {
     if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
     const bytes = Buffer.from(await r.arrayBuffer());
     const r2 = await naFilaDeDesenho(() => desenharTraducao(bytes, paragrafos, traducoes, sharp));
-    /* Mais trechos pulados que desenhados e' arte, nao tela de jogo: texto
-       inclinado, em pincel, em cima de desenho. Uma imagem meio traduzida ali
-       confunde mais que ajuda -- o texto do 📝 serve melhor. */
-    if (!r2.imagem && !r2.pulados) {
+    if (!r2.imagem) {
       return aviso({ title: `🌐 Já está em ${nomeDoIdioma(idioma)}`, description: "O texto desta imagem já está no seu idioma." });
     }
-    if (!r2.imagem || r2.pulados > r2.desenhados) {
-      return aviso({ title: "🎨 Essa imagem é arte, não tela de jogo",
-        description: "O texto dela é inclinado ou fica em cima do desenho, e redesenhar estragaria a imagem. " +
-          "O texto traduzido do 📝 serve melhor aqui." });
-    }
-    const nota = r2.pulados
-      ? (await traduzirEmbed({ description: `Deixei ${r2.pulados} trecho(s) como estavam: texto inclinado ou em cima do desenho.` }, idioma, motor)).description
-      : undefined;
-    return inter.editReply({ content: nota, embeds: [], components: [],
-      files: [{ attachment: r2.imagem, name: "traduzido.jpg" }] });
+    return inter.editReply({ content: legendaDosNumeros(r2.legenda), embeds: [], components: [],
+      allowedMentions: { parse: [] }, files: [{ attachment: r2.imagem, name: "traduzido.jpg" }] });
   } catch (e) {
     console.error("imagem: nao consegui desenhar a traducao:", e?.message || e);
     return aviso({ title: "❌ Não deu", description: "Não consegui montar a imagem agora. O texto do 📝 continua funcionando." });
