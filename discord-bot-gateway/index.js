@@ -1751,18 +1751,51 @@ const MAX_ANEXO = 8 * 1024 * 1024;
 
    Reenviando os bytes, cada sala ganha um anexo proprio, hospedado pelo
    Discord, sem validade. */
+/* O endereco da fala ORIGINAL. Este nao caduca nunca: enquanto a mensagem
+   existir, o link abre nela. */
+function enderecoDaFala(msg) {
+  const g = msg?.guild?.id || msg?.guildId;
+  if (!g || !msg?.channelId || !msg?.id) return "";
+  return `https://discord.com/channels/${g}/${msg.channelId}/${msg.id}`;
+}
+
 async function baixarAnexos(msg) {
   const arquivos = [];
   const links = [];
   for (const a of msg.attachments.values()) {
-    if (a.size > MAX_ANEXO) { links.push(a.url); continue; }
+    /* GRANDE DEMAIS PARA COPIAR -- e aqui morava o defeito que o comentario
+       acima ja' descrevia.
+
+       A saida antiga era `links.push(a.url)`: a URL assinada do anexo. Ela
+       CADUCA, que e' exatamente o motivo pelo qual os bytes passaram a ser
+       reenviados. O caminho dos pequenos foi consertado e o dos grandes ficou
+       fazendo a coisa condenada trinta linhas acima: o video aparecia hoje e
+       era um link morto amanha, so' nas copias.
+
+       E' o pior feitio de defeito que existe neste projeto: parece resolvido
+       no dia em que se olha.
+
+       Agora aponta para a fala original, que nao caduca. Nao toca dentro do
+       Discord -- nada com esse tamanho toca --, mas leva a pessoa ao video de
+       verdade em vez de a um erro. */
+    if (a.size > MAX_ANEXO) {
+      const eVideo = /^video\//i.test(a.contentType || "") || /\.(mp4|webm|mov|mkv)$/i.test(a.name || "");
+      const onde = enderecoDaFala(msg);
+      const mb = Math.round(a.size / (1024 * 1024));
+      links.push(onde
+        ? `${eVideo ? "🎬" : "📎"} [${a.name || "arquivo"} · ${mb} MB](${onde})`
+        : a.url);
+      continue;
+    }
     try {
       const r = await fetch(a.url, { signal: AbortSignal.timeout(15000) });
       if (!r.ok) throw new Error(`http ${r.status}`);
       arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo" });
     } catch (e) {
       console.error("espelho: nao consegui baixar o anexo:", e?.message || e);
-      links.push(a.url); // melhor um link que caduca do que foto nenhuma
+      /* Mesma regra da linha de cima, e pelo mesmo motivo: o endereco da fala
+         original sobrevive, a URL assinada nao. */
+      links.push(enderecoDaFala(msg) || a.url);
     }
   }
   return { arquivos, links };
@@ -1958,7 +1991,7 @@ const LIMITE_DO_CARTAO = 3800; // o embed aceita 4096; sobra pra assinatura
    Puras de proposito: sao sete condicoes, duas delas com consequencia
    invisivel (sino que nao toca, ordem que mente), e a funcao que as usava
    e' a mais quente do produto -- nao da' pra conferir isso subindo bot. */
-function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos }) {
+function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos, video }) {
   return !!anterior
     && anterior.autor === autor
     && agora - anterior.quando < JANELA_DE_GRUPO
@@ -1968,6 +2001,10 @@ function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados
        para incluir o aviso nao toca sino em ninguem. Emendar seria entregar a
        convocacao e engolir a convocacao. */
     && !avisaTodos
+    /* Terceiro caso da mesma familia: o Discord desdobra link no ENVIO, entao
+       uma URL acrescentada por edicao nao vira player. Emendar entregaria o
+       link e engoliria o video. */
+    && !video
     && !arquivos.length;
 }
 
@@ -2542,6 +2579,45 @@ function figurinhaDe(msg) {
 
    Prefere .gif explicito: um mesmo link costuma trazer .webp e .gif, e o
    .webp do Discord entra parado. Melhor o quadro que se mexe. */
+/* O VIDEO QUE DA' PRA ASSISTIR SEM SAIR DAQUI.
+
+   Um link de YouTube colado numa sala espelhada chegava do outro lado como
+   texto azul com uma foto morta embaixo: para ver, a pessoa saia do Discord,
+   abria o YouTube, voltava. Numa sala de aliança isso e' a conversa parando.
+
+   Nao da' pra um bot MONTAR um player: o campo `video` de um embed feito por
+   bot e' ignorado pelo Discord, e nao ha' volta por ai'. Quem monta o player
+   e' o proprio Discord, quando acha a URL solta no `content` e desdobra
+   sozinho -- e ele faz isso para webhook igual faz para gente.
+
+   E' a MESMA forma do defeito das mencoes, algumas telas abaixo: dentro de um
+   embed o Discord nao toca sino, nao desdobra link, nao desenha previa. O
+   embed e' desenho; o `content` e' a parte viva da mensagem. Ali ja' viajam as
+   mencoes pelo mesmo motivo, e o video passa a viajar junto.
+
+   A lista e' CURTA e fechada de proposito. Ela nao e' "links de video" -- e'
+   "o que o Discord sabe tocar dentro dele". Mandar para o content um link que
+   ele nao toca nao faz player nenhum: faz uma segunda previa feia embaixo do
+   cartao, repetindo o que o cartao ja' mostra. Endereco que eu nao tenho
+   certeza fica de fora, que e' o lado seguro de errar. */
+const VIDEO_QUE_TOCA_AQUI = new RegExp(
+  "https?://(?:www\\.|m\\.|mobile\\.)?(?:" +
+    "youtu\\.be/[\\w-]+" +
+    "|youtube\\.com/(?:watch\\?[\\w=&%-]*v=[\\w-]+|shorts/[\\w-]+|live/[\\w-]+)" +
+    "|(?:clips\\.)?twitch\\.tv/[\\w/-]+" +
+    "|vimeo\\.com/\\d+" +
+  ")[^\\s<>]*", "i");
+
+/* Devolve a URL, ou "" -- e nao um booleano, porque quem chama precisa do
+   endereco para pendurar no content. */
+function videoQueODiscordToca(texto) {
+  const t = String(texto || "");
+  /* Link dentro de <> e' o jeito do Discord de dizer "nao desdobre isto". Se a
+     pessoa pediu silencio no original, o espelho nao vai gritar por ela. */
+  const achado = t.replace(/<https?:\/\/[^\s>]+>/g, " ").match(VIDEO_QUE_TOCA_AQUI);
+  return achado ? achado[0] : "";
+}
+
 function midiaDeLink(msg) {
   for (const e of (msg?.embeds || [])) {
     const candidatas = [e?.image?.url, e?.thumbnail?.url]
@@ -2566,6 +2642,11 @@ function midiaDeLink(msg) {
 async function ilustrarNasOutrasSalas(msg) {
   const midia = midiaDeLink(msg);
   if (!midia) return;
+  /* Video tem player proprio embaixo do cartao, e o player ja' traz esta
+     mesma miniatura. Sem esta linha a segunda passada penduraria a foto de
+     volta e desfaria o conserto: a mesma imagem duas vezes, uma delas morta.
+     O cartao ficou sem imagem de PROPOSITO, nao por falta de uma. */
+  if (videoQueODiscordToca(msg.content || "")) return;
   const familia = ondeMoraAFala.get(msg.id) || await procurarFamilia(msg.id);
   if (!familia || familia.size < 2 || eACopia(familia, msg.id, msg.channelId)) return;
 
@@ -2689,6 +2770,12 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      fala continua sendo o cartao, que e' o desenho do produto. */
   const chamados = [avisaTodos, ...marcados.map((id) => `<@${id}>`)].filter(Boolean).join(" ");
 
+  /* O video viaja no content junto com as mencoes, e pelo mesmo motivo: e' o
+     unico lugar da mensagem onde o Discord trabalha. Lido do texto ORIGINAL,
+     nunca do traduzido -- tradutor mexe em URL, e uma letra trocada no id do
+     video derruba o player. */
+  const video = videoQueODiscordToca(msg.content || "");
+
   /* Da' pra emendar esta fala na anterior?
 
      As tres primeiras condicoes sao o que o leitor espera de um bloco: mesma
@@ -2715,6 +2802,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        -- o embed desenha uma imagem so'. */
     arquivos: figurinha ? [...arquivos, figurinha] : arquivos,
     avisaTodos,
+    /* Video exige mensagem NOVA, pela terceira vez pelo mesmo motivo desta
+       lista: o Discord desdobra link no ENVIO. Acrescentar a URL editando uma
+       mensagem nao cria player nenhum -- emendar entregaria o link e engoliria
+       o video, calado, que e' o defeito que esta linha existe para impedir. */
+    video,
   });
 
   /* A familia desta fala: onde ela mora em cada sala. Quem responder a ela
@@ -2899,8 +2991,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
          figurinha: dentro da descricao de um embed o Discord nao desenha
          previa nenhuma, e o GIF chegaria do outro lado como texto azul. A
          figurinha manda mais -- quando ha' as duas, ela e' a fala inteira. */
+      /* Com o video indo no content, a previa SAI do cartao: o player que o
+         Discord desenha embaixo ja' traz a mesma miniatura, e mantê-la aqui
+         mostraria a mesma foto duas vezes, uma delas morta. */
       ...(figurinha?.url ? { image: { url: figurinha.url } }
-        : (midiaLink ? { image: { url: midiaLink } } : {})),
+        : (midiaLink && !video ? { image: { url: midiaLink } } : {})),
       description: `${(corpoDoCartao || (figurinha ? `🎨 ${figurinha.nome}` : "")).slice(0, LIMITE_DO_CARTAO)}` +
         `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
         (selo ? ` · ${selo}` : ""),
@@ -2948,7 +3043,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         /* As mencoes vivem AQUI, e nao no embed: e' a unica parte da mensagem
            em que o Discord toca sino. Vazio vira undefined -- content vazio o
            Discord recusa. */
-        content: chamados || undefined,
+        content: [chamados, video].filter(Boolean).join("\n") || undefined,
         embeds: [montar(linhaNova, cabecalho)],
         /* Cargo continua barrado: os cargos daqui sao os das salas por idioma,
            e repetir um cargo da sala de origem chamaria o publico errado.
@@ -4272,8 +4367,67 @@ async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
 
       await clienteDoWebhook(destino.webhook).send(carga);
     } catch (e) {
+      /* Webhook apagado na mao: o cartao do canal de erros SEMPRE prometeu
+         "eu refaço sozinho na proxima varredura", e isso nunca foi verdade --
+         ninguem refazia nada. O mesmo erro voltava no mesmo horario, todo dia,
+         debaixo de uma frase dizendo ao dono que nao precisava fazer nada.
+
+         Promessa tranquilizadora sobre codigo que nao existe e' pior que erro
+         sem explicacao: o erro sem explicacao pelo menos deixa alguem olhar.
+         Ou a frase vira verdade, ou a frase sai. Virou verdade. */
+      if (/Unknown Webhook/i.test(e?.message || "")) {
+        const novo = await refazerWebhookDaReplica(servidorId, destino);
+        if (novo) {
+          /* Retentar aqui nao duplica: o envio de cima falhou com webhook
+             inexistente, entao nada chegou do outro lado. */
+          try {
+            await clienteDoWebhook(novo).send(carga);
+            continue;
+          } catch (e2) {
+            console.error("idioma: refiz o webhook de", destino.idioma, "e mesmo assim falhou:",
+              e2?.message || e2);
+            continue;
+          }
+        }
+      }
       console.error("idioma: nao consegui replicar em", destino.idioma, e?.message || e);
     }
+  }
+}
+
+/* Refaz o webhook de uma replica e devolve a URL nova, ou null se nao deu.
+
+   Se o CANAL ainda existe, o conserto e' um webhook novo gravado por cima. Se
+   o canal tambem sumiu, a linha nao tem mais o que apontar e sai do banco --
+   deixa-la la' faria este mesmo erro se repetir para sempre, que e'
+   exatamente o que estava acontecendo. */
+async function refazerWebhookDaReplica(servidorId, destino) {
+  try {
+    const canal = await client.channels.fetch(destino.canal_id).catch(() => null);
+    const chave = `discord_canal_idioma?servidor_id=eq.${encodeURIComponent(servidorId)}` +
+      `&canal_id=eq.${encodeURIComponent(destino.canal_id)}`;
+
+    if (!canal) {
+      await sbDel(chave);
+      cacheReplicas.delete(servidorId);
+      console.log(`idioma: o canal de ${destino.idioma} nao existe mais; tirei a linha do banco.`);
+      return null;
+    }
+
+    /* Pode ter sobrado um webhook meu no canal -- reaproveitar evita encostar
+       no limite de 15 por canal a cada conserto. */
+    const existentes = await canal.fetchWebhooks().catch(() => null);
+    const meu = existentes?.find((w) => w.owner?.id === client.user.id && w.token);
+    const w = meu || await canal.createWebhook({ name: "CYRON" });
+
+    await sbPatch(chave, { webhook: w.url });
+    destino.webhook = w.url;
+    cacheReplicas.delete(servidorId);
+    console.log(`idioma: refiz o webhook de ${destino.idioma} em #${canal.name}.`);
+    return w.url;
+  } catch (e) {
+    console.error("idioma: nao consegui refazer o webhook de", destino.idioma, e?.message || e);
+    return null;
   }
 }
 
@@ -8373,6 +8527,89 @@ const MAX_ERROS = 60;
 const jaAvisado = new Map();
 const ESPERA_AVISO = 60 * 60 * 1000;
 
+/* ---------------- O bot conferindo as proprias promessas ----------------
+
+   A trava de uma hora acima resolve RAJADA e nao resolve TEIMOSIA, e essa
+   diferenca custou dois dias de canal inutil.
+
+   O que aconteceu: um erro voltou de hora em hora por dois dias. Cada cartao
+   passou pela trava legitimamente -- fazia mais de uma hora desde o anterior.
+   Sairam quarenta e oito cartoes, todos dizendo "Precisa de voce? **Nao.**",
+   e os dois problemas por tras deles eram reais. O dono so' descobriu juntando
+   print de tela.
+
+   O sistema nao tinha defeito de repeticao. Ele nao tinha nocao de
+   PERSISTENCIA -- nada nele conseguia perceber que a mesma frase tranquila
+   estava sendo dita pela quadragesima vez sobre um problema que nao passava.
+
+   Duas travas nascem daqui, e as duas valem para todo erro, inclusive os que
+   eu ainda vou escrever:
+
+   1. A espera DOBRA a cada aviso (1h, 2h, 4h ... ate 24h). Problema teimoso
+      vira cinco cartoes por dia em vez de vinte e quatro, e cada cartao diz
+      quantas vezes aconteceu e desde quando -- informacao que o dono nao
+      tinha em nenhum dos quarenta e oito.
+
+   2. `precisaDeVoce: false` e' uma AFIRMACAO sobre o mundo: "isto se resolve
+      sozinho". Repetida seis vezes ao longo de seis horas, ela foi desmentida
+      pelos fatos. O cartao entao se corrige em voz alta em vez de repetir a
+      promessa.
+
+   A segunda e' a que importa. Ela nao depende de eu classificar os eventos
+   certo -- depende de eu estar ERRADO e a realidade discordar, que e'
+   exatamente o caso que nenhum teste meu pega. Os dois defeitos de hoje
+   teriam se denunciado sozinhos: o alarme do gateway no primeiro dia, a
+   promessa do webhook no segundo. */
+const historicoDoAviso = new Map();   // chave -> { vezes, desde, ultimo, avisos }
+const ESPERA_AVISO_MAX = 24 * 60 * 60 * 1000;
+const VEZES_ATE_DESMENTIR = 6;
+const TEMPO_ATE_DESMENTIR = 6 * 60 * 60 * 1000;
+/* Problema que sumiu tem que ser esquecido, senao um erro consertado em maio
+   ainda apareceria em agosto dizendo "aconteceu 412 vezes". O historico mede
+   o que esta' acontecendo, nao o que ja' aconteceu. */
+const ESQUECER_HISTORICO = 48 * 60 * 60 * 1000;
+
+/* Separadas da porcaria toda para poderem ser testadas de verdade.
+
+   A regra antiga morava dentro do anotarErro, entre um `avisarNoPainel` e um
+   embed de setenta linhas -- nenhum teste alcancava, e por isso ninguem
+   percebeu que ela contava rajada e nao teimosia. Decisao que o dono ve na
+   tela nao pode morar num lugar onde teste nao chega. */
+function registrarOcorrencia(historico, chave, agora, esquecer = ESQUECER_HISTORICO) {
+  const velho = historico.get(chave);
+  const h = (!velho || agora - velho.ultimo > esquecer)
+    ? { vezes: 0, desde: agora, ultimo: 0, avisos: 0 }
+    : velho;
+  h.vezes += 1;
+  h.ultimo = agora;
+  historico.set(chave, h);
+  return h;
+}
+
+/* Falo agora? E, se falo, quanto tempo fico calado depois?
+
+   A espera dobra por AVISO dado, nao por ocorrencia: um erro que acontece mil
+   vezes numa hora nao deve pular direto para o teto de 24h -- ele deu um
+   aviso so'. */
+function planoDoAviso(h, agora, base = ESPERA_AVISO, teto = ESPERA_AVISO_MAX) {
+  if (!h.avisos) return { falar: true, espera: base };
+  const espera = Math.min(teto, base * Math.pow(2, h.avisos - 1));
+  return { falar: agora - (h.avisoEm || 0) >= espera, espera };
+}
+
+/* A promessa desmentida pelos fatos.
+
+   Exige as DUAS condicoes -- vezes e tempo. So' contar vezes acusaria uma
+   rajada de seis erros em dez segundos, que e' um tombo unico e realmente se
+   resolve sozinho. So' contar tempo acusaria dois erros distantes, que e'
+   coincidencia. O que desmente uma promessa e' ela ser feita muitas vezes
+   DURANTE muito tempo. */
+function promessaDesmentida(explicacao, h, agora,
+                            vezes = VEZES_ATE_DESMENTIR, tempo = TEMPO_ATE_DESMENTIR) {
+  if (!explicacao || explicacao.precisaDeVoce) return false;
+  return h.vezes >= vezes && (agora - h.desde) >= tempo;
+}
+
 /* O canal de erros falando com gente.
 
    Ele nascia despejando a frase que o programa usa pra falar consigo mesmo:
@@ -8505,9 +8742,17 @@ const EXPLICA_ERRO = [
     quando: /Unknown Message|Unknown Channel|Unknown Webhook/i,
     titulo: "Apagaram algo que eu ainda usava",
     precisaDeVoce: false,
+    /* O "eu refaço sozinho" daqui foi promessa falsa por meses: ninguem
+       refazia nada, e este mesmo cartao voltava todo dia no mesmo horario
+       dizendo ao dono que estava tudo sob controle. Agora o webhook se refaz
+       de verdade -- e o texto so' promete o que o codigo faz. */
     oque: "Um canal, uma mensagem ou um webhook que eu tinha anotado não existe mais — alguém apagou " +
-      "na mão. Eu refaço sozinho na próxima varredura.",
-    fazer: "Nada.",
+      "na mão.\n\n" +
+      "**Webhook:** eu faço outro na hora e reenvio a mensagem que falhou; se o canal também " +
+      "sumiu, tiro a linha do banco. Nos dois casos este erro não volta.\n\n" +
+      "**Canal ou mensagem:** a anotação fica velha até a próxima varredura passar por ali.",
+    fazer: "Nada. Se o MESMO idioma reaparecer aqui dia após dia, aí me avise: quer dizer que " +
+      "o conserto automático não está pegando.",
   },
   {
     /* ANTES da regra geral de rate limit, e por causa dela.
@@ -8544,6 +8789,31 @@ const EXPLICA_ERRO = [
     fazer: "Se repetir, apague na mão: Portal do Desenvolvedor → o aplicativo → **General Information** → " +
       "esvazie **Interactions Endpoint URL** e salve. É o mesmo lugar da política de privacidade " +
       "e dos termos — quem salvar aquela página com o campo preenchido derruba tudo de novo.",
+  },
+  {
+    /* A FRASE E' MINHA, E MESMO ASSIM EU NAO A RECONHECIA.
+
+       Ela saia no canal como "❓ Um erro que eu ainda nao sei explicar", com
+       "me mostre esta mensagem e eu passo a explicar este aqui tambem" --
+       pedindo ao dono que me ensinasse uma frase que eu mesmo escrevi, duas
+       telas acima neste arquivo. Todo texto que este arquivo manda pro
+       console.error precisa de linha aqui, senao o bot pede socorro sobre si
+       mesmo.
+
+       Exijo a palavra `gateway` junto: "perdi a conexao" solto roubaria
+       qualquer queda de rede da casa, e explicacao errada manda procurar no
+       lugar errado. */
+    quando: /gateway.{0,120}(perdi a conex[aã]o com o Discord|surdo h[aá])/i,
+    titulo: "A conexão com o Discord caiu e demorou a voltar",
+    precisaDeVoce: false,
+    oque: "O canal por onde o Discord me entrega mensagens, cliques e comandos caiu, e " +
+      "passou de um minuto fora. Enquanto esteve assim, **nada chegava até mim** — quem " +
+      "clicou num botão nesse intervalo não foi atendido.\n\n" +
+      "Reconexão curta é rotina e eu não aviso: se este cartão apareceu, é porque passou do prazo.",
+    fazer: "Nada. Se voltar sozinho, sai um ✅ logo abaixo dizendo quanto tempo durou. " +
+      "Se passar de cinco minutos eu saio com erro de propósito e o Fly sobe um processo " +
+      "novo — de dentro não tem conserto, quem reconecta é a biblioteca.\n\n" +
+      "Só vale olhar se isto virar rotina no mesmo horário todo dia: aí é a máquina, não o Discord.",
   },
   {
     quando: /rate limit|Too Many Requests/i,
@@ -8609,9 +8879,23 @@ function anotarErro(onde, porque) {
      DIZER, o mesmo tombo vira uma mensagem, e a janela de silencio depois
      dela vale pro problema inteiro. */
   const chave = explicacao ? `explicado|${explicacao.titulo}` : `${onde}|${String(porque).slice(0, 60)}`;
-  const ultimo = jaAvisado.get(chave) || 0;
-  if (Date.now() - ultimo < ESPERA_AVISO) return;
-  jaAvisado.set(chave, Date.now());
+  const agora = Date.now();
+  const hist = registrarOcorrencia(historicoDoAviso, chave, agora);
+  const plano = planoDoAviso(hist, agora);
+  if (!plano.falar) return;
+  hist.avisos += 1;
+  hist.avisoEm = agora;
+  jaAvisado.set(chave, agora);
+
+  /* A linha que faltava nos quarenta e oito cartoes: quantas vezes, e desde
+     quando. Sem ela cada cartao parece o primeiro. */
+  const teimosia = hist.vezes > 1
+    ? `\n\nAconteceu **${hist.vezes} vezes** desde ${quandoFoi(hist.desde, "f")}.` +
+      (plano.espera >= ESPERA_AVISO_MAX
+        ? " Daqui pra frente eu aviso no máximo uma vez por dia."
+        : "")
+    : "";
+  const desmentida = promessaDesmentida(explicacao, hist, agora);
 
   if (!explicacao) {
     /* Erro que eu ainda nao sei explicar. Aparece cru e ASSUMIDO como cru --
@@ -8622,7 +8906,7 @@ function anotarErro(onde, porque) {
         color: 0x9aa0a6,
         title: "❔ Um erro que eu ainda não sei explicar",
         description: `Me mostre esta mensagem e eu passo a explicar este aqui também.\n\n` +
-          `\`\`\`\n${onde}: ${porque}\n\`\`\``,
+          `\`\`\`\n${onde}: ${porque}\n\`\`\`` + teimosia,
         footer: { text: "sem tradução para o português ainda" },
         timestamp: new Date().toISOString(),
       }],
@@ -8630,17 +8914,36 @@ function anotarErro(onde, porque) {
     return;
   }
 
-  avisarNoPainel(CANAL_ERROS, {
-    embeds: [{
-      color: explicacao.precisaDeVoce ? 0xE03E3E : 0x9aa0a6,
-      title: `${explicacao.precisaDeVoce ? "🔴" : "⚪"} ${explicacao.titulo}`,
-      fields: [
-        { name: "O que aconteceu", value: explicacao.oque.slice(0, 1000) },
+  /* O DESMENTIDO.
+
+     Aqui o cartao para de repetir a promessa e admite que ela nao se
+     sustentou. Nao e' enfeite: e' a unica parte deste arquivo que consegue
+     descobrir que eu errei, porque nao depende de eu ter classificado o
+     evento certo -- depende da realidade discordar de mim. */
+  const urgente = explicacao.precisaDeVoce || desmentida;
+  const campos = desmentida
+    ? [
+        {
+          name: "Eu disse que isto se resolvia sozinho",
+          value: `E já disse **${hist.vezes} vezes**, desde ${quandoFoi(hist.desde, "f")}. ` +
+            "Não está se resolvendo.\n\nOu o conserto automático não está pegando, ou esta " +
+            "explicação está errada. Nos dois casos, quem precisa olhar é você.",
+        },
+        { name: "O que eu vinha dizendo", value: explicacao.oque.slice(0, 900) },
+      ]
+    : [
+        { name: "O que aconteceu", value: (explicacao.oque + teimosia).slice(0, 1000) },
         {
           name: explicacao.precisaDeVoce ? "O que fazer" : "Precisa de você?",
           value: (explicacao.precisaDeVoce ? "" : "**Não.** ") + explicacao.fazer.slice(0, 900),
         },
-      ],
+      ];
+
+  avisarNoPainel(CANAL_ERROS, {
+    embeds: [{
+      color: urgente ? 0xE03E3E : 0x9aa0a6,
+      title: `${desmentida ? "🔁" : urgente ? "🔴" : "⚪"} ${explicacao.titulo}`,
+      fields: campos,
       footer: { text: `${onde}: ${String(porque).slice(0, 120)}` },
       timestamp: new Date().toISOString(),
     }],
@@ -12889,9 +13192,38 @@ function fraseDaMemoria(mb) {
    avisar o dono e se consertar, um produto profissional se conserta. */
 const GRACA_SEM_OUVIDO = 5 * 60 * 1000;
 
+/* ANTES DE GRITAR, ESPERAR UM POUCO -- e este numero nasceu de um erro meu.
+
+   A primeira versao mandava pro canal de erros no instante em que a conexao
+   balancava. Em dois dias sairam doze cartoes "perdi a conexao com o Discord,
+   a partir de agora nada chega ate mim", de tres em tres horas, e NENHUM deles
+   era verdade: a conexao voltava em segundos, sempre dentro da graca.
+
+   O motivo e' que `shardReconnecting` nao e' desastre, e' rotina. O proprio
+   Discord pede reconexao de tempos em tempos (opcode 7), e um heartbeat sem
+   resposta tambem gera uma. Todo bot que fica semanas de pe reconecta varias
+   vezes por dia. Tratar isso como incidente e' gritar lobo.
+
+   E o preco esta escrito neste mesmo arquivo, na lista ERRO_DO_CLIENTE:
+   "barulho no canal de erro tem um preco especifico: ensina a ignorar o
+   canal". Eu escrevi aquela frase e construi o gerador de barulho na semana
+   seguinte. Um canal de erro com doze alarmes falsos nao avisa mais nada --
+   e o alarme que importa chega no meio deles.
+
+   Entao a contagem comeca na hora (o relogio da morte continua certo: cinco
+   minutos surdo ainda mata o processo), mas a BOCA so' abre depois deste
+   prazo. Reconexao de rotina passa em silencio; conexao que nao volta em um
+   minuto e' outra coisa, e essa merece o cartao. */
+const SILENCIO_ANTES_DE_GRITAR = 60 * 1000;
+
 /* 0 = estou ouvindo. Qualquer outro numero e' o instante em que fiquei surdo. */
 let surdoDesde = 0;
 let motivoDaSurdez = "";
+/* Ja' contei pro dono que estou surdo? Serve para duas coisas: nao repetir o
+   cartao, e saber se devo o AVISO DE VOLTA. Quem grita a ma' noticia e cala a
+   boa ensina a ler o canal como desastre permanente. */
+let gritouDaSurdez = false;
+let relogioDoGrito = null;
 
 /* Separada da porcaria toda para poder ser testada: e' a decisao de matar o
    processo, e decisao dessas nao pode morar so' dentro de um handler de
@@ -13166,22 +13498,59 @@ client.on("error", (e) => console.error("erro do client:", e?.message || e));
    tentar voltar, desistir e morrer sem que uma linha fosse escrita em lugar
    nenhum -- nem no log, nem no banco, nem no canal de erros. */
 
-function ficouSurdo(motivo) {
+/* `urgente` separa as duas coisas que estavam grudadas: perder o sinal e
+   incomodar o dono.
+
+   shardReconnecting chega com urgente=false -- a biblioteca ainda esta
+   tentando, e quase sempre consegue em segundos. shardDisconnect e
+   invalidated chegam com urgente=true: ali a biblioteca DESISTIU, e isso
+   nunca e' rotina. */
+function ficouSurdo(motivo, urgente = false) {
   if (surdoDesde) return;            // ja' estava surdo: mantem o inicio
   surdoDesde = Date.now();
   motivoDaSurdez = String(motivo || "sem motivo").slice(0, 200);
-  console.error(`gateway: perdi a conexão com o Discord (${motivoDaSurdez}). A partir de agora nada chega até mim.`);
+  /* No log SEMPRE, e desde o primeiro segundo -- log e' de graca e e' onde se
+     procura depois. O que espera o prazo e' o cartao no canal do dono.
+     console.log nao passa pelo embrulho que alimenta o painel. */
+  console.log(`gateway: sinal oscilou (${motivoDaSurdez}); começando a contar.`);
   /* Anotado JA', e nao so' na hora de morrer: se o processo for morto pelo Fly
      no meio da surdez, o bilhete ja' esta' no banco e a proxima subida sabe
      dizer o que aconteceu. */
   porAjuste("surdo", String(surdoDesde)).catch(() => {});
   porAjuste("surdo_porque", motivoDaSurdez).catch(() => {});
+
+  if (urgente) { gritarDaSurdez(); return; }
+  clearTimeout(relogioDoGrito);
+  relogioDoGrito = setTimeout(gritarDaSurdez, SILENCIO_ANTES_DE_GRITAR);
+  /* Um timer pendurado nao pode segurar o processo de pe sozinho. */
+  relogioDoGrito.unref?.();
+}
+
+/* A hora de incomodar. console.error de proposito: e' ele que alimenta o
+   canal de erros e o /admin. */
+function gritarDaSurdez() {
+  if (!surdoDesde || gritouDaSurdez) return;
+  gritouDaSurdez = true;
+  const ha = Math.round((Date.now() - surdoDesde) / 1000);
+  console.error(`gateway: perdi a conexão com o Discord (${motivoDaSurdez}) há ${ha}s ` +
+    "e ela não voltou. Enquanto não voltar, nada chega até mim.");
 }
 
 function voltouAOuvir(como) {
   if (!surdoDesde) return;
   const ha = Date.now() - surdoDesde;
+  clearTimeout(relogioDoGrito);
+  relogioDoGrito = null;
   console.log(`gateway: voltei a ouvir (${como}) depois de ${Math.round(ha / 1000)}s surdo.`);
+  /* Se o dono foi acordado, ele tem direito ao fim da historia. Sem isto o
+     canal so' guarda o susto: doze "perdi a conexao" e nenhum "voltei" fazem
+     parecer que o bot esta caido ha' dois dias -- e ele nunca esteve. */
+  if (gritouDaSurdez) {
+    avisarNoPainel(CANAL_ERROS,
+      `✅ **Voltei a ouvir o Discord** (${como}) depois de ${Math.round(ha / 1000)}s. ` +
+      "O que ficou para trás durante a queda entra na próxima varredura.").catch(() => {});
+  }
+  gritouDaSurdez = false;
   surdoDesde = 0;
   motivoDaSurdez = "";
   /* Apagar os dois: uma reconexao bem-sucedida NAO e' morte, e deixar o
@@ -13218,8 +13587,11 @@ async function morrerPorSurdez(ha) {
 /* shardDisconnect e' o fim da linha do lado da biblioteca: ela desconectou e
    NAO vai tentar de novo sozinha. shardReconnecting ainda tem esperanca. */
 client.on("shardDisconnect", (evento, id) => {
-  ficouSurdo(`shard ${id} desconectou, código ${evento?.code ?? "?"}`);
+  ficouSurdo(`shard ${id} desconectou, código ${evento?.code ?? "?"}`, true);
 });
+/* Sem urgencia: reconectar e' o que a biblioteca faz o dia inteiro. O relogio
+   corre igual -- se em cinco minutos nao voltar, o processo morre do mesmo
+   jeito -- mas o dono so' fica sabendo se passar de um minuto. */
 client.on("shardReconnecting", (id) => {
   ficouSurdo(`shard ${id} tentando reconectar`);
 });
@@ -13238,7 +13610,7 @@ client.on("shardReady", (id) => voltouAOuvir(`shard ${id} pronto`));
    destruir o client. Nao existe graca aqui -- esperar cinco minutos seria
    cinco minutos de produto parado por nada. */
 client.on("invalidated", () => {
-  ficouSurdo("sessão invalidada pelo Discord");
+  ficouSurdo("sessão invalidada pelo Discord", true);
   morrerPorSurdez(0).catch(() => process.exit(1));
 });
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));

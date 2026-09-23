@@ -991,6 +991,11 @@ function conferirCartao(onde, embed, componentes = []) {
     !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@everyone" })));
   verdade("e o @here vale o mesmo",
     !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@here" })));
+  /* Terceiro caso da mesma família, e a mesma armadilha: o Discord desdobra
+     link no ENVIO. Uma URL acrescentada por edição não vira player nenhum —
+     emendar entregaria o link e engoliria o vídeo, calado. */
+  verdade("fala com vídeo: cartão novo, senão o player não nasce",
+    !emendaNaFalaAnterior(antes, fala({ video: "https://youtu.be/abc123" })));
 
   /* E a metade que se decide sala por sala. */
   const velho = { id: "cartao1", linhas: ["oi"] };
@@ -1023,6 +1028,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
+    "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -4775,10 +4781,20 @@ function conferirCartao(onde, embed, componentes = []) {
   const i = fonte.indexOf("async function espelharMensagem");
   const corpo = fonte.slice(i, fimDoBloco(fonte.indexOf("{", i)));
 
-  /* O sino mora no content. Sem isto, todo o resto é decoração. */
-  verdade("o espelho manda as menções no content", /content: chamados \|\| undefined/.test(corpo));
-  verdade("e o content é só as menções, montadas numa linha",
+  /* O sino mora no content. Sem isto, todo o resto é decoração.
+
+     Conferido como DECISÃO e não como linha literal: o vídeo passou a viajar
+     no mesmo lugar, pelo mesmo motivo, e a forma exata da linha mudou. A
+     regra que importa nunca foi "o content é exatamente `chamados`" — é "os
+     chamados vão no content e não no embed". A versão literal reprovou um
+     conserto correto, que é o outro jeito de um teste estar errado. */
+  verdade("o espelho manda as menções no content",
+    /content: \[chamados[^\]]*\]/.test(corpo) || /content: chamados/.test(corpo));
+  verdade("e as menções são montadas numa linha só",
     /const chamados = \[avisaTodos, \.\.\.marcados\.map/.test(corpo));
+  /* E não podem ter ido parar no embed no caminho. */
+  verdade("e não vão dentro do cartão, onde o sino não toca",
+    !/description:[^\n]*chamados/.test(corpo));
 
   /* Não é escalada de permissão: `mentions.everyone` já é o veredito do
      Discord sobre se aquela pessoa PODIA chamar todo mundo. O espelho repete
@@ -5359,6 +5375,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
+    "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -6119,6 +6136,497 @@ function conferirCartao(onde, embed, componentes = []) {
        mais silenciosa que existe sairia pintada de troca de versão. */
     verdade("surdez conta como morte mesmo com a batida velha",
       /morreuSurdo \|\|/.test(corpo));
+  }
+}
+
+/* O ANEXO GRANDE QUE VIRAVA LINK MORTO NO DIA SEGUINTE.
+ *
+ * Trinta linhas acima do defeito, o próprio arquivo já explicava por que ele
+ * era defeito:
+ *
+ *   "link de anexo do Discord vem assinado e CADUCA. A foto aparecia hoje e
+ *    virava quadrado quebrado amanhã, só nas cópias -- a original continuava
+ *    inteira, o que deixaria o defeito ainda mais confuso de entender."
+ *
+ * Foi por isso que os bytes passaram a ser reenviados. Só que o caminho dos
+ * arquivos GRANDES continuou fazendo exatamente a coisa condenada: mandava a
+ * URL assinada. Vídeo espelhado hoje, link morto amanhã.
+ *
+ * É o pior feitio de defeito que existe neste projeto: parece resolvido no dia
+ * em que alguém olha. */
+{
+  const { baixarAnexos, enderecoDaFala, MAX_ANEXO } =
+    carregar(["MAX_ANEXO", "enderecoDaFala", "baixarAnexos"]);
+
+  const msgCom = (anexos) => ({
+    id: "999", channelId: "77", guild: { id: "11" }, guildId: "11",
+    attachments: { size: anexos.length, values: () => anexos[Symbol.iterator]() },
+  });
+
+  ok("o endereço da fala é montado a partir dos três ids",
+    enderecoDaFala(msgCom([])), "https://discord.com/channels/11/77/999");
+  ok("sem os ids não inventa endereço",
+    enderecoDaFala({ id: "1" }), "");
+
+  /* O caso do defeito: um vídeo grande. */
+  {
+    const grande = { size: MAX_ANEXO + 1, name: "rally.mp4", contentType: "video/mp4",
+                     url: "https://cdn.discordapp.com/x.mp4?ex=CADUCA&is=ASSINADO" };
+    const { arquivos, links } = await baixarAnexos(msgCom([grande]));
+    ok("grande demais não é reenviado", arquivos.length, 0);
+    verdade("e NÃO aponta para a URL assinada, que morre em um dia",
+      !links.join(" ").includes("ex=CADUCA"));
+    verdade("aponta para a fala original, que não caduca",
+      links.join(" ").includes("https://discord.com/channels/11/77/999"));
+    /* Quem lê precisa saber que existe um vídeo do outro lado, e por que ele
+       não está ali. Um link pelado não conta nenhuma das duas coisas. */
+    verdade("e diz que é vídeo e quanto pesa", /🎬/.test(links[0]) && /MB/.test(links[0]));
+  }
+
+  /* O download pode falhar mesmo cabendo. A saída de emergência tinha o mesmo
+     defeito: preferia um link que caduca a não ter nada. */
+  {
+    const antes = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("rede caiu"); };
+    try {
+      const pequeno = { size: 10, name: "foto.png", contentType: "image/png",
+                        url: "https://cdn.discordapp.com/y.png?ex=CADUCA" };
+      const { links } = await baixarAnexos(msgCom([pequeno]));
+      verdade("download que falha também cai na fala original, não na URL assinada",
+        links.join(" ").includes("/channels/11/77/999")
+        && !links.join(" ").includes("ex=CADUCA"));
+    } finally { globalThis.fetch = antes; }
+  }
+}
+
+/* O VÍDEO QUE DÁ PARA ASSISTIR SEM SAIR DAQUI.
+ *
+ * Um link de YouTube colado numa sala espelhada chegava do outro lado como
+ * texto azul com uma foto morta embaixo. Para ver, a pessoa saía do Discord,
+ * abria o YouTube e voltava — numa sala de aliança, isso é a conversa parando.
+ *
+ * Um bot NÃO pode montar um player: o campo `video` de um embed feito por bot
+ * é ignorado pelo Discord. Quem monta é o próprio Discord, quando acha a URL
+ * solta no `content` e desdobra sozinho.
+ *
+ * É a MESMA forma do defeito das menções, no mesmo arquivo: dentro de um embed
+ * o Discord não toca sino, não desdobra link e não desenha prévia. O embed é
+ * desenho; o `content` é a parte viva da mensagem. */
+{
+  const { videoQueODiscordToca } = carregar(["VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca"]);
+
+  const acha = (t) => videoQueODiscordToca(t);
+
+  /* As formas que as pessoas realmente colam. O `youtu.be` com `?si=` é o que
+     o app do YouTube gera hoje ao compartilhar — é o formato do print. */
+  ok("o link curto de compartilhar, com o ?si= que o app gera",
+    acha("olha isso https://youtu.be/toDQjo1oz8g?si=HZQ_e9Xgb4QFNGxd hahaha"),
+    "https://youtu.be/toDQjo1oz8g?si=HZQ_e9Xgb4QFNGxd");
+  verdade("o endereço longo", !!acha("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+  verdade("shorts", !!acha("https://youtube.com/shorts/abc123XYZ_-"));
+  verdade("live", !!acha("https://www.youtube.com/live/abc123XYZ_-"));
+  verdade("o m. do celular", !!acha("https://m.youtube.com/watch?v=dQw4w9WgXcQ"));
+  verdade("twitch", !!acha("https://www.twitch.tv/algumcanal"));
+  verdade("vimeo", !!acha("https://vimeo.com/123456789"));
+
+  /* A lista é fechada de propósito: ela não é "links de vídeo", é "o que o
+     Discord sabe tocar dentro dele". Mandar para o content um link que ele não
+     toca não faz player — faz uma segunda prévia feia embaixo do cartão,
+     repetindo o que o cartão já mostra. */
+  verdade("um site de vídeo qualquer NÃO entra — ali não nasce player",
+    !acha("https://exemplo.com/video.mp4"));
+  verdade("nem um link comum", !acha("https://portal-alianca.github.io/regras"));
+  verdade("e uma frase sem link nenhum não inventa vídeo", !acha("bom dia pessoal"));
+
+  /* O <> é o jeito do Discord de dizer "não desdobre isto". Se a pessoa pediu
+     silêncio no original, o espelho não vai gritar por ela do outro lado. */
+  verdade("link dentro de <> continua calado, porque foi pedido assim",
+    !acha("olha <https://youtu.be/toDQjo1oz8g> sem prévia por favor"));
+  verdade("mas um link normal na MESMA frase continua valendo",
+    !!acha("<https://youtu.be/aaa> e https://youtu.be/bbb"));
+
+  /* Não pode virar rede de arrastão: um endereço que só CONTÉM a palavra não
+     é um vídeo, e um player que não nasce deixa o cartão sem imagem à toa. */
+  verdade("um domínio parecido não é o YouTube",
+    !acha("https://naoyoutube.com/watch?v=abc"));
+
+  /* ---- a fiação ---- */
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    return semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+  };
+
+  const esp = corpoDe("async function espelharMensagem");
+  /* Do texto ORIGINAL, nunca do traduzido: tradutor mexe em URL, e uma letra
+     trocada no id do vídeo derruba o player. */
+  verdade("o vídeo é lido do texto original, não do traduzido",
+    /videoQueODiscordToca\(msg\.content \|\| ""\)/.test(esp));
+  /* O ponto inteiro: no content, ao lado das menções, que é onde o Discord
+     trabalha. Dentro do embed não nasce player nenhum. */
+  verdade("e viaja no content, junto das menções",
+    /content: \[chamados, video\]\.filter\(Boolean\)/.test(esp));
+  /* Sem isto a mesma miniatura aparece duas vezes: uma no cartão, morta, e
+     outra no player que o Discord desenha embaixo. */
+  verdade("e a prévia sai do cartão para não duplicar a foto",
+    /midiaLink && !video/.test(esp));
+
+  /* A SEGUNDA PASSADA, que desfaria tudo em silêncio. Ela existe para pendurar
+     a prévia quando o Discord resolve o link depois do envio — e penduraria a
+     foto de volta justamente no cartão que ficou sem imagem de propósito. */
+  verdade("a segunda passada não reilustra quem já tem player",
+    /videoQueODiscordToca\(msg\.content \|\| ""\)\) return;/
+      .test(corpoDe("async function ilustrarNasOutrasSalas")));
+}
+
+/* A TRAVA QUE CONTAVA RAJADA E NÃO CONTAVA TEIMOSIA.
+ *
+ * A dedup por hora funcionou exatamente como foi escrita — e por isso saíram
+ * quarenta e oito cartões em dois dias, cada um passando pela trava com razão,
+ * porque fazia mais de uma hora desde o anterior.
+ *
+ * Nada no sistema conseguia perceber que a MESMA frase tranquila estava sendo
+ * dita pela quadragésima vez sobre um problema que não passava. Os dois
+ * defeitos de hoje erraram na mesma direção: os dois disseram "Precisa de
+ * você? Não." uma vez por hora, para sempre, e os dois estavam errados.
+ *
+ * Isto aqui é a parte que não depende de eu classificar os eventos certo.
+ * Depende de eu estar ERRADO e a realidade discordar — o único caso que
+ * nenhum teste meu pega, porque um teste meu só sabe o que eu já sei. */
+{
+  const { registrarOcorrencia, planoDoAviso, promessaDesmentida,
+          ESPERA_AVISO, ESPERA_AVISO_MAX, VEZES_ATE_DESMENTIR, TEMPO_ATE_DESMENTIR,
+          ESQUECER_HISTORICO } =
+    carregar(["ESPERA_AVISO", "ESPERA_AVISO_MAX", "VEZES_ATE_DESMENTIR",
+              "TEMPO_ATE_DESMENTIR", "ESQUECER_HISTORICO",
+              "registrarOcorrencia", "planoDoAviso", "promessaDesmentida"]);
+
+  const HORA = 60 * 60 * 1000;
+  const t0 = 1_700_000_000_000;
+
+  /* ---- a contagem ---- */
+  {
+    const h = new Map();
+    const a = registrarOcorrencia(h, "x", t0);
+    ok("a primeira ocorrência conta 1", a.vezes, 1);
+    ok("e marca desde quando", a.desde, t0);
+    const b = registrarOcorrencia(h, "x", t0 + HORA);
+    ok("a segunda soma", b.vezes, 2);
+    ok("e o 'desde' NÃO se move — senão a teimosia nunca completa o prazo",
+      b.desde, t0);
+  }
+
+  /* Problema que sumiu tem que ser esquecido. Sem isto, um erro consertado em
+     maio ainda apareceria em agosto dizendo "aconteceu 412 vezes" — e um
+     número desses manda o dono caçar um problema que não existe mais. */
+  {
+    const h = new Map();
+    registrarOcorrencia(h, "x", t0);
+    registrarOcorrencia(h, "x", t0 + HORA);
+    const depois = registrarOcorrencia(h, "x", t0 + HORA + ESQUECER_HISTORICO + 1);
+    ok("depois de muito tempo em paz, a conta recomeça", depois.vezes, 1);
+    ok("e o 'desde' passa a ser agora", depois.desde, t0 + HORA + ESQUECER_HISTORICO + 1);
+  }
+
+  /* ---- o recuo: 1h, 2h, 4h ... até o teto ---- */
+  {
+    verdade("o primeiro aviso sai na hora", planoDoAviso({ avisos: 0 }, t0).falar);
+
+    const h = { avisos: 1, avisoEm: t0 };
+    verdade("logo depois do 1º aviso, cala a boca", !planoDoAviso(h, t0 + HORA / 2).falar);
+    verdade("uma hora depois, fala de novo", planoDoAviso(h, t0 + HORA).falar);
+
+    ok("a espera dobra a cada aviso dado",
+      [1, 2, 3, 4].map((n) => planoDoAviso({ avisos: n, avisoEm: t0 }, t0).espera / HORA),
+      [1, 2, 4, 8]);
+
+    /* Sem teto, o vigésimo aviso sairia daqui a sessenta anos: o erro teimoso
+       desapareceria do canal justamente por ser teimoso. */
+    ok("mas para no teto de um dia",
+      planoDoAviso({ avisos: 30, avisoEm: t0 }, t0).espera, ESPERA_AVISO_MAX);
+
+    /* O recuo conta AVISO, não ocorrência: mil erros numa hora são um aviso
+       só, e não podem empurrar o próximo para daqui a um dia. */
+    ok("mil ocorrências não empurram o recuo — quem conta é o aviso dado",
+      planoDoAviso({ vezes: 1000, avisos: 1, avisoEm: t0 }, t0).espera, ESPERA_AVISO);
+  }
+
+  /* ---- O DESMENTIDO: o cerne de tudo ---- */
+  {
+    const calmo = { precisaDeVoce: false, titulo: "t" };
+    const grave = { precisaDeVoce: true,  titulo: "t" };
+    const muito = VEZES_ATE_DESMENTIR;
+    const longe = TEMPO_ATE_DESMENTIR;
+
+    verdade("uma promessa dita muitas vezes por muito tempo está desmentida",
+      promessaDesmentida(calmo, { vezes: muito, desde: t0 }, t0 + longe));
+
+    /* As DUAS condições, e cada uma sozinha é um falso positivo diferente. */
+    verdade("rajada curta NÃO desmente — seis erros em dez segundos são um tombo só",
+      !promessaDesmentida(calmo, { vezes: muito, desde: t0 }, t0 + 10_000));
+    verdade("duas ocorrências distantes NÃO desmentem — isso é coincidência",
+      !promessaDesmentida(calmo, { vezes: 2, desde: t0 }, t0 + longe * 10));
+
+    /* Quem já é vermelho não vira "desmentido": ele nunca prometeu nada. */
+    verdade("erro que sempre pediu ajuda não tem promessa para desmentir",
+      !promessaDesmentida(grave, { vezes: muito * 10, desde: t0 }, t0 + longe * 10));
+    verdade("e erro sem explicação nenhuma também não",
+      !promessaDesmentida(null, { vezes: muito * 10, desde: t0 }, t0 + longe * 10));
+  }
+
+  /* ---- OS DOIS CASOS REAIS, refeitos com os números dos prints ----
+   *
+   * Esta é a prova que interessa: os defeitos de hoje teriam se denunciado
+   * sozinhos, sem ninguém juntar print de tela. */
+  {
+    const calmo = { precisaDeVoce: false, titulo: "t" };
+    const h = new Map();
+    let avisou = 0, denunciou = 0;
+    /* Dois dias, de hora em hora — a cadência exata dos prints. */
+    for (let i = 0; i < 48; i++) {
+      const agora = t0 + i * HORA;
+      const oc = registrarOcorrencia(h, "webhook", agora);
+      const p = planoDoAviso(oc, agora);
+      if (!p.falar) continue;
+      oc.avisos += 1; oc.avisoEm = agora;
+      avisou++;
+      if (promessaDesmentida(calmo, oc, agora)) denunciou++;
+    }
+    verdade("dois dias de erro teimoso deixam de ser 48 cartões", avisou < 12);
+    verdade("mas não viram silêncio — o problema continua aparecendo", avisou >= 4);
+    verdade("e em algum momento o bot se desmente sozinho", denunciou > 0);
+  }
+
+  /* A FIAÇÃO, que é onde este conserto morreria.
+   *
+   * As três funções acima podem estar perfeitas e nunca serem chamadas — e aí
+   * o canal continua exatamente como estava, com uma bateria de testes verdes
+   * por cima jurando que não. É o defeito mais repetido deste projeto, e já
+   * custou um bot que "media o passado" na semana passada. */
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const i = fonte.indexOf("function anotarErro");
+  const corpo = semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+
+  verdade("anotarErro conta a ocorrência", /registrarOcorrencia\(historicoDoAviso/.test(corpo));
+  verdade("e pergunta se é hora de falar", /planoDoAviso\(/.test(corpo));
+  verdade("e respeita a resposta", /if \(!plano\.falar\) return;/.test(corpo));
+  verdade("e confere a promessa contra os fatos", /promessaDesmentida\(/.test(corpo));
+
+  /* Sem isto o recuo nunca avança: a espera ficaria em uma hora para sempre e
+     os 48 cartões voltariam inteiros, com todos os testes acima verdes. */
+  verdade("e marca que avisou, senão o recuo nunca sai da primeira hora",
+    /hist\.avisos \+= 1/.test(corpo) && /hist\.avisoEm = agora/.test(corpo));
+
+  /* O desmentido tem que MUDAR o cartão. Calcular e ignorar seria o mesmo que
+     não ter calculado — e passaria por todos os testes de lógica acima. */
+  verdade("a promessa desmentida deixa o cartão vermelho",
+    /const urgente = explicacao\.precisaDeVoce \|\| desmentida/.test(corpo));
+  verdade("e troca o texto em vez de repetir a promessa",
+    /desmentida\s*\?/.test(corpo) && /Eu disse que isto se resolvia sozinho/.test(corpo));
+  /* E o número tem que aparecer para quem lê: "aconteceu N vezes desde X" é a
+     informação que faltava em todos os quarenta e oito cartões. */
+  verdade("e o cartão passa a dizer quantas vezes e desde quando",
+    /hist\.vezes > 1/.test(corpo) && /Aconteceu \*\*\$\{hist\.vezes\} vezes\*\*/.test(corpo));
+}
+
+/* GRITAR LOBO: o alarme que eu mesmo construí, e que era falso doze vezes.
+ *
+ * Em dois dias o canal de erros recebeu doze cartões iguais, de três em três
+ * horas, todos dizendo:
+ *
+ *   gateway: perdi a conexão com o Discord (shard 0 tentando reconectar).
+ *   A partir de agora nada chega até mim.
+ *
+ * E nenhum era verdade. A prova está no que NÃO apareceu: se a surdez tivesse
+ * passado dos cinco minutos, o processo sairia com erro, o Fly subiria outro e
+ * a volta sairia com a caveira de "morri surdo". Não saiu nenhuma vez. Todas
+ * voltaram em segundos.
+ *
+ * A causa: `shardReconnecting` não é desastre, é rotina -- o próprio Discord
+ * pede reconexão de tempos em tempos. Eu liguei rotina direto no alarme.
+ *
+ * O preço está escrito neste mesmo repositório, na lista ERRO_DO_CLIENTE:
+ * "barulho no canal de erro tem um preço específico: ensina a ignorar o
+ * canal". Escrevi a frase numa semana e o gerador de barulho na seguinte. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre, deParametros = true) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    const chave = fonte.indexOf("{", deParametros ? fonte.indexOf("(", i) : fonte.indexOf("=>", i));
+    return semComentarios(fonte.slice(i, fimDoBloco(chave)));
+  };
+
+  /* A separação que conserta tudo: quem desiste grita, quem está tentando não.
+     Reparar que os três eventos são conferidos JUNTOS -- separar só um deles e
+     esquecer os outros dois foi como isto nasceu. */
+  verdade("reconectar NÃO é urgente (a biblioteca ainda está tentando)",
+    /client\.on\("shardReconnecting",[^]{0,160}ficouSurdo\(`shard \$\{id\} tentando reconectar`\)/
+      .test(codigo));
+  verdade("desconectar É urgente (aí a biblioteca desistiu)",
+    /client\.on\("shardDisconnect",[^]{0,220}ficouSurdo\([^)]*, true\)/.test(codigo));
+  verdade("sessão invalidada também é urgente",
+    /client\.on\("invalidated",[^]{0,160}ficouSurdo\([^)]*, true\)/.test(codigo));
+
+  {
+    const corpo = corpoDe("function ficouSurdo");
+    /* O CORAÇÃO DO CONSERTO. console.error é o que alimenta o canal de erros;
+       se ele voltar pro caminho normal do ficouSurdo, os doze cartões voltam. */
+    verdade("ficar sem sinal não escreve no canal de erros na hora",
+      !/console\.error/.test(corpo));
+    verdade("mas registra no log desde o primeiro segundo",
+      /console\.log/.test(corpo));
+    verdade("e só agenda o grito para depois do prazo",
+      /setTimeout\(gritarDaSurdez, SILENCIO_ANTES_DE_GRITAR\)/.test(corpo));
+    verdade("quem chega urgente fura a fila e grita na hora",
+      /if \(urgente\)[^]{0,60}gritarDaSurdez\(\)/.test(corpo));
+
+    /* O RELÓGIO DA MORTE NÃO PODE TER SIDO ADIADO JUNTO.
+       Este é o jeito mais fácil de "consertar" o barulho e quebrar o conserto
+       de verdade: atrasar o silêncio E a contagem faria o bot aguentar 6
+       minutos surdo em vez de 5, e o buraco original voltaria maior. */
+    /* O `;` no fim não é capricho -- é o teste. Sem ele a regra casa com
+       `surdoDesde = Date.now() + 60000`, e essa sabotagem PASSOU: o bot
+       passaria a aguentar seis minutos surdo em vez de cinco, com o teste
+       verde por cima. De todas as sabotagens deste bloco era a única que
+       trocava barulho a menos por produto quebrado a mais. */
+    verdade("mas o relógio da morte continua começando na hora, sem adiamento",
+      /surdoDesde = Date\.now\(\);/.test(corpo));
+    verdade("e o bilhete do banco continua sendo escrito na hora",
+      /porAjuste\("surdo", String\(surdoDesde\)\)/.test(corpo));
+  }
+
+  /* O PRAZO. Precisa existir, ser maior que zero e -- o que importa -- ser
+     MENOR que a graça: um silêncio maior que a graça faria o bot morrer sem
+     nunca ter avisado, trocando barulho demais por silêncio total. */
+  {
+    const { SILENCIO_ANTES_DE_GRITAR, GRACA_SEM_OUVIDO } =
+      carregar(["SILENCIO_ANTES_DE_GRITAR", "GRACA_SEM_OUVIDO"]);
+    verdade("o silêncio antes do grito existe e é de pelo menos 30s",
+      SILENCIO_ANTES_DE_GRITAR >= 30_000);
+    verdade("e é menor que a graça, senão o bot morreria sem nunca avisar",
+      SILENCIO_ANTES_DE_GRITAR < GRACA_SEM_OUVIDO);
+  }
+
+  /* A OUTRA METADE, e a que faltava por inteiro: quem acorda o dono com a má
+     notícia deve a ele o fim da história. Doze "perdi a conexão" e zero
+     "voltei" fazem o canal parecer um bot caído há dois dias -- e ele nunca
+     esteve caído. voltouAOuvir usava console.log, que não vai pro canal. */
+  {
+    const corpo = corpoDe("function voltouAOuvir");
+    verdade("se o dono foi acordado, ele recebe o aviso de volta",
+      /gritouDaSurdez/.test(corpo) && /avisarNoPainel\(CANAL_ERROS/.test(corpo));
+    verdade("e o grito é rearmado para a próxima queda",
+      /gritouDaSurdez = false/.test(corpo));
+    /* Sem isto, um grito agendado dispararia DEPOIS da volta: o cartão de
+       "perdi a conexão" chegaria no canal com o bot já funcionando. */
+    verdade("e o grito agendado é cancelado ao voltar",
+      /clearTimeout\(relogioDoGrito\)/.test(corpo));
+  }
+
+  /* A FRASE ERA MINHA E EU NÃO A RECONHECIA.
+     Ela saía como "❓ Um erro que eu ainda não sei explicar", pedindo ao dono
+     que me ensinasse um texto escrito neste mesmo arquivo. */
+  {
+    const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+
+    /* Entra EXATAMENTE como o console.error a produz: o embrulho parte o texto
+       nos dois pontos, então `onde` é "gateway" e o resto vem sem eles. Uma
+       regra escrita esperando "gateway:" nunca casaria -- e ficaria no arquivo
+       sem nunca ser usada, que é o defeito mais repetido deste projeto. */
+    const meu = explicarErro("gateway",
+      "perdi a conexão com o Discord (shard 0 tentando reconectar) há 74s e ela não voltou. " +
+      "Enquanto não voltar, nada chega até mim.");
+    verdade("a minha própria frase passa a ter explicação", !!meu);
+    verdade("e ela não pede nada de quem lê", meu?.precisaDeVoce === false);
+    verdade("e conta que reconexão curta não vira cartão",
+      /rotina e eu não aviso/i.test(String(meu?.fazer) + String(meu?.oque)));
+
+    /* A mensagem da morte por surdez também passa pelo mesmo console.error. */
+    verdade("a mensagem de morte por surdez também tem explicação",
+      !!explicarErro("gateway", "surdo há 300s. Saindo com erro para o Fly subir um processo novo."));
+
+    /* E não pode virar rede de arrastão: "perdi a conexão" solto roubaria
+       toda queda de rede da casa, e explicação errada manda procurar no lugar
+       errado -- custa mais que explicação nenhuma. */
+    const doBanco = explicarErro("espelho: passada curta falhou em Ks", "supabase 504");
+    verdade("o 504 do Supabase continua sendo do banco",
+      /banco de dados piscou/i.test(String(doBanco?.titulo)));
+  }
+}
+
+/* A PROMESSA FALSA: "eu refaço sozinho na próxima varredura".
+ *
+ * O cartão "Apagaram algo que eu ainda usava" dizia isso desde sempre, e nada
+ * no código refazia coisa nenhuma. O erro do webhook morto voltava todo dia no
+ * MESMO horário -- 07:00 ontem, 07:00 hoje -- debaixo de uma frase dizendo ao
+ * dono que estava tudo sob controle e que ele não precisava fazer nada.
+ *
+ * Frase tranquilizadora sobre código que não existe é pior que erro sem
+ * explicação: o erro sem explicação ao menos deixa alguém ir olhar. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    return semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+  };
+
+  verdade("existe quem refaça o webhook morto",
+    /async function refazerWebhookDaReplica/.test(codigo));
+
+  /* A FIAÇÃO -- e é aqui que este defeito moraria de novo. Uma função de
+     conserto que ninguém chama deixa tudo exatamente como estava, com um
+     teste verde por cima dizendo que não. */
+  verdade("e ela é chamada quando o webhook some",
+    /Unknown Webhook\/i\.test\(e\?\.message[^]{0,120}refazerWebhookDaReplica\(/.test(codigo));
+
+  {
+    const corpo = corpoDe("async function refazerWebhookDaReplica");
+    verdade("canal vivo: grava o webhook novo por cima do morto",
+      /sbPatch\(chave, \{ webhook: w\.url \}\)/.test(corpo));
+    /* Sem isto o conserto não aparece: a lista fica até um minuto em cache,
+       e todas as mensagens desse minuto falhariam com o webhook já refeito.
+
+       Conferido DEPOIS do sbPatch, e não na função inteira: o outro ramo (o do
+       canal apagado) também derruba o cache, e procurar no corpo todo casava
+       com ele. A sabotagem que tirou a limpeza do ramo do conserto passou
+       verde exatamente assim -- o teste leu a linha do vizinho. */
+    verdade("e derruba o cache no ramo do conserto, não só no do canal apagado",
+      /cacheReplicas\.delete\(servidorId\)/.test(
+        corpo.slice(corpo.indexOf("sbPatch(chave"))));
+    /* Se o canal sumiu, a linha não tem para onde apontar. Deixá-la é
+       exatamente o que fazia este erro se repetir para sempre. */
+    verdade("canal morto: tira a linha do banco em vez de tentar para sempre",
+      /if \(!canal\)/.test(corpo) && /sbDel\(chave\)/.test(corpo));
+    /* Um conserto que cria webhook novo a cada mensagem estoura o limite de
+       15 por canal e transforma um erro diário num canal inutilizado. */
+    verdade("e reaproveita um webhook meu que já esteja no canal",
+      /fetchWebhooks\(\)/.test(corpo));
+  }
+
+  /* O reenvio. Sem ele o conserto chega tarde demais para a mensagem que o
+     disparou -- e ela é justamente a que a pessoa acabou de escrever.
+     Não duplica: o envio de cima falhou com webhook inexistente, então nada
+     tinha chegado do outro lado. */
+  verdade("a mensagem que falhou é reenviada pelo webhook novo",
+    /if \(novo\)[^]{0,200}clienteDoWebhook\(novo\)\.send\(carga\)/.test(codigo));
+
+  /* E O TEXTO TEM QUE PARAR DE PROMETER O QUE NÃO FAZ.
+     Se o conserto um dia for removido, esta linha reprova junto -- que é o
+     ponto: a frase e o código não podem voltar a viver separados. */
+  {
+    const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+    const cartao = explicarErro("idioma", "nao consegui replicar em pt Unknown Webhook");
+    verdade("o cartão do webhook apagado continua existindo", !!cartao);
+    verdade("e não promete mais uma varredura que nunca vinha",
+      !/refaço sozinho na próxima varredura/i.test(String(cartao?.oque)));
+    verdade("e diz o que realmente acontece com o webhook",
+      /reenvio a mensagem que falhou/i.test(String(cartao?.oque)));
   }
 }
 
