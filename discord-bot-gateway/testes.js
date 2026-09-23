@@ -6330,11 +6330,11 @@ function conferirCartao(onde, embed, componentes = []) {
     globalThis.traduzirEmbed = async (e, idioma) => JSON.parse(JSON.stringify(e).replace(/"(title|description|text)":"/g, `"$1":"<${idioma}>`));
     globalThis.nomeDoIdioma = (c) => ({ ar: "Árabe", pt: "Português" }[c] || c);
 
-    const m = carregar(["lerVisaoDoDono", "lerTextoDaImagem", "ehImagemAnexo", "imagemDaMensagem",
+    const m = carregar(["lerVisaoDoDono", "linhasDaLeitura", "lerImagem", "lerTextoDaImagem", "ehImagemAnexo", "imagemDaMensagem",
       "MAX_IMAGENS_LEMBRADAS", "conferirVisao"]);
     /* `let visaoDoDono` e o cache não saem pelo carregar: moram no global. */
     globalThis.textoDasImagens = new Map();
-    const { explicarImagem } = carregar(["explicarImagem"]);
+    const { explicarImagem } = carregar(["falhaDeLeitura", "lerImagemDaMensagem", "explicarImagem"]);
 
     /* ---- de onde vem a chave ---- */
     {
@@ -6523,6 +6523,232 @@ function conferirCartao(onde, embed, componentes = []) {
     globalThis.visaoDoDono = null;
     if (envAntes.e) process.env.VISAO_ENDPOINT = envAntes.e;
     if (envAntes.c) process.env.VISAO_CHAVE = envAntes.c;
+  }
+}
+
+/* A IMAGEM TRADUZIDA (🖼️ Ver na imagem).
+ *
+ * O print volta com o texto trocado no lugar. O desenho aqui roda DE VERDADE,
+ * com o mesmo processador que o bot usa, numa imagem gerada na hora: um teste
+ * que só conferisse as linhas do código aprovaria um desenho em branco. */
+{
+  const sharp = (await import("sharp")).default;
+  const FONTE = new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url).pathname;
+  const d = carregar(["DESENHA_EM", "desenhaEm", "agruparEmParagrafos", "MAX_PIXELS_DESENHO",
+    "desenharTraducao", "naFilaDeDesenho", "linhasDaLeitura", "ROTULO_VER_NA_IMAGEM", "botaoVerNaImagem",
+    "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem"]);
+
+  /* ---- da resposta da Azure para retângulos ---- */
+  ok("o polígono da Azure vira o retângulo que o contém",
+    d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: " Rally ",
+      boundingPolygon: [{ x: 10, y: 20 }, { x: 90, y: 22 }, { x: 91, y: 40 }, { x: 9, y: 38 }] }] }] } }),
+    [{ texto: "Rally", caixa: [9, 20, 91, 40] }]);
+  ok("linha sem posição continua valendo para o texto",
+    d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: "oi" }] }] } }), [{ texto: "oi", caixa: null }]);
+
+  /* ---- parágrafos ---- */
+  {
+    /* O caso do print do Kingshot: título grande, descrição em três linhas. */
+    const p = d.agruparEmParagrafos([
+      { texto: "O Governador mais Forte", caixa: [24, 158, 343, 186] },
+      { texto: "Cada Reino pode competir pela glória, mas", caixa: [24, 192, 368, 210] },
+      { texto: "apenas um pode resgatar o título de Governador", caixa: [24, 212, 412, 230] },
+      { texto: "mais Forte.", caixa: [24, 232, 108, 250] },
+      { texto: "Recompensas", caixa: [174, 845, 276, 865] },
+    ]);
+    ok("título, descrição e botão viram três blocos", p.length, 3);
+    ok("as três linhas da descrição viram UMA frase (traduzir pela metade não faz sentido)",
+      p[1].texto, "Cada Reino pode competir pela glória, mas apenas um pode resgatar o título de Governador mais Forte.");
+    ok("e o bloco cobre as três linhas", p[1].caixa, [24, 192, 412, 250]);
+    ok("e sabe que tem três linhas (parágrafo não alarga)", p[1].linhas, 3);
+    /* Letra de tamanho diferente é outra coisa: título não gruda na descrição. */
+    verdade("o título não gruda na descrição", p[0].texto === "O Governador mais Forte");
+  }
+  ok("duas colunas lado a lado continuam separadas",
+    d.agruparEmParagrafos([
+      { texto: "Reino Atual", caixa: [20, 938, 93, 956] },
+      { texto: "Entre-Reinos", caixa: [354, 932, 430, 948] },
+    ]).length, 2);
+
+  /* ---- em que línguas desenha ---- */
+  verdade("desenha em inglês, espanhol e russo", d.desenhaEm("en") && d.desenhaEm("es-ES") && d.desenhaEm("ru"));
+  /* A fonte embarcada não tem esses alfabetos: sairia quadradinho. */
+  verdade("não desenha em árabe, chinês, japonês nem coreano",
+    !d.desenhaEm("ar") && !d.desenhaEm("zh") && !d.desenhaEm("ja") && !d.desenhaEm("ko"));
+
+  /* ---- o desenho, de verdade ---- */
+  const VERMELHO = { r: 140, g: 30, b: 30 };
+  const fazerImagem = (w, h) => sharp({ create: { width: w, height: h, channels: 3, background: VERMELHO } })
+    .composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+      `<rect x="20" y="20" width="160" height="24" fill="white"/></svg>`), left: 0, top: 0 }])
+    .png().toBuffer();
+  const pixel = async (buf, x, y) => {
+    const { data, info } = await sharp(buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const i = (y * info.width + x) * info.channels;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+  const perto = (a, b, tol = 40) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+  {
+    const original = await fazerImagem(300, 120);
+    const saiu = await d.desenharTraducao(original,
+      [{ texto: "Olá mundo", caixa: [20, 20, 180, 44] }], ["Hello world"], sharp, FONTE);
+    verdade("desenhou alguma coisa", Buffer.isBuffer(saiu));
+    const meta = await sharp(saiu).metadata();
+    ok("a imagem sai do mesmo tamanho", [meta.width, meta.height], [300, 120]);
+    /* O branco do texto original tem que ter sido TAPADO. Pixel da borda do
+       retângulo, onde a letra nova não chega: com o tapume, virou vermelho. */
+    verdade("o texto original foi tapado com a cor do fundo",
+      perto(await pixel(saiu, 178, 22), [VERMELHO.r, VERMELHO.g, VERMELHO.b]));
+    /* E a tradução foi escrita: dentro da caixa há pixel claro de novo (a
+       letra, que pega a cor que mais contrastava lá dentro — o branco). */
+    const { data, info } = await sharp(saiu).extract({ left: 20, top: 20, width: 160, height: 24 })
+      .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let claros = 0;
+    for (let i = 0; i < data.length; i += info.channels) if (data[i] > 200 && data[i + 1] > 200) claros++;
+    verdade("e a tradução foi escrita por cima", claros > 30);
+    /* A COR, e não só "tem pixel claro". O desenhista tingia as bordas: pedido
+       branco, devolvia (200,255,255), e o título branco do jogo saía
+       esverdeado. O teste anterior contava pixel claro e aprovou o verde. */
+    const letras = [];
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] + data[i + 1] + data[i + 2] > 600) letras.push([data[i], data[i + 1], data[i + 2]]);
+    }
+    const mediana = (k) => { const v = letras.map((q) => q[k]).sort((m, n) => m - n); return v[v.length >> 1]; };
+    const [lr, lg, lb] = [mediana(0), mediana(1), mediana(2)];
+    verdade(`a letra sai BRANCA como a original, sem tinta (${lr},${lg},${lb})`,
+      lr > 235 && Math.abs(lr - lg) < 15 && Math.abs(lg - lb) < 15);
+    /* Longe do texto nada muda. */
+    verdade("o resto da imagem fica igual", perto(await pixel(saiu, 250, 100), [VERMELHO.r, VERMELHO.g, VERMELHO.b], 12));
+  }
+  {
+    const original = await fazerImagem(300, 120);
+    ok("número e hora não são tocados (nada a desenhar)",
+      await d.desenharTraducao(original, [{ texto: "#2311 1d 07:58", caixa: [20, 20, 180, 44] }], ["#2311 1d 07:58"], sharp, FONTE), null);
+    ok("tradução igual ao original não é tocada",
+      await d.desenharTraducao(original, [{ texto: "Rally", caixa: [20, 20, 180, 44] }], ["Rally"], sharp, FONTE), null);
+  }
+  {
+    /* Foto grande é reduzida antes de desenhar: descompactada inteira, ela
+       sozinha poderia derrubar a máquina de 256 MB. */
+    const grande = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: VERMELHO } }).png().toBuffer();
+    const saiu = await d.desenharTraducao(grande, [{ texto: "Olá", caixa: [100, 100, 700, 180] }], ["Hello"], sharp, FONTE);
+    const m = await sharp(saiu).metadata();
+    verdade("imagem enorme sai reduzida, dentro do teto de pixels", m.width * m.height <= d.MAX_PIXELS_DESENHO * 1.01);
+    ok("e na mesma proporção", Math.round((m.width / m.height) * 100), Math.round((2400 / 1800) * 100));
+  }
+
+  /* ---- rótulo curto com tradução comprida ---- */
+  {
+    /* "Em breve" -> "Coming soon": sem alargar, a letra encolhia até ficar
+       ilegível. Rótulo de UMA linha alarga para os lados, a partir do centro. */
+    const claroFora = async (buf, x0, x1) => {
+      const { data, info } = await sharp(buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      let n = 0;
+      for (let y = 40; y < 56; y++) for (let x = 0; x < info.width; x++) {
+        if (x >= x0 && x <= x1) continue;
+        const i = (y * info.width + x) * 3;
+        if (data[i] > 200 && data[i + 1] > 200 && data[i + 2] > 200) n++;
+      }
+      return n;
+    };
+    const base = await sharp({ create: { width: 300, height: 100, channels: 3, background: VERMELHO } })
+      .composite([{ input: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><rect x="130" y="42" width="40" height="12" fill="white"/></svg>'), left: 0, top: 0 }])
+      .png().toBuffer();
+    const um = await d.desenharTraducao(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 1 }],
+      ["Coming soon now"], sharp, FONTE);
+    verdade("rótulo de uma linha alarga: a tradução passa das bordas originais", (await claroFora(um, 128, 172)) > 10);
+    /* Parágrafo de várias linhas NÃO alarga: ali o lado costuma ser desenho. */
+    const varias = await d.desenharTraducao(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 2 }],
+      ["Coming soon now"], sharp, FONTE);
+    ok("parágrafo de várias linhas fica dentro da caixa", await claroFora(varias, 124, 176), 0);
+    /* E o que já cabe não mexe: o título do Kingshot alargava sem precisar e
+       o tapume passava da borda do cartão. */
+    const cabe = await d.desenharTraducao(base, [{ texto: "Oi", caixa: [128, 40, 172, 56], linhas: 1 }],
+      ["Hi"], sharp, FONTE);
+    ok("tradução que cabe não alarga", await claroFora(cabe, 124, 176), 0);
+  }
+
+  /* ---- um desenho de cada vez ---- */
+  {
+    /* `let filaDeDesenho` não sai pelo carregar: mora no global aqui. */
+    globalThis.filaDeDesenho = Promise.resolve();
+    let dentro = 0, maximo = 0;
+    const trabalho = () => d.naFilaDeDesenho(async () => {
+      dentro++; maximo = Math.max(maximo, dentro);
+      await new Promise((r) => setTimeout(r, 15));
+      dentro--;
+    });
+    await Promise.all([trabalho(), trabalho(), trabalho()]);
+    ok("três pedidos ao mesmo tempo desenham um de cada vez", maximo, 1);
+    /* Um desenho que falha não pode travar a fila para sempre. */
+    await d.naFilaDeDesenho(async () => { throw new Error("boom"); }).catch(() => {});
+    let rodou = false;
+    await d.naFilaDeDesenho(async () => { rodou = true; });
+    verdade("depois de uma falha, a fila continua andando", rodou);
+  }
+
+  /* ---- a tradução dos parágrafos ---- */
+  {
+    const antes = globalThis.traduzirLongo;
+    let simult = 0, pico = 0;
+    globalThis.traduzirLongo = async (t) => { simult++; pico = Math.max(pico, simult); await new Promise((r) => setTimeout(r, 5)); simult--; return `EN:${t}`; };
+    const saiu = await d.traduzirParagrafos(["a", "b", "c", "d", "e", "f", "g", "h"], "en", {});
+    ok("traduz todos os parágrafos, na ordem", saiu, ["EN:a", "EN:b", "EN:c", "EN:d", "EN:e", "EN:f", "EN:g", "EN:h"]);
+    /* O tradutor grátis castiga rajada. */
+    verdade("no máximo quatro ao mesmo tempo", pico <= 4 && pico > 1);
+    const longos = await d.traduzirParagrafos(["x".repeat(3000), "y".repeat(3000)], "en", {});
+    verdade("o teto de 4 mil letras vale aqui também", longos[0].startsWith("EN:") && longos[1] === "");
+    globalThis.traduzirLongo = antes;
+  }
+
+  /* ---- o botão 🖼️ só aparece quando dá para cumprir ---- */
+  {
+    const msg = { channelId: "c1", id: "m1",
+      attachments: new Map([["9", { id: "9", name: "a.png", contentType: "image/png", url: "https://cdn/a.png" }]]) };
+    globalThis.textoDasImagens = new Map();
+    ok("sem leitura guardada, sem botão", d.botaoVerNaImagem(msg, "en"), []);
+    globalThis.textoDasImagens.set("9", { texto: "oi", linhas: [{ texto: "oi", caixa: null }] });
+    ok("leitura sem posições, sem botão", d.botaoVerNaImagem(msg, "en"), []);
+    globalThis.textoDasImagens.set("9", { texto: "oi", linhas: [{ texto: "oi", caixa: [1, 1, 9, 9] }] });
+    ok("em árabe, sem botão — a fonte não desenha", d.botaoVerNaImagem(msg, "ar"), []);
+    const b = d.botaoVerNaImagem(msg, "es")[0]?.components?.[0];
+    /* O clique chega da resposta efêmera: sem o endereço do print no id, não
+       haveria como saber qual imagem desenhar. */
+    ok("o botão leva canal e mensagem do print", b?.custom_id, "img:ver:c1:m1");
+    ok("com o rótulo na língua de quem vai ler", b?.label, "Ver en la imagen");
+    verdade("o id cabe no limite do Discord (100)", `img:ver:${"1".repeat(20)}:${"1".repeat(20)}`.length <= 100);
+    globalThis.textoDasImagens = new Map();
+  }
+
+  /* ---- a fiação ---- */
+  {
+    const src = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+    const codigo = semComentarios(src);
+    verdade("o clique do 🖼️ é tratado no ramo dos BOTÕES",
+      /inter\.isButton\(\) && inter\.customId\.startsWith\("img:ver:"\)\)[^]{0,30}cliqueVerNaImagem\(inter\)/.test(codigo));
+    verdade("a resposta do 📝 oferece o 🖼️",
+      /components: botaoVerNaImagem\(inter\.message, idioma\)/.test(codigo));
+    /* Um recurso opcional não pode impedir o bot de ligar: se o binário do
+       processador falhar nesta máquina, só o botão deve sentir. */
+    verdade("o processador de imagem NÃO é importado na partida do bot",
+      !/^import\s+sharp|from\s+"sharp"/m.test(codigo) && /import\("sharp"\)/.test(codigo));
+    const clique = codigo.slice(codigo.indexOf("async function cliqueVerNaImagem"));
+    const iMem = clique.indexOf("process.memoryUsage().rss > MEMORIA_PARA_DESENHAR");
+    const iSharp = clique.indexOf("await carregarSharp()");
+    verdade("a memória é conferida ANTES de abrir a imagem", iMem > -1 && iSharp > -1 && iMem < iSharp);
+    verdade("e o desenho entra na fila", /naFilaDeDesenho\(\(\) => desenharTraducao\(/.test(clique));
+    /* A fonte tem que ir junto com o bot: o Alpine do Fly não tem fonte nenhuma. */
+    verdade("a fonte está no repositório", readFileSync(new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url)).length > 100_000);
+    verdade("com a licença junto", /DejaVu/.test(readFileSync(new URL("./fontes/LICENCA-DejaVu.txt", import.meta.url), "utf8")));
+    const ignorados = readFileSync(new URL("./.dockerignore", import.meta.url), "utf8");
+    verdade("e a pasta das fontes não é barrada da imagem", !/^fontes/m.test(ignorados));
+    const docker = readFileSync(new URL("./Dockerfile", import.meta.url), "utf8");
+    verdade("a imagem do bot instala o fontconfig", /apk add[^\n]*fontconfig/.test(semComentariosDeGrade(docker)));
+    const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+    verdade("falha ao desenhar tem explicação",
+      /montar uma imagem/.test(String(explicarErro("imagem", "nao consegui desenhar a traducao: x")?.titulo)));
+    verdade("processador que não carrega pede o dono",
+      explicarErro("imagem", "nao consegui carregar o processador de imagem: x")?.precisaDeVoce === true);
   }
 }
 

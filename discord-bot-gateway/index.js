@@ -16,6 +16,14 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:
 /* O catalogo do que eu faco. Mora fora daqui porque a pagina cyron/recursos.html
    nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
 import { CATEGORIAS, doCliente } from "./catalogo.js";
+import { fileURLToPath } from "node:url";
+
+/* A fonte da imagem traduzida vai JUNTO com o bot, e nao e' a da maquina: a
+   imagem do Fly e' um Alpine sem fonte nenhuma, e depender do que estiver
+   instalado faria o texto sair em quadradinhos num dia e normal no outro.
+   DejaVu: licenca livre (fontes/LICENCA-DejaVu.txt), cobre latino, cirilico
+   e grego. */
+const FONTE_DA_IMAGEM = fileURLToPath(new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url));
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const SB_URL = process.env.SUPABASE_URL;
@@ -2664,6 +2672,33 @@ function lerVisaoDoDono(a = {}) {
    (o F0 aceita 20 por minuto; tenta de novo ja'). O corpo da resposta diz
    qual e' qual. */
 async function lerTextoDaImagem(bytes, visao, buscar = fetch) {
+  return (await lerImagem(bytes, visao, buscar)).texto;
+}
+
+/* Cada linha lida, com o retangulo onde ela esta' -- a imagem traduzida
+   precisa saber ONDE escrever, nao so' o que. A Azure devolve um poligono de
+   quatro pontos; aqui ele vira o retangulo que o contem. */
+function linhasDaLeitura(j) {
+  const fora = [];
+  for (const b of (j?.readResult?.blocks || [])) {
+    for (const l of (b?.lines || [])) {
+      const texto = String(l?.text || "").trim();
+      if (!texto) continue;
+      const pts = Array.isArray(l?.boundingPolygon) ? l.boundingPolygon : [];
+      const xs = pts.map((p) => Number(p?.x)).filter(Number.isFinite);
+      const ys = pts.map((p) => Number(p?.y)).filter(Number.isFinite);
+      const caixa = xs.length && ys.length
+        ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map(Math.round)
+        : null;
+      fora.push({ texto, caixa });
+    }
+  }
+  return fora;
+}
+
+/* Le a imagem e devolve texto E linhas. Separada da de cima para quem so'
+   quer o texto nao mudar de forma. */
+async function lerImagem(bytes, visao, buscar = fetch) {
   const url = `${visao.endpoint}/computervision/imageanalysis:analyze?api-version=2024-02-01&features=read`;
   const r = await buscar(url, {
     method: "POST",
@@ -2678,11 +2713,8 @@ async function lerTextoDaImagem(bytes, visao, buscar = fetch) {
     throw e;
   }
   if (!r.ok) throw new Error(`leitura de imagem respondeu HTTP ${r.status}`);
-  const j = await r.json();
-  return (j?.readResult?.blocks || [])
-    .flatMap((b) => (b?.lines || []).map((l) => String(l?.text || "").trim()))
-    .filter(Boolean)
-    .join("\n");
+  const linhas = linhasDaLeitura(await r.json());
+  return { texto: linhas.map((l) => l.texto).join("\n"), linhas };
 }
 
 function ehImagemAnexo(a) {
@@ -2726,6 +2758,41 @@ function botaoDeLerImagem(idioma) {
 /* O que dizer para quem pediu. Devolve o embed pronto -- o botao e o menu
    Translate usam a mesma funcao, para as duas portas nao envelhecerem
    separadas. */
+/* Baixa, le e GUARDA. O botao de texto e o de imagem passam os dois por
+   aqui, entao a mesma imagem e' lida uma vez so' -- quem toca em 📝 e depois
+   em 🖼️ nao gasta duas leituras da cota.
+
+   So' o que deu certo vai para a memoria: guardar uma falha faria um
+   tropeco de rede virar "essa imagem nao tem texto" para sempre. */
+async function lerImagemDaMensagem(img, buscar = fetch) {
+  const guardada = textoDasImagens.get(img.id);
+  if (guardada !== undefined) return guardada;
+  const r = await buscar(img.url, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
+  const leitura = await lerImagem(Buffer.from(await r.arrayBuffer()), visaoDoDono, buscar);
+  textoDasImagens.set(img.id, leitura);
+  while (textoDasImagens.size > MAX_IMAGENS_LEMBRADAS) {
+    textoDasImagens.delete(textoDasImagens.keys().next().value);
+  }
+  return leitura;
+}
+
+/* O que dizer quando a leitura falha, e o que anotar. Uma funcao so' para o
+   botao de texto e o de imagem: duas copias desta frase envelheceriam
+   separadas, e uma delas voltaria a mentir sobre a cota. */
+function falhaDeLeitura(e) {
+  if (e?.motivo === "cota") {
+    console.error("imagem: a cota gratuita de leitura de imagem do mes acabou");
+    return { title: "🖼️ Acabou a leitura grátis deste mês",
+      description: "O limite gratuito de leitura de imagens do mês foi atingido. Volta a funcionar no dia 1." };
+  }
+  if (e?.motivo === "pressa") {
+    return { title: "⏳ Muita gente pedindo agora", description: "Tente de novo em um minuto." };
+  }
+  console.error("imagem: nao consegui ler a imagem:", e?.message || e);
+  return { title: "❌ Não deu", description: "Não consegui ler essa imagem agora. Tente de novo em instantes." };
+}
+
 async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
   const img = imagemDaMensagem(msg);
   if (!img) return null;
@@ -2740,32 +2807,17 @@ async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
       description: "Ainda não ligaram a leitura de texto em imagens neste bot." });
   }
 
-  let texto = textoDasImagens.get(img.id);
-  if (texto === undefined) {
+  let leitura = textoDasImagens.get(img.id);
+  if (leitura === undefined) {
     try {
-      const r = await buscar(img.url, { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
-      texto = await lerTextoDaImagem(Buffer.from(await r.arrayBuffer()), visaoDoDono, buscar);
+      leitura = await lerImagemDaMensagem(img, buscar);
     } catch (e) {
-      if (e?.motivo === "cota") {
-        console.error("imagem: a cota gratuita de leitura de imagem do mes acabou");
-        return aviso({ title: "🖼️ Acabou a leitura grátis deste mês",
-          description: "O limite gratuito de leitura de imagens do mês foi atingido. Volta a funcionar no dia 1." });
-      }
-      if (e?.motivo === "pressa") {
-        return aviso({ title: "⏳ Muita gente pedindo agora", description: "Tente de novo em um minuto." });
-      }
-      console.error("imagem: nao consegui ler a imagem:", e?.message || e);
-      return aviso({ title: "❌ Não deu",
-        description: "Não consegui ler essa imagem agora. Tente de novo em instantes." });
+      return aviso(falhaDeLeitura(e));
     }
     /* So' o que deu certo vai para a memoria. Guardar a falha faria um
        tropeco de rede virar "essa imagem nao tem texto" para sempre. */
-    textoDasImagens.set(img.id, texto);
-    while (textoDasImagens.size > MAX_IMAGENS_LEMBRADAS) {
-      textoDasImagens.delete(textoDasImagens.keys().next().value);
-    }
   }
+  const texto = leitura.texto;
 
   if (!texto) {
     return aviso({ title: "🖼️ Não achei texto nessa imagem",
@@ -2782,6 +2834,195 @@ async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
     description: (traduzido || texto).slice(0, 3800),
     footer: rodape.footer,
   };
+}
+
+/* ---------------- a imagem traduzida ----------------
+
+   O print volta com o texto trocado NO LUGAR, no idioma de quem pediu. Cada
+   paragrafo e' tapado com a cor do fundo e reescrito por cima, com a letra
+   na cor original e do tamanho que couber.
+
+   Protótipo antes de construir, com um print real do Kingshot: titulo e
+   descricao ficaram limpos; texto encostado na beirada de outra coisa (abas,
+   rotulo de icone) as vezes pega a cor errada. O tapume usa a cor mais comum
+   numa faixa FORA do texto, nos quatro lados -- das tres formas testadas foi
+   a unica que acertou titulo e descricao juntos.
+
+   So' para linguas que a fonte embarcada desenha (latino, cirilico, grego).
+   Arabe, chines, japones e coreano precisam de fontes proprias e pesadas; ate'
+   la', quem le nessas linguas continua com o texto do 📝. */
+const DESENHA_EM = new Set(["pt", "en", "es", "fr", "de", "it", "nl", "pl", "tr", "id", "ms",
+  "vi", "ro", "cs", "sk", "hu", "sv", "no", "da", "fi", "hr", "sr", "sl", "lt", "lv", "et",
+  "ru", "uk", "bg", "be", "kk", "el", "ca", "gl", "tl", "sq", "af", "sw"]);
+
+function desenhaEm(idioma) {
+  return DESENHA_EM.has(String(idioma || "").toLowerCase().split(/[-_]/)[0]);
+}
+
+/* Linhas vizinhas do mesmo paragrafo viram UM bloco.
+
+   Traduzir linha por linha quebra a frase no meio: "Cada Reino pode competir
+   pela gloria, mas" / "apenas um pode resgatar..." vira duas frases soltas,
+   e a traducao de cada metade sai sem sentido. Junta quando a linha de baixo
+   comeca quase na mesma coluna, tem altura parecida e vem logo em seguida. */
+function agruparEmParagrafos(linhas) {
+  const comCaixa = linhas.filter((l) => Array.isArray(l.caixa));
+  const ordem = [...comCaixa].sort((a, b) => a.caixa[1] - b.caixa[1] || a.caixa[0] - b.caixa[0]);
+  const blocos = [];
+  for (const l of ordem) {
+    const [x0, y0, x1, y1] = l.caixa;
+    const alt = Math.max(1, y1 - y0);
+    const junta = blocos.find((b) => {
+      const ult = b.ultima;
+      const altU = Math.max(1, ult[3] - ult[1]);
+      return Math.abs(x0 - b.caixa[0]) <= altU * 0.8
+        && y0 - ult[3] >= -altU * 0.3 && y0 - ult[3] <= altU * 0.9
+        && Math.abs(alt - altU) <= altU * 0.35;
+    });
+    if (junta) {
+      junta.linhas++;
+      junta.texto += " " + l.texto;
+      junta.caixa = [Math.min(junta.caixa[0], x0), junta.caixa[1], Math.max(junta.caixa[2], x1), Math.max(junta.caixa[3], y1)];
+      junta.ultima = l.caixa;
+    } else {
+      blocos.push({ texto: l.texto, caixa: [...l.caixa], ultima: l.caixa, linhas: 1 });
+    }
+  }
+  return blocos.map(({ texto, caixa, linhas }) => ({ texto, caixa, linhas }));
+}
+
+/* Um desenho de cada vez. A maquina tem 256 MB, e duas imagens grandes
+   descompactadas ao mesmo tempo podem derrubar o bot INTEIRO -- o botao de
+   imagem nao pode custar a traducao do chat de todo mundo. */
+let filaDeDesenho = Promise.resolve();
+function naFilaDeDesenho(f) {
+  const vez = filaDeDesenho.then(f, f);
+  filaDeDesenho = vez.catch(() => {});
+  return vez;
+}
+/* Acima disto a imagem e' reduzida antes de desenhar: um print de celular tem
+   ~2,5 milhoes de pixels, e o que passar muito disso e' foto, nao print. */
+const MAX_PIXELS_DESENHO = 3_000_000;
+/* E acima disto de memoria o botao recusa em vez de arriscar o processo. */
+const MEMORIA_PARA_DESENHAR = 185 * 1024 * 1024;
+
+/* O processador de imagem so' e' carregado no primeiro clique, nunca na
+   partida. Se o binario dele falhar nesta maquina, o bot continua de pe e so'
+   o botao avisa -- um recurso opcional nao pode impedir o bot de ligar. */
+let sharpPromessa = null;
+function carregarSharp() {
+  sharpPromessa ??= import("sharp").then((m) => {
+    const sharp = m.default;
+    sharp.cache(false);
+    sharp.concurrency(1);
+    return sharp;
+  }).catch((e) => {
+    console.error("imagem: nao consegui carregar o processador de imagem:", e?.message || e);
+    sharpPromessa = null;
+    return null;
+  });
+  return sharpPromessa;
+}
+
+/* Desenha a traducao por cima de cada paragrafo e devolve o JPEG.
+
+   `traducoes` sao os paragrafos ja' traduzidos, na mesma ordem. Paragrafo sem
+   letra (numero, hora, "#2311") ou cuja traducao saiu igual ao original nao e'
+   tocado: tapar e reescrever o mesmo texto so' piora a imagem. */
+async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = FONTE_DA_IMAGEM) {
+  let img = sharp(bytes, { failOn: "none" }).rotate();
+  const meta = await img.metadata();
+  let W = meta.width, H = meta.height, fator = 1;
+  if (W * H > MAX_PIXELS_DESENHO) {
+    fator = Math.sqrt(MAX_PIXELS_DESENHO / (W * H));
+    W = Math.round(W * fator); H = Math.round(H * fator);
+    img = sharp(await img.resize(W, H).toBuffer());
+  }
+  const { data, info } = await img.clone().removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const px = (x, y) => {
+    const i = (Math.min(H - 1, Math.max(0, y)) * info.width + Math.min(W - 1, Math.max(0, x))) * info.channels;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+  const lum = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+  const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+
+  const camadas = [];
+  let desenhados = 0;
+  for (let k = 0; k < paragrafos.length; k++) {
+    const original = paragrafos[k].texto;
+    const novo = String(traducoes[k] || "").trim();
+    if (!novo || !/\p{L}/u.test(original) || novo === original.trim()) continue;
+    const [a0, b0, a1, b1] = paragrafos[k].caixa.map((v) => Math.round(v * fator));
+    let x0 = Math.max(0, a0), x1 = Math.min(W - 1, a1);
+    const y0 = Math.max(0, b0), y1 = Math.min(H - 1, b1);
+    /* Rotulo de UMA linha cuja traducao e' mais comprida ("Em breve" ->
+       "Coming soon") alarga para os lados, a partir do centro, ate' 1,8x.
+       Sem isto a letra encolhia ate' ficar ilegivel. Paragrafo de varias
+       linhas nao alarga: ali o lado costuma ser desenho, e tapar desenho e'
+       pior que letra menor. */
+    if ((paragrafos[k].linhas || 1) === 1) {
+      /* Letra ocupa ~75% da altura da caixa, e cada caractere ~60% da
+         altura da letra. A primeira conta usava a caixa inteira como letra e
+         alargava ate' o titulo, que cabia: o tapume passava da borda do
+         cartao. */
+      const precisa = Math.ceil(novo.length * (y1 - y0) * 0.75 * 0.6);
+      if (precisa > x1 - x0) {
+        const nova = Math.min(precisa, Math.round((x1 - x0) * 1.8));
+        const centro = (x0 + x1) / 2;
+        x0 = Math.max(0, Math.round(centro - nova / 2));
+        x1 = Math.min(W - 1, Math.round(centro + nova / 2));
+      }
+    }
+    const w = x1 - x0, h = y1 - y0;
+    if (w < 8 || h < 6) continue;
+
+    /* Fundo: a cor mais comum numa faixa fina FORA do texto, nos quatro
+       lados. O que encosta num lado so' (icone, margem) perde a votacao. */
+    const votos = new Map();
+    for (let d = 2; d <= 5; d++) {
+      const pontos = [];
+      for (let x = x0 - d; x <= x1 + d; x++) pontos.push([x, y0 - d], [x, y1 + d]);
+      for (let y = y0 - d; y <= y1 + d; y++) pontos.push([x0 - d, y], [x1 + d, y]);
+      for (const [x, y] of pontos) {
+        const c = px(x, y); const chave = c.map((v) => v >> 4).join(",");
+        const v = votos.get(chave) || { n: 0, s: [0, 0, 0] };
+        v.n++; v.s = v.s.map((t, q) => t + c[q]); votos.set(chave, v);
+      }
+    }
+    const venc = [...votos.values()].sort((p, q) => q.n - p.n)[0];
+    const fundo = venc.s.map((t) => Math.round(t / venc.n));
+    /* Letra: os pixels de dentro que mais contrastam com o fundo -- o titulo
+       branco continua branco, o dourado continua dourado. */
+    const dentro = [];
+    for (let y = y0; y <= y1; y += 2) for (let x = x0; x <= x1; x += 2) dentro.push(px(x, y));
+    dentro.sort((p, q) => Math.abs(lum(q) - lum(fundo)) - Math.abs(lum(p) - lum(fundo)));
+    const top = dentro.slice(0, Math.max(3, dentro.length >> 5));
+    const letra = [0, 1, 2].map((c) => { const v = top.map((p) => p[c]).sort((m, n) => m - n); return v[v.length >> 1]; });
+
+    const tapume = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w + 4}" height="${h + 4}">` +
+      `<rect width="${w + 4}" height="${h + 4}" rx="3" fill="${hex(fundo)}"/></svg>`);
+    camadas.push({ input: tapume, left: Math.max(0, x0 - 2), top: Math.max(0, y0 - 2) });
+
+    /* O proprio processador acha o maior tamanho de letra que cabe na caixa.
+
+       Mas a COR dele nao presta: pedido branco puro, ele devolvia (200,255,255)
+       -- a suavizacao da letra tinge as bordas, e o titulo branco do jogo saia
+       esverdeado. Entao dele so' se aproveita o FORMATO (o canal de
+       transparencia), e a cor e' pintada aqui, chapada, por baixo. */
+    const esc = novo.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const forma = await sharp({ text: {
+      text: esc, font: "DejaVu Sans Bold", fontfile, width: w, height: h, rgba: true, wrap: "word",
+    } }).extractChannel(3).raw().toBuffer({ resolveWithObject: true });
+    const tinta = await sharp({ create: { width: forma.info.width, height: forma.info.height, channels: 3,
+      background: { r: letra[0], g: letra[1], b: letra[2] } } })
+      .joinChannel(forma.data, { raw: { width: forma.info.width, height: forma.info.height, channels: 1 } })
+      .png().toBuffer();
+    camadas.push({ input: tinta, left: x0,
+      top: y0 + Math.max(0, Math.floor((h - forma.info.height) / 2)) });
+    desenhados++;
+  }
+  if (!desenhados) return null;
+  return img.composite(camadas).jpeg({ quality: 86 }).toBuffer();
 }
 
 function midiaDeLink(msg) {
@@ -8939,6 +9180,27 @@ const EXPLICA_ERRO = [
       "— mas aí é decisão de custo, não conserto.",
   },
   {
+    /* O binario do processador de imagem nao carregou nesta maquina. Nao se
+       conserta sozinho: e' a instalacao. O resto do bot segue normal. */
+    quando: /imagem.{0,20}nao consegui carregar o processador de imagem/i,
+    titulo: "O processador de imagem não carregou",
+    precisaDeVoce: true,
+    oque: "O botão 🖼️ Ver na imagem não consegue montar a imagem traduzida porque a peça que " +
+      "desenha (sharp) não carregou nesta máquina. **O resto do bot funciona normal**, inclusive " +
+      "o 📝 com o texto traduzido.",
+    fazer: "Me mostre esta mensagem: é a instalação da imagem do bot, e publicar de novo com o " +
+      "conserto resolve.",
+  },
+  {
+    quando: /imagem.{0,20}nao consegui desenhar a traducao/i,
+    titulo: "Não consegui montar uma imagem traduzida",
+    precisaDeVoce: false,
+    oque: "Alguém tocou em 🖼️ Ver na imagem e a montagem falhou. Quem pediu recebeu um aviso " +
+      "de que o texto do 📝 continua funcionando.",
+    fazer: "Nada, se for de vez em quando. Se virar rotina, me mostre: pode ser um tipo de " +
+      "imagem que eu não sei abrir.",
+  },
+  {
     quando: /imagem.{0,20}nao consegui ler a imagem/i,
     titulo: "Não consegui ler uma imagem",
     precisaDeVoce: false,
@@ -10981,8 +11243,100 @@ async function cliqueLerImagem(inter) {
   await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const embed = await explicarImagem(inter.message, idioma, inter.guildId);
-  return inter.editReply({ embeds: [{ color: COR, ...(embed || {
-    title: "🤔 Não achei a imagem", description: "Essa mensagem não tem mais imagem." }) }] });
+  return inter.editReply({
+    embeds: [{ color: COR, ...(embed || {
+      title: "🤔 Não achei a imagem", description: "Essa mensagem não tem mais imagem." }) }],
+    components: botaoVerNaImagem(inter.message, idioma),
+  });
+}
+
+/* O segundo botao, na resposta do 📝: a mesma imagem, com o texto trocado no
+   lugar. So' aparece quando da' para cumprir -- leitura com posicoes, lingua
+   que a fonte desenha. Botao que responde "nao consigo" e' pior que nenhum.
+
+   O id carrega canal e mensagem do PRINT: o clique chega vindo da resposta
+   efemera, e sem isso nao haveria como saber qual imagem desenhar. */
+const ROTULO_VER_NA_IMAGEM = {
+  pt: "Ver na imagem", en: "View on image", es: "Ver en la imagen", fr: "Voir sur l'image",
+  de: "Im Bild ansehen", it: "Vedi sull'immagine", ru: "Показать на картинке", uk: "Показати на зображенні",
+  tr: "Görselde gör", pl: "Pokaż na obrazie", id: "Lihat di gambar", vi: "Xem trên ảnh",
+};
+
+function botaoVerNaImagem(msg, idioma) {
+  const img = imagemDaMensagem(msg);
+  const leitura = img && textoDasImagens.get(img.id);
+  if (!leitura?.linhas?.some((l) => l.caixa) || !desenhaEm(idioma) || !msg?.channelId || !msg?.id) return [];
+  const base = String(idioma || "").toLowerCase().split(/[-_]/)[0];
+  return [{ type: 1, components: [{
+    type: 2, style: 1, custom_id: `img:ver:${msg.channelId}:${msg.id}`,
+    emoji: { name: "🖼️" }, label: ROTULO_VER_NA_IMAGEM[base] || ROTULO_VER_NA_IMAGEM.en,
+  }] }];
+}
+
+/* Traduz os paragrafos com no maximo quatro ao mesmo tempo -- um print com
+   vinte paragrafos nao pode disparar vinte chamadas de uma vez no tradutor
+   gratuito, que castiga rajada. E o mesmo teto de 4 mil letras do 📝. */
+async function traduzirParagrafos(textos, idioma, motor) {
+  const fora = new Array(textos.length).fill("");
+  let usadas = 0, prox = 0;
+  const cabe = textos.map((t) => (usadas += t.length) <= 4000);
+  const trabalhador = async () => {
+    while (prox < textos.length) {
+      const k = prox++;
+      if (!cabe[k]) continue;
+      fora[k] = (await traduzirLongo(textos[k], idioma, motor).catch(() => "")) || "";
+    }
+  };
+  await Promise.all([trabalhador(), trabalhador(), trabalhador(), trabalhador()]);
+  return fora;
+}
+
+async function cliqueVerNaImagem(inter, buscar = fetch) {
+  await inter.deferReply({ flags: 64 });
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
+  const motor = await motorDoGuild(inter.guildId);
+  const aviso = async (e) => inter.editReply({ embeds: [{ color: COR, ...(await traduzirEmbed(e, idioma, motor)) }] });
+
+  const [, , canalId, msgId] = inter.customId.split(":");
+  const canal = await client.channels.fetch(canalId).catch(() => null);
+  const msg = canal?.messages ? await canal.messages.fetch(msgId).catch(() => null) : null;
+  const img = msg && imagemDaMensagem(msg);
+  if (!img || !visaoDoDono) {
+    return aviso({ title: "🤔 Não achei a imagem", description: "Essa mensagem não existe mais ou não tem imagem." });
+  }
+  if (!desenhaEm(idioma)) {
+    return aviso({ title: "🖼️ Ainda não desenho nessa língua",
+      description: "Por enquanto a imagem traduzida sai em línguas de alfabeto latino, cirílico e grego. O texto do 📝 continua funcionando." });
+  }
+  /* Antes de abrir a imagem, e nao depois: descompactar com a memoria ja'
+     alta e' exatamente como o processo morre. */
+  if (process.memoryUsage().rss > MEMORIA_PARA_DESENHAR) {
+    return aviso({ title: "⏳ Estou ocupado agora", description: "Tente de novo em um minuto." });
+  }
+  const sharp = await carregarSharp();
+  if (!sharp) return aviso({ title: "❌ Não deu", description: "Não consegui montar a imagem agora." });
+
+  let leitura;
+  try { leitura = await lerImagemDaMensagem(img, buscar); } catch (e) { return aviso(falhaDeLeitura(e)); }
+  const paragrafos = agruparEmParagrafos(leitura.linhas || []).filter((p) => /\p{L}/u.test(p.texto));
+  if (!paragrafos.length) {
+    return aviso({ title: "🖼️ Não achei texto nessa imagem", description: "Não tem nada escrito que eu consiga ler aqui." });
+  }
+  const traducoes = await traduzirParagrafos(paragrafos.map((p) => p.texto), idioma, motor);
+
+  try {
+    const r = await buscar(img.url, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
+    const bytes = Buffer.from(await r.arrayBuffer());
+    const pronta = await naFilaDeDesenho(() => desenharTraducao(bytes, paragrafos, traducoes, sharp));
+    if (!pronta) {
+      return aviso({ title: `🌐 Já está em ${nomeDoIdioma(idioma)}`, description: "O texto desta imagem já está no seu idioma." });
+    }
+    return inter.editReply({ embeds: [], components: [], files: [{ attachment: pronta, name: "traduzido.jpg" }] });
+  } catch (e) {
+    console.error("imagem: nao consegui desenhar a traducao:", e?.message || e);
+    return aviso({ title: "❌ Não deu", description: "Não consegui montar a imagem agora. O texto do 📝 continua funcionando." });
+  }
 }
 
 async function cliqueTraduzirMsg(inter) {
@@ -11909,6 +12263,9 @@ client.on("interactionCreate", async (inter) => {
        "CYRON nao respondeu a tempo" no primeiro teste de verdade. */
     if (inter.isButton() && inter.customId === "img:ler") {
       return await cliqueLerImagem(inter);
+    }
+    if (inter.isButton() && inter.customId.startsWith("img:ver:")) {
+      return await cliqueVerNaImagem(inter);
     }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
