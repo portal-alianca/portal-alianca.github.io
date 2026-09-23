@@ -1790,7 +1790,11 @@ async function baixarAnexos(msg) {
     try {
       const r = await fetch(a.url, { signal: AbortSignal.timeout(15000) });
       if (!r.ok) throw new Error(`http ${r.status}`);
-      arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo" });
+      /* `contentType` viaja junto so' para o botao de ler imagem saber que isto
+         e' uma imagem mesmo quando o nome nao tem extensao. O discord.js
+         ignora a chave a mais no envio. */
+      arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo",
+                      contentType: a.contentType || "" });
     } catch (e) {
       console.error("espelho: nao consegui baixar o anexo:", e?.message || e);
       /* Mesma regra da linha de cima, e pelo mesmo motivo: o endereco da fala
@@ -2619,6 +2623,167 @@ function videoQueODiscordToca(texto) {
   return achado ? achado[0] : "";
 }
 
+/* ---------------- ler o texto de dentro de uma imagem ----------------
+
+   Numa alianca de varios paises, print e' a moeda do dia a dia: regra de
+   evento, horario de rally, relatorio de batalha, anuncio do jogo. E era
+   justamente o que nao atravessava -- o CYRON respondia "so' imagem, nao ha' o
+   que traduzir", e o print do lider em arabe chegava mudo na sala em
+   portugues.
+
+   SOB DEMANDA, e nao automatico. Um botao "📝" embaixo do print, e quem toca
+   recebe a traducao so' para si, no idioma dela. Assim:
+   - so' se le a imagem que alguem quer ler (print de meme nao gasta nada);
+   - traduz para UM idioma, o de quem pediu, e nao para todas as salas;
+   - a leitura fica guardada: tres pessoas no mesmo print = uma leitura so'.
+
+   Quem le e' a Azure (Image Analysis 4.0, "read"), no plano gratuito F0:
+   5 mil imagens por mes. Esse plano NAO tem como cobrar -- quando a cota
+   acaba ele recusa ate' o mes virar, e aqui isso vira uma frase educada para
+   quem clicou. E' um recurso separado do tradutor: ler a imagem nao gasta a
+   cota de traducao; so' o texto lido, traduzido para UM idioma, gasta.
+
+   A chave mora como as do tradutor: cofre da maquina primeiro (VISAO_CHAVE,
+   VISAO_ENDPOINT), senao o painel /admin, cifrada. Sem chave, o botao nem
+   aparece -- botao que so' responde "desligado" e' pior que botao nenhum. */
+let visaoDoDono = null; // { endpoint, chave } ou null
+
+function lerVisaoDoDono(a = {}) {
+  const endpoint = String(process.env.VISAO_ENDPOINT || a.visao_endpoint || "").trim().replace(/\/+$/, "");
+  const chave = String(process.env.VISAO_CHAVE || "").trim() || (a.visao_chave ? decifrar(a.visao_chave) : "");
+  /* https obrigatorio: a chave vai no cabecalho, e endereco sem https a
+     mandaria em texto puro pela rede. */
+  if (!chave || !/^https:\/\/[^\s/]+/i.test(endpoint)) return null;
+  return { endpoint, chave };
+}
+
+/* Devolve o texto lido (pode ser "" -- imagem sem letra nenhuma).
+
+   429 vem em dois sabores, e eles pedem frases diferentes para quem clicou:
+   a cota do MES acabou (volta dia 1) ou muita gente pediu no mesmo minuto
+   (o F0 aceita 20 por minuto; tenta de novo ja'). O corpo da resposta diz
+   qual e' qual. */
+async function lerTextoDaImagem(bytes, visao, buscar = fetch) {
+  const url = `${visao.endpoint}/computervision/imageanalysis:analyze?api-version=2024-02-01&features=read`;
+  const r = await buscar(url, {
+    method: "POST",
+    headers: { "Ocp-Apim-Subscription-Key": visao.chave, "Content-Type": "application/octet-stream" },
+    body: bytes,
+    signal: AbortSignal.timeout(20000),
+  });
+  if (r.status === 429) {
+    const corpo = await r.text().catch(() => "");
+    const e = new Error("leitura de imagem recusada (429)");
+    e.motivo = /quota|volume/i.test(corpo) ? "cota" : "pressa";
+    throw e;
+  }
+  if (!r.ok) throw new Error(`leitura de imagem respondeu HTTP ${r.status}`);
+  const j = await r.json();
+  return (j?.readResult?.blocks || [])
+    .flatMap((b) => (b?.lines || []).map((l) => String(l?.text || "").trim()))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function ehImagemAnexo(a) {
+  return /^image\//i.test(a?.contentType || "") || /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(a?.name || a?.url || "");
+}
+
+/* A primeira imagem da mensagem: anexo primeiro (o print de verdade), senao a
+   imagem do cartao. O `id` e' a URL sem a assinatura, que muda a cada vez que
+   o Discord entrega a mensagem -- com ela na chave, o cache nunca acertaria. */
+function imagemDaMensagem(msg) {
+  const anexos = msg?.attachments?.values ? [...msg.attachments.values()] : (msg?.attachments || []);
+  for (const a of anexos) {
+    if (ehImagemAnexo(a) && a.url) return { url: a.url, id: String(a.id || a.url.split("?")[0]) };
+  }
+  const img = msg?.embeds?.[0]?.image?.url || msg?.embeds?.[0]?.data?.image?.url;
+  return img ? { url: img, id: img.split("?")[0] } : null;
+}
+
+const textoDasImagens = new Map(); // id -> texto lido
+const MAX_IMAGENS_LEMBRADAS = 300;
+
+/* O rotulo do botao na lingua da SALA: quem le a sala em arabe ve o botao em
+   arabe. Uma tabela e nao o tradutor: rotulo de botao em toda mensagem com
+   imagem seria uma chamada de traducao por print, que e' exatamente o gasto
+   que o botao existe para evitar. Lingua fora da tabela cai no ingles. */
+const ROTULO_LER_IMAGEM = {
+  pt: "Traduzir imagem", en: "Translate image", es: "Traducir imagen", fr: "Traduire l'image",
+  de: "Bild übersetzen", it: "Traduci immagine", ar: "ترجمة الصورة", ru: "Перевести изображение",
+  tr: "Görseli çevir", pl: "Przetłumacz obraz", id: "Terjemahkan gambar", vi: "Dịch hình ảnh",
+  th: "แปลรูปภาพ", zh: "翻译图片", ja: "画像を翻訳", ko: "이미지 번역", uk: "Перекласти зображення",
+};
+
+function botaoDeLerImagem(idioma) {
+  const base = String(idioma || "").toLowerCase().split(/[-_]/)[0];
+  return [{ type: 1, components: [{
+    type: 2, style: 2, custom_id: "img:ler",
+    emoji: { name: "📝" }, label: ROTULO_LER_IMAGEM[base] || ROTULO_LER_IMAGEM.en,
+  }] }];
+}
+
+/* O que dizer para quem pediu. Devolve o embed pronto -- o botao e o menu
+   Translate usam a mesma funcao, para as duas portas nao envelhecerem
+   separadas. */
+async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
+  const img = imagemDaMensagem(msg);
+  if (!img) return null;
+  const motor = await motorDoGuild(guildId);
+  /* Todo aviso sai no idioma de quem clicou. Escritos aqui em portugues, eles
+     chegariam em portugues para o arabe que tocou no botao -- que e'
+     exatamente quem o botao existe para atender. */
+  const aviso = (embed) => traduzirEmbed(embed, idioma, motor);
+
+  if (!visaoDoDono) {
+    return aviso({ title: "🖼️ Leitura de imagem desligada",
+      description: "Ainda não ligaram a leitura de texto em imagens neste bot." });
+  }
+
+  let texto = textoDasImagens.get(img.id);
+  if (texto === undefined) {
+    try {
+      const r = await buscar(img.url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
+      texto = await lerTextoDaImagem(Buffer.from(await r.arrayBuffer()), visaoDoDono, buscar);
+    } catch (e) {
+      if (e?.motivo === "cota") {
+        console.error("imagem: a cota gratuita de leitura de imagem do mes acabou");
+        return aviso({ title: "🖼️ Acabou a leitura grátis deste mês",
+          description: "O limite gratuito de leitura de imagens do mês foi atingido. Volta a funcionar no dia 1." });
+      }
+      if (e?.motivo === "pressa") {
+        return aviso({ title: "⏳ Muita gente pedindo agora", description: "Tente de novo em um minuto." });
+      }
+      console.error("imagem: nao consegui ler a imagem:", e?.message || e);
+      return aviso({ title: "❌ Não deu",
+        description: "Não consegui ler essa imagem agora. Tente de novo em instantes." });
+    }
+    /* So' o que deu certo vai para a memoria. Guardar a falha faria um
+       tropeco de rede virar "essa imagem nao tem texto" para sempre. */
+    textoDasImagens.set(img.id, texto);
+    while (textoDasImagens.size > MAX_IMAGENS_LEMBRADAS) {
+      textoDasImagens.delete(textoDasImagens.keys().next().value);
+    }
+  }
+
+  if (!texto) {
+    return aviso({ title: "🖼️ Não achei texto nessa imagem",
+      description: "Não tem nada escrito que eu consiga ler aqui." });
+  }
+  /* Teto de 4 mil letras: print de jogo tem centenas. Um print de parede de
+     texto nao pode consumir, sozinho, o que cem prints normais gastariam. */
+  const traduzido = await traduzirLongo(texto.slice(0, 4000), idioma, motor);
+  const rodape = await aviso({ footer: { text: "O texto da imagem, traduzido · só você está vendo isto" } });
+  return {
+    title: `📝 ${nomeDoIdioma(idioma)}`,
+    /* A traducao ja' esta' no idioma certo: nao passa pelo `aviso`, senao
+       seria traduzida de novo. */
+    description: (traduzido || texto).slice(0, 3800),
+    footer: rodape.footer,
+  };
+}
+
 function midiaDeLink(msg) {
   for (const e of (msg?.embeds || [])) {
     const candidatas = [e?.image?.url, e?.thumbnail?.url]
@@ -3037,7 +3202,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
     if (emendou) continue;
 
     try {
-      const posta = await webhook.send({
+      const carga = {
         username: nome,
         avatarURL: foto,
         files: arquivos,
@@ -3050,7 +3215,29 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
            e repetir um cargo da sala de origem chamaria o publico errado.
            @everyone passa quando -- e so' quando -- passou no original. */
         allowedMentions: { parse: avisaTodos ? ["everyone"] : [], users: marcados },
-      });
+      };
+      /* O botao de ler a imagem, so' quando ha' imagem e ha' quem leia. */
+      const comBotao = !!visaoDoDono && arquivos.some(ehImagemAnexo);
+      if (comBotao) carga.components = botaoDeLerImagem(destino.idioma);
+
+      let posta;
+      try {
+        posta = await webhook.send(carga);
+      } catch (e) {
+        /* O BOTAO NUNCA PODE CUSTAR A MENSAGEM.
+
+           Webhook criado pelo proprio bot aceita botao clicavel; um webhook
+           de outra origem, reaproveitado numa sala antiga, pode recusar. Se
+           a recusa derrubasse o envio, uma melhoria opcional apagaria a
+           conversa daquela sala inteira. Sem o botao, a fala chega igual --
+           e o print continua traduzivel pelo menu Translate.
+
+           Reenviar nao duplica: o envio de cima falhou inteiro. */
+        if (!comBotao) throw e;
+        console.log(`espelho: a sala de ${destino.idioma} recusou o botao de imagem; mando sem.`);
+        delete carga.components;
+        posta = await webhook.send(carga);
+      }
       if (posta?.id) {
         cartoes.set(destino.canal_id, { id: posta.id, linhas: [linhaNova], falas, cabecalho, traduzido: traduziuAqui });
         guardarFalas(posta.id, falas);
@@ -3294,6 +3481,14 @@ async function recarregarAjustes() {
   const agoraDono = reservasDoDono.map((r) => r.tipo).join();
   if (antesDono !== agoraDono) {
     console.log(`tradutor: chaves do dono agora sao [${agoraDono || "nenhuma"}]`);
+  }
+
+  /* A leitura de imagem liga e desliga daqui, sem publicar o bot: gravou a
+     chave no painel, em ate' um minuto o botao comeca a aparecer. */
+  const tinhaVisao = !!visaoDoDono;
+  visaoDoDono = lerVisaoDoDono(a);
+  if (tinhaVisao !== !!visaoDoDono) {
+    console.log(`imagem: leitura de texto em imagens ${visaoDoDono ? "LIGADA" : "desligada"}`);
   }
 }
 
@@ -8731,6 +8926,28 @@ const EXPLICA_ERRO = [
       "grande demais para o prazo, e o tamanho é que precisa de ajuste.",
   },
   {
+    /* ANTES da regra do banco: "nao consegui ler a imagem: fetch failed" e'
+       queda da Azure ou do Discord, e a regra do banco -- que casa com
+       "fetch failed" -- mandaria o dono olhar o Supabase. */
+    quando: /imagem.{0,20}cota gratuita de leitura/i,
+    titulo: "Acabou a leitura grátis de imagens do mês",
+    precisaDeVoce: false,
+    oque: "O plano gratuito da Azure lê 5 mil imagens por mês, e esse limite foi atingido. " +
+      "Quem tocar no botão 📝 recebe um aviso educado até o mês virar.\n\n" +
+      "**Ninguém é cobrado:** o plano F0 não tem como gerar fatura — ele só recusa.",
+    fazer: "Nada. Volta sozinho no dia 1. Se isso acontecer todo mês, dá para pensar num plano pago " +
+      "— mas aí é decisão de custo, não conserto.",
+  },
+  {
+    quando: /imagem.{0,20}nao consegui ler a imagem/i,
+    titulo: "Não consegui ler uma imagem",
+    precisaDeVoce: false,
+    oque: "Alguém tocou no botão 📝 e a leitura falhou — quase sempre a Azure ou o Discord " +
+      "lentos naquele instante. Quem pediu recebeu \"tente de novo em instantes\".",
+    fazer: "Nada, se for de vez em quando. Se virar rotina, confira a chave em /admin → 👁️ " +
+      "Leitura de imagem: salvar de novo faz um teste na hora.",
+  },
+  {
     quando: /supabase 5\d\d|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network|EAI_AGAIN/i,
     titulo: "O banco de dados piscou",
     precisaDeVoce: false,
@@ -9350,6 +9567,7 @@ function linhasDoAdmin() {
      inteira e' recusada, e o painel some. */
   ] }, { type: 1, components: [
     { type: 2, custom_id: "admin:chaves", style: 1, emoji: { name: "🔑" }, label: "Chaves de tradução" },
+    { type: 2, custom_id: "admin:visao", style: 1, emoji: { name: "👁️" }, label: "Leitura de imagem" },
     { type: 2, custom_id: "admin:comandos", style: 2, emoji: { name: "🧪" }, label: "Meus comandos" },
     { type: 2, custom_id: "admin:novocomando", style: 4, emoji: { name: "➕" }, label: "Novo comando" },
   ] }];
@@ -9441,6 +9659,7 @@ async function cliqueAdmin(inter) {
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
   if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
+  if (acao === "visao" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaVisao()));
   if (acao === "novocomando" && inter.isButton()) {
     return inter.showModal(janelaValida(await janelaDeComando(null)));
   }
@@ -9676,6 +9895,83 @@ async function janelaDasChaves() {
         placeholder: "vazio mantém as duas" }] },
     ],
   };
+}
+
+/* A janela da leitura de imagem. Separada da das chaves de traducao porque o
+   Discord aceita no maximo cinco campos por janela, e aquela ja' tem quatro. */
+async function janelaDaVisao() {
+  const a = await ajustes();
+  const noCofre = !!process.env.VISAO_CHAVE;
+  return {
+    custom_id: "admin:visao",
+    title: "Leitura de texto em imagens",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "visao_endpoint", style: 1, required: false, max_length: 200,
+        label: "Endpoint (página Keys and Endpoint)",
+        placeholder: "https://nome-do-recurso.cognitiveservices.azure.com",
+        ...(a.visao_endpoint ? { value: a.visao_endpoint } : {}) }] },
+      { type: 1, components: [{ type: 4, custom_id: "visao_chave", style: 1, required: false, max_length: 200,
+        label: (noCofre ? "Chave (no cofre da máquina)"
+          : a.visao_chave ? "Chave (tenho uma; escreva pra trocar)" : "Chave (KEY 1)").slice(0, 45),
+        placeholder: "apagar = desliga a leitura de imagem" }] },
+    ],
+  };
+}
+
+/* Salva, e TESTA na hora.
+
+   Chave errada so' apareceria no dia em que alguem tocasse no botao -- e ai'
+   quem veria o erro seria o jogador, nao o dono. O teste manda um pedido
+   vazio: a Azure responde 400 ("faltou a imagem") quando endereco e chave
+   estao certos, 401 quando a chave esta' errada e 404 quando o endereco
+   esta' errado. Nao gasta cota nenhuma. */
+async function conferirVisao(visao, buscar = fetch) {
+  try {
+    const r = await buscar(`${visao.endpoint}/computervision/imageanalysis:analyze?api-version=2024-02-01&features=read`, {
+      method: "POST",
+      headers: { "Ocp-Apim-Subscription-Key": visao.chave, "Content-Type": "application/octet-stream" },
+      body: Buffer.alloc(0),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (r.status === 400) return { ok: true, frase: "✅ **Chave e endpoint funcionando.** O botão 📝 começa a aparecer nos prints em até um minuto." };
+    if (r.status === 401) return { ok: false, frase: "❌ A Azure **recusou a chave**. Confira se copiou a KEY 1 inteira." };
+    if (r.status === 403) return { ok: false, frase: "❌ A Azure **negou acesso**. Confira se o recurso é do tipo Computer Vision e está ativo." };
+    if (r.status === 404) return { ok: false, frase: "❌ **Endpoint errado.** Copie o endereço inteiro da página Keys and Endpoint do recurso." };
+    if (r.status === 429) return { ok: true, frase: "✅ A chave existe, mas a Azure pediu calma agora. Deve funcionar em instantes." };
+    return { ok: false, frase: `❌ A Azure respondeu HTTP ${r.status}. Confira o recurso no portal.` };
+  } catch (e) {
+    return { ok: false, frase: "❌ **Não achei esse endereço.** Confira o endpoint — ele termina em `.cognitiveservices.azure.com`." };
+  }
+}
+
+async function salvarVisao(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+  const endpoint = campo("visao_endpoint").replace(/\/+$/, "");
+  const chave = campo("visao_chave");
+
+  if (chave.toLowerCase() === "apagar") {
+    await porAjuste("visao_chave", null);
+    await recarregarAjustes();
+    return inter.editReply("🗑️ Chave apagada. O botão 📝 some dos prints novos.");
+  }
+  if (endpoint && !/^https:\/\/[^\s/]+/i.test(endpoint)) {
+    return inter.editReply("O endpoint precisa começar com https://. **Não gravei nada.**");
+  }
+  if (endpoint) await porAjuste("visao_endpoint", endpoint);
+  /* Cifrada antes de encostar no banco, igual as de traducao. */
+  if (chave) await porAjuste("visao_chave", cifrar(chave));
+  await recarregarAjustes();
+
+  if (!visaoDoDono) {
+    return inter.editReply("Gravei o que veio, mas ainda falta o endpoint ou a chave. " +
+      "O botão só aparece com os dois.");
+  }
+  const teste = await conferirVisao(visaoDoDono);
+  return inter.editReply(teste.frase);
 }
 
 async function salvarChaves(inter) {
@@ -10676,6 +10972,19 @@ async function cliqueEscolherIdioma(inter) {
 }
 
 /* Seletor pendurado num aviso: traduz aquele texto so pra quem clicou. */
+/* O botao 📝 embaixo de um print espelhado.
+
+   Efemero, e de proposito: a traducao e' de quem pediu, no idioma de quem
+   pediu. Publicar na sala seria a traducao para UMA lingua jogada numa sala
+   que le outra -- e mais uma mensagem no meio da conversa. */
+async function cliqueLerImagem(inter) {
+  await inter.deferReply({ flags: 64 });
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
+  const embed = await explicarImagem(inter.message, idioma, inter.guildId);
+  return inter.editReply({ embeds: [{ color: COR, ...(embed || {
+    title: "🤔 Não achei a imagem", description: "Essa mensagem não tem mais imagem." }) }] });
+}
+
 async function cliqueTraduzirMsg(inter) {
   const id = inter.customId.slice("traduzir-msg:".length);
   const idioma = String(inter.values?.[0] || "");
@@ -11455,6 +11764,10 @@ async function comandoDeInteracao(inter) {
     const texto = textoDaMensagem(inter.targetMessage);
     await inter.deferReply({ flags: 64 });
     if (!texto) {
+      /* So' imagem: agora da' pra ler o que esta' escrito nela. A mesma
+         funcao do botao 📝, para as duas portas nao envelhecerem separadas. */
+      const daImagem = await explicarImagem(inter.targetMessage, await lingua(), inter.guildId);
+      if (daImagem) return responder(inter, daImagem, { idioma: "pt" });
       return responder(inter, { title: "🤔 Mensagem vazia",
         description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma: await lingua() });
     }
@@ -11597,6 +11910,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "admin:codigos") return await gerarCodigos(inter);
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       if (inter.customId === "admin:chaves") return await salvarChaves(inter);
+      if (inter.customId === "admin:visao") return await salvarVisao(inter);
       if (inter.customId === "admin:novocomando") return await salvarComando(inter);
       if (inter.customId === "admin:busca") return await procurarServidor(inter);
       return;
@@ -11604,6 +11918,7 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isStringSelectMenu()) {
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
+      if (inter.customId === "img:ler") return await cliqueLerImagem(inter);
       if (inter.customId.startsWith("traduzir-fixo:")) return await cliqueTraduzirFixo(inter);
       return;
     }

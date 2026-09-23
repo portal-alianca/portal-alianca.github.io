@@ -1029,6 +1029,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1036,6 +1037,7 @@ function conferirCartao(onde, embed, componentes = []) {
   const montarMundo = () => {
     const salas = new Map([["en", { lastMessageId: null }], ["es", { lastMessageId: null }]]);
     const mensagens = new Map();
+    const recusaBotao = new Set();
     let seq = 0;
     globalThis.clienteDoWebhook = (url) => ({
       send: async (o) => {
@@ -1043,7 +1045,11 @@ function conferirCartao(onde, embed, componentes = []) {
         /* `embeds?.` porque agora existe mensagem SEM cartão (o vídeo). O
            brinquedo antigo lia `o.embeds[0]` e estouraria ali — dentro de um
            .catch, calado, e o teste do vídeo passaria sem vídeo nenhum. */
+        /* Sala que recusa botao: o Discord de verdade responderia erro, e a
+           fala nao pode sumir por causa disso. */
+        if (o.components && recusaBotao.has(url)) throw new Error("Invalid Form Body: components");
         mensagens.set(id, { canal: url, embed: o.embeds?.[0], content: o.content,
+                            components: o.components, arquivos: o.files || [],
                             mencoes: o.allowedMentions?.users || [] });
         salas.get(url).lastMessageId = id;
         return { id };
@@ -1053,10 +1059,13 @@ function conferirCartao(onde, embed, componentes = []) {
         mensagens.get(id).embed = o.embeds[0];
       },
     });
-    return { salas, mensagens, quantas: () => mensagens.size };
+    return { salas, mensagens, recusaBotao, quantas: () => mensagens.size };
   };
 
   globalThis.baixarAnexos = async () => ({ arquivos: [], links: [] });
+  /* Leitura de imagem desligada por padrao: os testes antigos do espelho
+     nao sabem que ela existe, e nao podem passar a depender dela. */
+  globalThis.visaoDoDono = null;
   globalThis.aQuemResponde = async () => null;
   globalThis.corDaPessoa = () => 0x5865f2;
   globalThis.ondeMoraAFala = new Map();
@@ -1156,6 +1165,73 @@ function conferirCartao(onde, embed, componentes = []) {
     ok("a fala seguinte abre cartão novo, embaixo do vídeo", depois.length, 3);
     verdade("e o cartão do vídeo continua só com a frase dele",
       !/gostaram/.test(depois[0].embed.description));
+  }
+
+  /* O BOTÃO 📝 EMBAIXO DO PRINT.
+   *
+   * Olhado nas mensagens que saem, e não nas linhas do código: foi um teste
+   * de linha que aprovou o vídeo que não tocava. */
+  {
+    const antesBaixar = globalThis.baixarAnexos;
+    const print = { attachment: Buffer.from("x"), name: "Screenshot_evento.jpg", contentType: "image/jpeg" };
+    const planilha = { attachment: Buffer.from("x"), name: "regras.pdf", contentType: "application/pdf" };
+    const naSala = (mundo, sala) => [...mundo.mensagens.values()].filter((m) => m.canal === sala);
+    const temBotao = (m) => JSON.stringify(m?.components || []).includes('"img:ler"');
+
+    try {
+      /* Ligado + print: botão em cada sala, no idioma DA SALA. */
+      globalThis.visaoDoDono = { endpoint: "https://x.cognitiveservices.azure.com", chave: "k" };
+      globalThis.baixarAnexos = async () => ({ arquivos: [print], links: [] });
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "regras do evento", { attachments: { size: 1 } });
+        const en = naSala(mundo, "en")[0], es = naSala(mundo, "es")[0];
+        verdade("print com leitura ligada: botão 📝 na sala em inglês", temBotao(en));
+        verdade("e na sala em espanhol", temBotao(es));
+        verdade("o rótulo sai na língua da sala (inglês)",
+          JSON.stringify(en.components).includes("Translate image"));
+        verdade("o rótulo sai na língua da sala (espanhol)",
+          JSON.stringify(es.components).includes("Traducir imagen"));
+        verdade("e o print continua indo junto", en.arquivos.length === 1);
+      }
+
+      /* Desligado: botão que só responde "desligado" é pior que nenhum. */
+      globalThis.visaoDoDono = null;
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "regras", { attachments: { size: 1 } });
+        verdade("sem chave, o botão nem aparece", !temBotao(naSala(mundo, "en")[0]));
+      }
+
+      /* Anexo que não é imagem não ganha botão de ler imagem. */
+      globalThis.visaoDoDono = { endpoint: "https://x.cognitiveservices.azure.com", chave: "k" };
+      globalThis.baixarAnexos = async () => ({ arquivos: [planilha], links: [] });
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "segue o pdf", { attachments: { size: 1 } });
+        verdade("pdf não ganha botão de ler imagem", !temBotao(naSala(mundo, "en")[0]));
+      }
+
+      /* O BOTÃO NUNCA PODE CUSTAR A MENSAGEM. Uma sala cujo webhook recusa
+         botão tem que receber a fala do mesmo jeito, só que sem o botão. */
+      globalThis.baixarAnexos = async () => ({ arquivos: [print], links: [] });
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        mundo.recusaBotao.add("en");
+        await falar(mundo, "rally às 20h", { attachments: { size: 1 } });
+        const en = naSala(mundo, "en");
+        ok("sala que recusa botão: a fala chega mesmo assim, uma vez só", en.length, 1);
+        verdade("sem o botão, e com o print", !temBotao(en[0]) && en[0].arquivos.length === 1);
+        verdade("e a outra sala continua com botão", temBotao(naSala(mundo, "es")[0]));
+      }
+    } finally {
+      globalThis.baixarAnexos = antesBaixar;
+      globalThis.visaoDoDono = null;
+    }
   }
 
   /* Figurinha abre cartão novo pelo mesmo motivo do anexo: a imagem vive presa
@@ -5424,6 +5500,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -6184,6 +6261,220 @@ function conferirCartao(onde, embed, componentes = []) {
        mais silenciosa que existe sairia pintada de troca de versão. */
     verdade("surdez conta como morte mesmo com a batida velha",
       /morreuSurdo \|\|/.test(corpo));
+  }
+}
+
+/* LER O TEXTO DE DENTRO DE UM PRINT.
+ *
+ * O CYRON respondia "só imagem, não há o que traduzir" — e print é a moeda de
+ * uma aliança: regra de evento, horário de rally, relatório de batalha. Agora
+ * um botão 📝 lê a imagem (Azure, plano grátis que não tem como cobrar) e
+ * entrega a tradução só para quem pediu.
+ *
+ * Uma Azure de mentira aqui: nenhum teste encosta na rede. */
+{
+  const salvo = {};
+  for (const n of ["decifrar", "traduzirLongo", "motorDoGuild", "traduzirEmbed", "nomeDoIdioma"]) salvo[n] = globalThis[n];
+  const envAntes = { e: process.env.VISAO_ENDPOINT, c: process.env.VISAO_CHAVE };
+  delete process.env.VISAO_ENDPOINT; delete process.env.VISAO_CHAVE;
+  try {
+    globalThis.decifrar = (x) => `claro:${x}`;
+    globalThis.traduzirLongo = async (t, idioma) => `[${idioma}] ${t}`;
+    globalThis.motorDoGuild = async () => ({ tipo: "auto" });
+    /* O aviso passa pelo tradutor: marca o que foi traduzido para o teste ver. */
+    globalThis.traduzirEmbed = async (e, idioma) => JSON.parse(JSON.stringify(e).replace(/"(title|description|text)":"/g, `"$1":"<${idioma}>`));
+    globalThis.nomeDoIdioma = (c) => ({ ar: "Árabe", pt: "Português" }[c] || c);
+
+    const m = carregar(["lerVisaoDoDono", "lerTextoDaImagem", "ehImagemAnexo", "imagemDaMensagem",
+      "MAX_IMAGENS_LEMBRADAS", "conferirVisao"]);
+    /* `let visaoDoDono` e o cache não saem pelo carregar: moram no global. */
+    globalThis.textoDasImagens = new Map();
+    const { explicarImagem } = carregar(["explicarImagem"]);
+
+    /* ---- de onde vem a chave ---- */
+    {
+      ok("sem chave, desligado", m.lerVisaoDoDono({}), null);
+      const doPainel = m.lerVisaoDoDono({ visao_endpoint: "https://r.cognitiveservices.azure.com/", visao_chave: "cifrada" });
+      ok("do painel: endpoint sem a barra do fim, chave decifrada",
+        doPainel, { endpoint: "https://r.cognitiveservices.azure.com", chave: "claro:cifrada" });
+      /* A chave vai no cabeçalho: sem https, iria em texto puro pela rede. */
+      ok("endpoint sem https é recusado", m.lerVisaoDoDono({ visao_endpoint: "http://r.x", visao_chave: "c" }), null);
+      process.env.VISAO_ENDPOINT = "https://cofre.cognitiveservices.azure.com";
+      process.env.VISAO_CHAVE = "do-cofre";
+      ok("o cofre da máquina ganha do painel",
+        m.lerVisaoDoDono({ visao_endpoint: "https://r.x", visao_chave: "cifrada" }),
+        { endpoint: "https://cofre.cognitiveservices.azure.com", chave: "do-cofre" });
+      delete process.env.VISAO_ENDPOINT; delete process.env.VISAO_CHAVE;
+    }
+
+    /* ---- a Azure de mentira ---- */
+    const visao = { endpoint: "https://r.cognitiveservices.azure.com", chave: "k" };
+    const azure = (status, corpo) => {
+      const pedidos = [];
+      const f = async (url, o) => {
+        pedidos.push({ url, o });
+        if (!/imageanalysis/.test(url)) {
+          return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) };
+        }
+        return { ok: status < 300, status, json: async () => corpo, text: async () => JSON.stringify(corpo) };
+      };
+      f.pedidos = pedidos;
+      return f;
+    };
+    const leitura = { readResult: { blocks: [{ lines: [{ text: "RALLY 20:00" }, { text: "  todos no castelo  " }] }] } };
+
+    {
+      const f = azure(200, leitura);
+      ok("lê as linhas, na ordem, sem espaço sobrando",
+        await m.lerTextoDaImagem(Buffer.from("x"), visao, f), "RALLY 20:00\ntodos no castelo");
+      verdade("no endereço do Image Analysis, pedindo só a leitura",
+        /\/computervision\/imageanalysis:analyze\?api-version=2024-02-01&features=read$/.test(f.pedidos[0].url));
+      verdade("com a chave no cabeçalho, e não na URL",
+        f.pedidos[0].o.headers["Ocp-Apim-Subscription-Key"] === "k" && !f.pedidos[0].url.includes("k&"));
+      ok("imagem sem letra nenhuma devolve vazio", await m.lerTextoDaImagem(Buffer.from("x"), visao, azure(200, { readResult: { blocks: [] } })), "");
+    }
+    {
+      /* Os dois sabores de 429 pedem frases diferentes para quem clicou. */
+      const erro = async (f) => { try { await m.lerTextoDaImagem(Buffer.from("x"), visao, f); return null; } catch (e) { return e; } };
+      ok("cota do mês acabou", (await erro(azure(429, { error: { message: "Out of call volume quota" } })))?.motivo, "cota");
+      ok("gente demais no mesmo minuto", (await erro(azure(429, { error: { message: "Rate limit exceeded" } })))?.motivo, "pressa");
+      verdade("outro erro sobe como erro", !!(await erro(azure(500, {}))));
+    }
+
+    /* ---- achar a imagem na mensagem ---- */
+    {
+      const msg = { attachments: new Map([
+        ["1", { id: "1", name: "notas.txt", contentType: "text/plain", url: "https://cdn/n.txt" }],
+        ["2", { id: "2", name: "print.png", contentType: "image/png", url: "https://cdn/p.png?ex=assinado" }],
+      ]) };
+      ok("pula o anexo que não é imagem e acha o print", m.imagemDaMensagem(msg), { url: "https://cdn/p.png?ex=assinado", id: "2" });
+      /* A assinatura muda a cada entrega: com ela na chave, o cache nunca acertaria. */
+      ok("imagem do cartão serve, e o id vem sem a assinatura",
+        m.imagemDaMensagem({ attachments: new Map(), embeds: [{ image: { url: "https://cdn/c.jpg?ex=1" } }] }),
+        { url: "https://cdn/c.jpg?ex=1", id: "https://cdn/c.jpg" });
+      ok("mensagem sem imagem: nada", m.imagemDaMensagem({ attachments: new Map(), embeds: [] }), null);
+    }
+
+    /* ---- a resposta para quem clicou ---- */
+    const comPrint = { attachments: new Map([["9", { id: "9", name: "a.png", contentType: "image/png", url: "https://cdn/a.png" }]]) };
+    {
+      globalThis.visaoDoDono = null;
+      const r = await explicarImagem(comPrint, "ar", "g", azure(200, leitura));
+      verdade("desligado: diz que está desligado", /desligada/.test(r.title));
+      /* Quem clicou foi o árabe: o aviso não pode chegar em português. */
+      verdade("e o aviso sai no idioma de quem clicou", r.title.startsWith("<ar>"));
+    }
+    globalThis.visaoDoDono = visao;
+    {
+      globalThis.textoDasImagens = new Map();
+      const f = azure(200, leitura);
+      const r = await explicarImagem(comPrint, "ar", "g", f);
+      verdade("lê e traduz para o idioma de quem clicou", r.description === "[ar] RALLY 20:00\ntodos no castelo");
+      /* A tradução já está no idioma certo: traduzir de novo estragaria. */
+      verdade("e a tradução não passa pelo tradutor duas vezes", !r.description.startsWith("<ar>"));
+      const leituras = () => f.pedidos.filter((p) => /imageanalysis/.test(p.url)).length;
+      await explicarImagem(comPrint, "pt", "g", f);
+      await explicarImagem(comPrint, "es", "g", f);
+      ok("três pessoas no mesmo print: uma leitura só", leituras(), 1);
+    }
+    {
+      globalThis.textoDasImagens = new Map();
+      const r = await explicarImagem(comPrint, "pt", "g", azure(200, { readResult: { blocks: [] } }));
+      verdade("imagem sem texto: diz isso", /Não achei texto/.test(r.title));
+    }
+    {
+      globalThis.textoDasImagens = new Map();
+      const r = await explicarImagem(comPrint, "pt", "g", azure(429, { error: { message: "quota" } }));
+      verdade("cota acabou: avisa que volta dia 1", /dia 1/.test(r.description));
+    }
+    {
+      /* Falha não pode ir para a memória: um tropeço de rede viraria "essa
+         imagem não tem texto" para sempre. */
+      globalThis.textoDasImagens = new Map();
+      await explicarImagem(comPrint, "pt", "g", azure(500, {}));
+      const f = azure(200, leitura);
+      const r = await explicarImagem(comPrint, "pt", "g", f);
+      verdade("depois de uma falha, a próxima tentativa lê de novo", /RALLY/.test(r.description));
+    }
+    {
+      globalThis.textoDasImagens = new Map();
+      let lido = "";
+      const antes = globalThis.traduzirLongo;
+      globalThis.traduzirLongo = async (t) => { lido = t; return t; };
+      await explicarImagem(comPrint, "pt", "g",
+        azure(200, { readResult: { blocks: [{ lines: [{ text: "a".repeat(9000) }] }] } }));
+      globalThis.traduzirLongo = antes;
+      /* Um print de parede de texto não pode gastar sozinho o que cem prints gastariam. */
+      ok("print gigante: traduz no máximo 4 mil letras", lido.length, 4000);
+    }
+
+    /* ---- o teste da chave, no painel ---- */
+    {
+      const st = (s) => async () => ({ status: s });
+      verdade("400 = chave e endpoint certos", (await m.conferirVisao(visao, st(400))).ok);
+      verdade("401 = chave errada", !(await m.conferirVisao(visao, st(401))).ok);
+      verdade("404 = endpoint errado", /Endpoint errado/.test((await m.conferirVisao(visao, st(404))).frase));
+      verdade("endereço que nem existe", /Não achei esse endereço/.test(
+        (await m.conferirVisao(visao, async () => { throw new Error("ENOTFOUND"); })).frase));
+      /* O teste manda corpo VAZIO: descobrir se a chave funciona não gasta cota. */
+      const f = azure(400, {});
+      await m.conferirVisao(visao, f);
+      ok("o teste da chave não manda imagem nenhuma", f.pedidos[0].o.body.length, 0);
+    }
+
+    /* ---- as frases do #erros têm explicação, e a certa ---- */
+    {
+      const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+      const cota = explicarErro("imagem", "a cota gratuita de leitura de imagem do mes acabou");
+      verdade("cota de imagem tem explicação própria", /leitura grátis de imagens/.test(String(cota?.titulo)));
+      verdade("e diz que ninguém é cobrado", /Ninguém é cobrado/.test(String(cota?.oque)));
+      /* "fetch failed" casaria com a regra do banco e mandaria olhar o Supabase. */
+      const falha = explicarErro("imagem", "nao consegui ler a imagem: fetch failed");
+      verdade("falha de leitura não é confundida com o banco", /ler uma imagem/.test(String(falha?.titulo)));
+    }
+
+    /* ---- a fiação: as funções acima não servem se ninguém chama ---- */
+    {
+      const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+      const codigo = semComentarios(fonte);
+      verdade("o clique do botão chega no handler",
+        /inter\.customId === "img:ler"\) return await cliqueLerImagem\(inter\)/.test(codigo));
+      verdade("o handler responde só para quem clicou (efêmero)",
+        /async function cliqueLerImagem[^]{0,120}deferReply\(\{ flags: 64 \}\)/.test(codigo));
+      /* Chamar e USAR. A primeira versão conferia só a chamada, e a sabotagem
+         que apagou a linha que devolve a leitura passou verde: o bot leria a
+         imagem, gastaria a cota, e responderia "mensagem vazia" mesmo assim. */
+      verdade("o menu Translate também lê imagem, e devolve o que leu",
+        /const daImagem = await explicarImagem\(inter\.targetMessage[^;]*;\s*if \(daImagem\) return responder\(inter, daImagem/.test(codigo));
+      verdade("a chave é carregada junto com os ajustes", /visaoDoDono = lerVisaoDoDono\(a\)/.test(codigo));
+      verdade("o painel tem o botão da leitura de imagem", /custom_id: "admin:visao"/.test(codigo));
+      verdade("a janela abre e salva",
+        /acao === "visao" && inter\.isButton\(\)\) return inter\.showModal/.test(codigo)
+        && /inter\.customId === "admin:visao"\) return await salvarVisao\(inter\)/.test(codigo));
+      const salvar = codigo.slice(codigo.indexOf("async function salvarVisao"), codigo.indexOf("async function salvarChaves"));
+      verdade("só o dono salva a chave", /ehDono\(inter\.user\.id\)/.test(salvar));
+      verdade("a chave vai cifrada para o banco", /porAjuste\("visao_chave", cifrar\(chave\)\)/.test(salvar));
+      verdade("e é testada na hora de salvar", /conferirVisao\(visaoDoDono\)/.test(salvar));
+      /* A página de privacidade promete para quem os dados vão. Se o código
+         passa a mandar imagem para a Microsoft e a página não diz, a promessa
+         vira mentira sem ninguém ter mentido de propósito. */
+      const priv = readFileSync(new URL("../cyron/privacidade.html", import.meta.url), "utf8");
+      verdade("a página de privacidade diz que imagens vão para a Azure, e só com o clique",
+        /Azure AI Vision/.test(priv) && /Nenhuma imagem é enviada sem esse clique/.test(priv)
+        && /No image is sent without that tap/.test(priv));
+      /* Cinco é o teto do Discord por fileira: estourar some com o painel inteiro. */
+      const fileiras = [...codigo.matchAll(/\{ type: 1, components: \[\n((?:\s*\{ type: 2,[^\n]*\n)+)/g)];
+      /* Sem este, um regex que parasse de achar fileiras aprovaria tudo: o
+         `every` de uma lista vazia é verdadeiro. */
+      verdade("o teste das fileiras encontra fileiras de verdade", fileiras.length >= 3);
+      verdade("nenhuma fileira de botões do painel passa de cinco",
+        fileiras.every((f) => (f[1].match(/\{ type: 2,/g) || []).length <= 5));
+    }
+  } finally {
+    for (const [n, v] of Object.entries(salvo)) globalThis[n] = v;
+    globalThis.visaoDoDono = null;
+    if (envAntes.e) process.env.VISAO_ENDPOINT = envAntes.e;
+    if (envAntes.c) process.env.VISAO_CHAVE = envAntes.c;
   }
 }
 
