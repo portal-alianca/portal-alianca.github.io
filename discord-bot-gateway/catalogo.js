@@ -148,6 +148,30 @@ export const RECURSOS = [
     prova: "atenderNoPrivado",
   },
   {
+    chave: "ler-imagem",
+    categoria: "traduzir",
+    plano: "gratis",
+    nome: { pt: "Ler o texto de uma imagem", en: "Read the text in an image" },
+    como: { pt: "Botão 📝, ou segurar a imagem → Apps → Translate", en: "📝 button, or hold the image → Apps → Translate" },
+    oque: {
+      pt: "Print de jogo, cartaz, meme, foto de um aviso: o bot lê o que está escrito na imagem e mostra traduzido, só para quem pediu. A imagem só é lida quando alguém toca — nada é lido sozinho.",
+      en: "A game screenshot, a poster, a meme, a photo of a notice: the bot reads what the image says and shows it translated, only to whoever asked. The image is read only when someone taps — nothing is read on its own.",
+    },
+    prova: "explicarImagem",
+  },
+  {
+    chave: "imagem-traduzida",
+    categoria: "traduzir",
+    plano: "gratis",
+    nome: { pt: "A imagem, já traduzida", en: "The image, already translated" },
+    como: { pt: "Botão 🖼️ na resposta do 📝", en: "🖼️ button on the 📝 reply" },
+    oque: {
+      pt: "A mesma imagem de volta com o texto trocado no lugar, na cor e no alinhamento do original. O que não dá para trocar sem estragar o desenho — letra inclinada, texto em cima da arte — fica intacto com um número no canto, e a tradução vem embaixo.",
+      en: "The same image back with the text swapped in place, in the original's colour and alignment. Whatever can't be swapped without ruining the artwork — slanted lettering, text over the drawing — stays untouched with a number in the corner, and the translation comes underneath.",
+    },
+    prova: "desenharTraducao",
+  },
+  {
     chave: "espelho",
     categoria: "traduzir",
     plano: "pago",
@@ -194,6 +218,18 @@ export const RECURSOS = [
       en: "A sticker shows up in the other rooms as an image, under the sender's name. A poll arrives with its question and options translated, plus a link to the real poll — one poll with all the votes, instead of seven with the votes split.",
     },
     prova: "textoDaEnquete",
+  },
+  {
+    chave: "video",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Vídeo toca nas outras salas", en: "Videos play in the other rooms" },
+    como: { pt: "Sozinho, é só colar o link", en: "On its own — just paste the link" },
+    oque: {
+      pt: "Link de YouTube, Twitch ou Vimeo chega nas outras salas com o player do Discord — dá o play ali mesmo, sem sair do chat. Arquivo grande demais para copiar vira um link para o original.",
+      en: "A YouTube, Twitch or Vimeo link reaches the other rooms with Discord's own player — hit play right there, without leaving the chat. A file too big to copy becomes a link to the original.",
+    },
+    prova: "videoQueODiscordToca",
   },
   {
     chave: "replica",

@@ -6493,7 +6493,9 @@ function conferirCartao(onde, embed, componentes = []) {
          que apagou a linha que devolve a leitura passou verde: o bot leria a
          imagem, gastaria a cota, e responderia "mensagem vazia" mesmo assim. */
       verdade("o menu Translate também lê imagem, e devolve o que leu",
-        /const daImagem = await explicarImagem\(inter\.targetMessage[^;]*;\s*if \(daImagem\) return responder\(inter, daImagem/.test(codigo));
+        /const daImagem = await explicarImagem\(inter\.targetMessage[^;]*;[^]{0,200}if \(daImagem\) \{\s*return inter\.editReply\(\{ embeds: \[\{ color: COR, \.\.\.daImagem \}\]/.test(codigo));
+      verdade("e com o botão 🖼️ junto (servidor sem sala espelhada não tem outra porta)",
+        /if \(daImagem\) \{[^}]*\}\],\s*components: botaoVerNaImagem\(inter\.targetMessage/.test(codigo));
       verdade("a chave é carregada junto com os ajustes", /visaoDoDono = lerVisaoDoDono\(a\)/.test(codigo));
       verdade("o painel tem o botão da leitura de imagem", /custom_id: "admin:visao"/.test(codigo));
       verdade("a janela abre e salva",

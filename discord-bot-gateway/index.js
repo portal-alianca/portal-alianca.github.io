@@ -11500,21 +11500,30 @@ async function cliqueTraduzirMsg(inter) {
    O seletor de idioma vem junto, na mesma resposta. Mandar a pessoa "ir no
    canal tal" e' perder metade dela no caminho. */
 function paginaDoMembro(souAdmin) {
+  /* Organizado pelo que a pessoa VE na tela -- o menu, a bandeira, o botao --
+     e nao pelo nome do recurso: quem esta' perdido reconhece o simbolo, nao
+     o conceito. Um simbolo por bloco, uma frase do que fazer. */
   const linhas = [
-    "**Você lê este servidor na sua língua.**",
-    "Escolha o seu idioma no menu aqui embaixo. A partir daí, aparecem para você cópias dos canais principais já traduzidas — mesmos avisos, mesmos eventos, na sua língua.",
+    "**1️⃣ Escolha a sua língua** no menu aqui embaixo.",
+    "Pronto: os avisos e as salas do servidor aparecem para você já traduzidos.",
     "",
-    "**Você continua falando na sua língua.**",
-    "Nas salas de conversa, o que você escrever chega traduzido para quem escolheu outro idioma. Escreva normal.",
+    "**✍️ Escreva normal, na sua língua.**",
+    "O que você escreve chega traduzido para quem fala outra língua.",
     "",
-    "**Traduzir uma mensagem solta**",
-    "Segure a mensagem (ou clique com o botão direito) → **Apps** → **Translate**. Serve para qualquer mensagem, sem mudar nada no servidor.",
+    "**Para entender uma mensagem que não foi traduzida:**",
+    "🏳️ Reaja com a bandeira do seu país — a tradução chega no seu privado.",
+    "🌐 Ou segure a mensagem → **Apps** → **Translate**.",
     "",
-    "**Trocar de idioma depois**",
-    "Use `/mylanguage`, ou o menu abaixo de novo. Pode trocar quantas vezes quiser.",
+    "**Botões que aparecem nas mensagens:**",
+    "🌐 **Menu de línguas** — escolha a sua e leia só você.",
+    "📝 **Ler imagem** — o texto de um print ou cartaz, na sua língua.",
+    "🖼️ **Ver na imagem** — a própria imagem com o texto trocado. O que não dá para trocar ganha um número, com a tradução embaixo.",
+    "▶️ Link de YouTube, Twitch ou Vimeo toca aqui mesmo, sem sair do Discord.",
     "",
-    "**A Arena das Línguas**",
-    "Use `/arena` para ver o placar mundial na sua língua, em qualquer sala. Você luta pela bandeira que escolheu, e time pequeno bate mais forte.",
+    "**Comandos:**",
+    "`/mylanguage` — trocar de língua, quantas vezes quiser.",
+    "`/arena` — o placar mundial das línguas. Você luta pela sua bandeira.",
+    "`/help` — esta tela.",
   ];
   if (souAdmin) {
     linhas.push(
@@ -12227,7 +12236,12 @@ async function comandoDeInteracao(inter) {
       /* So' imagem: agora da' pra ler o que esta' escrito nela. A mesma
          funcao do botao 📝, para as duas portas nao envelhecerem separadas. */
       const daImagem = await explicarImagem(inter.targetMessage, await lingua(), inter.guildId);
-      if (daImagem) return responder(inter, daImagem, { idioma: "pt" });
+      /* Com o 🖼️ junto, igual ao botao 📝: em servidor sem sala espelhada
+         esta e' a UNICA porta para a imagem traduzida. */
+      if (daImagem) {
+        return inter.editReply({ embeds: [{ color: COR, ...daImagem }],
+          components: botaoVerNaImagem(inter.targetMessage, await lingua()) });
+      }
       return responder(inter, { title: "🤔 Mensagem vazia",
         description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma: await lingua() });
     }
