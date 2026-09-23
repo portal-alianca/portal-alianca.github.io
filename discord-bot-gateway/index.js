@@ -1958,7 +1958,7 @@ const LIMITE_DO_CARTAO = 3800; // o embed aceita 4096; sobra pra assinatura
    Puras de proposito: sao sete condicoes, duas delas com consequencia
    invisivel (sino que nao toca, ordem que mente), e a funcao que as usava
    e' a mais quente do produto -- nao da' pra conferir isso subindo bot. */
-function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos }) {
+function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos, video }) {
   return !!anterior
     && anterior.autor === autor
     && agora - anterior.quando < JANELA_DE_GRUPO
@@ -1968,6 +1968,10 @@ function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados
        para incluir o aviso nao toca sino em ninguem. Emendar seria entregar a
        convocacao e engolir a convocacao. */
     && !avisaTodos
+    /* Terceiro caso da mesma familia: o Discord desdobra link no ENVIO, entao
+       uma URL acrescentada por edicao nao vira player. Emendar entregaria o
+       link e engoliria o video. */
+    && !video
     && !arquivos.length;
 }
 
@@ -2542,6 +2546,45 @@ function figurinhaDe(msg) {
 
    Prefere .gif explicito: um mesmo link costuma trazer .webp e .gif, e o
    .webp do Discord entra parado. Melhor o quadro que se mexe. */
+/* O VIDEO QUE DA' PRA ASSISTIR SEM SAIR DAQUI.
+
+   Um link de YouTube colado numa sala espelhada chegava do outro lado como
+   texto azul com uma foto morta embaixo: para ver, a pessoa saia do Discord,
+   abria o YouTube, voltava. Numa sala de aliança isso e' a conversa parando.
+
+   Nao da' pra um bot MONTAR um player: o campo `video` de um embed feito por
+   bot e' ignorado pelo Discord, e nao ha' volta por ai'. Quem monta o player
+   e' o proprio Discord, quando acha a URL solta no `content` e desdobra
+   sozinho -- e ele faz isso para webhook igual faz para gente.
+
+   E' a MESMA forma do defeito das mencoes, algumas telas abaixo: dentro de um
+   embed o Discord nao toca sino, nao desdobra link, nao desenha previa. O
+   embed e' desenho; o `content` e' a parte viva da mensagem. Ali ja' viajam as
+   mencoes pelo mesmo motivo, e o video passa a viajar junto.
+
+   A lista e' CURTA e fechada de proposito. Ela nao e' "links de video" -- e'
+   "o que o Discord sabe tocar dentro dele". Mandar para o content um link que
+   ele nao toca nao faz player nenhum: faz uma segunda previa feia embaixo do
+   cartao, repetindo o que o cartao ja' mostra. Endereco que eu nao tenho
+   certeza fica de fora, que e' o lado seguro de errar. */
+const VIDEO_QUE_TOCA_AQUI = new RegExp(
+  "https?://(?:www\\.|m\\.|mobile\\.)?(?:" +
+    "youtu\\.be/[\\w-]+" +
+    "|youtube\\.com/(?:watch\\?[\\w=&%-]*v=[\\w-]+|shorts/[\\w-]+|live/[\\w-]+)" +
+    "|(?:clips\\.)?twitch\\.tv/[\\w/-]+" +
+    "|vimeo\\.com/\\d+" +
+  ")[^\\s<>]*", "i");
+
+/* Devolve a URL, ou "" -- e nao um booleano, porque quem chama precisa do
+   endereco para pendurar no content. */
+function videoQueODiscordToca(texto) {
+  const t = String(texto || "");
+  /* Link dentro de <> e' o jeito do Discord de dizer "nao desdobre isto". Se a
+     pessoa pediu silencio no original, o espelho nao vai gritar por ela. */
+  const achado = t.replace(/<https?:\/\/[^\s>]+>/g, " ").match(VIDEO_QUE_TOCA_AQUI);
+  return achado ? achado[0] : "";
+}
+
 function midiaDeLink(msg) {
   for (const e of (msg?.embeds || [])) {
     const candidatas = [e?.image?.url, e?.thumbnail?.url]
@@ -2566,6 +2609,11 @@ function midiaDeLink(msg) {
 async function ilustrarNasOutrasSalas(msg) {
   const midia = midiaDeLink(msg);
   if (!midia) return;
+  /* Video tem player proprio embaixo do cartao, e o player ja' traz esta
+     mesma miniatura. Sem esta linha a segunda passada penduraria a foto de
+     volta e desfaria o conserto: a mesma imagem duas vezes, uma delas morta.
+     O cartao ficou sem imagem de PROPOSITO, nao por falta de uma. */
+  if (videoQueODiscordToca(msg.content || "")) return;
   const familia = ondeMoraAFala.get(msg.id) || await procurarFamilia(msg.id);
   if (!familia || familia.size < 2 || eACopia(familia, msg.id, msg.channelId)) return;
 
@@ -2689,6 +2737,12 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
      fala continua sendo o cartao, que e' o desenho do produto. */
   const chamados = [avisaTodos, ...marcados.map((id) => `<@${id}>`)].filter(Boolean).join(" ");
 
+  /* O video viaja no content junto com as mencoes, e pelo mesmo motivo: e' o
+     unico lugar da mensagem onde o Discord trabalha. Lido do texto ORIGINAL,
+     nunca do traduzido -- tradutor mexe em URL, e uma letra trocada no id do
+     video derruba o player. */
+  const video = videoQueODiscordToca(msg.content || "");
+
   /* Da' pra emendar esta fala na anterior?
 
      As tres primeiras condicoes sao o que o leitor espera de um bloco: mesma
@@ -2715,6 +2769,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        -- o embed desenha uma imagem so'. */
     arquivos: figurinha ? [...arquivos, figurinha] : arquivos,
     avisaTodos,
+    /* Video exige mensagem NOVA, pela terceira vez pelo mesmo motivo desta
+       lista: o Discord desdobra link no ENVIO. Acrescentar a URL editando uma
+       mensagem nao cria player nenhum -- emendar entregaria o link e engoliria
+       o video, calado, que e' o defeito que esta linha existe para impedir. */
+    video,
   });
 
   /* A familia desta fala: onde ela mora em cada sala. Quem responder a ela
@@ -2899,8 +2958,11 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
          figurinha: dentro da descricao de um embed o Discord nao desenha
          previa nenhuma, e o GIF chegaria do outro lado como texto azul. A
          figurinha manda mais -- quando ha' as duas, ela e' a fala inteira. */
+      /* Com o video indo no content, a previa SAI do cartao: o player que o
+         Discord desenha embaixo ja' traz a mesma miniatura, e mantê-la aqui
+         mostraria a mesma foto duas vezes, uma delas morta. */
       ...(figurinha?.url ? { image: { url: figurinha.url } }
-        : (midiaLink ? { image: { url: midiaLink } } : {})),
+        : (midiaLink && !video ? { image: { url: midiaLink } } : {})),
       description: `${(corpoDoCartao || (figurinha ? `🎨 ${figurinha.nome}` : "")).slice(0, LIMITE_DO_CARTAO)}` +
         `\n-# [${assinatura}](https://discord.com/users/${msg.author.id})` +
         (selo ? ` · ${selo}` : ""),
@@ -2948,7 +3010,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
         /* As mencoes vivem AQUI, e nao no embed: e' a unica parte da mensagem
            em que o Discord toca sino. Vazio vira undefined -- content vazio o
            Discord recusa. */
-        content: chamados || undefined,
+        content: [chamados, video].filter(Boolean).join("\n") || undefined,
         embeds: [montar(linhaNova, cabecalho)],
         /* Cargo continua barrado: os cargos daqui sao os das salas por idioma,
            e repetir um cargo da sala de origem chamaria o publico errado.

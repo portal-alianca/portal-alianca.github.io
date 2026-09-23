@@ -991,6 +991,11 @@ function conferirCartao(onde, embed, componentes = []) {
     !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@everyone" })));
   verdade("e o @here vale o mesmo",
     !emendaNaFalaAnterior(antes, fala({ avisaTodos: "@here" })));
+  /* Terceiro caso da mesma família, e a mesma armadilha: o Discord desdobra
+     link no ENVIO. Uma URL acrescentada por edição não vira player nenhum —
+     emendar entregaria o link e engoliria o vídeo, calado. */
+  verdade("fala com vídeo: cartão novo, senão o player não nasce",
+    !emendaNaFalaAnterior(antes, fala({ video: "https://youtu.be/abc123" })));
 
   /* E a metade que se decide sala por sala. */
   const velho = { id: "cartao1", linhas: ["oi"] };
@@ -1023,6 +1028,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
+    "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -4775,10 +4781,20 @@ function conferirCartao(onde, embed, componentes = []) {
   const i = fonte.indexOf("async function espelharMensagem");
   const corpo = fonte.slice(i, fimDoBloco(fonte.indexOf("{", i)));
 
-  /* O sino mora no content. Sem isto, todo o resto é decoração. */
-  verdade("o espelho manda as menções no content", /content: chamados \|\| undefined/.test(corpo));
-  verdade("e o content é só as menções, montadas numa linha",
+  /* O sino mora no content. Sem isto, todo o resto é decoração.
+
+     Conferido como DECISÃO e não como linha literal: o vídeo passou a viajar
+     no mesmo lugar, pelo mesmo motivo, e a forma exata da linha mudou. A
+     regra que importa nunca foi "o content é exatamente `chamados`" — é "os
+     chamados vão no content e não no embed". A versão literal reprovou um
+     conserto correto, que é o outro jeito de um teste estar errado. */
+  verdade("o espelho manda as menções no content",
+    /content: \[chamados[^\]]*\]/.test(corpo) || /content: chamados/.test(corpo));
+  verdade("e as menções são montadas numa linha só",
     /const chamados = \[avisaTodos, \.\.\.marcados\.map/.test(corpo));
+  /* E não podem ter ido parar no embed no caminho. */
+  verdade("e não vão dentro do cartão, onde o sino não toca",
+    !/description:[^\n]*chamados/.test(corpo));
 
   /* Não é escalada de permissão: `mentions.everyone` já é o veredito do
      Discord sobre se aquela pessoa PODIA chamar todo mundo. O espelho repete
@@ -5359,6 +5375,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "peDoCartao", "MAX_PES_LEMBRADOS", "guardarPe",
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
+    "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -6120,6 +6137,88 @@ function conferirCartao(onde, embed, componentes = []) {
     verdade("surdez conta como morte mesmo com a batida velha",
       /morreuSurdo \|\|/.test(corpo));
   }
+}
+
+/* O VÍDEO QUE DÁ PARA ASSISTIR SEM SAIR DAQUI.
+ *
+ * Um link de YouTube colado numa sala espelhada chegava do outro lado como
+ * texto azul com uma foto morta embaixo. Para ver, a pessoa saía do Discord,
+ * abria o YouTube e voltava — numa sala de aliança, isso é a conversa parando.
+ *
+ * Um bot NÃO pode montar um player: o campo `video` de um embed feito por bot
+ * é ignorado pelo Discord. Quem monta é o próprio Discord, quando acha a URL
+ * solta no `content` e desdobra sozinho.
+ *
+ * É a MESMA forma do defeito das menções, no mesmo arquivo: dentro de um embed
+ * o Discord não toca sino, não desdobra link e não desenha prévia. O embed é
+ * desenho; o `content` é a parte viva da mensagem. */
+{
+  const { videoQueODiscordToca } = carregar(["VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca"]);
+
+  const acha = (t) => videoQueODiscordToca(t);
+
+  /* As formas que as pessoas realmente colam. O `youtu.be` com `?si=` é o que
+     o app do YouTube gera hoje ao compartilhar — é o formato do print. */
+  ok("o link curto de compartilhar, com o ?si= que o app gera",
+    acha("olha isso https://youtu.be/toDQjo1oz8g?si=HZQ_e9Xgb4QFNGxd hahaha"),
+    "https://youtu.be/toDQjo1oz8g?si=HZQ_e9Xgb4QFNGxd");
+  verdade("o endereço longo", !!acha("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+  verdade("shorts", !!acha("https://youtube.com/shorts/abc123XYZ_-"));
+  verdade("live", !!acha("https://www.youtube.com/live/abc123XYZ_-"));
+  verdade("o m. do celular", !!acha("https://m.youtube.com/watch?v=dQw4w9WgXcQ"));
+  verdade("twitch", !!acha("https://www.twitch.tv/algumcanal"));
+  verdade("vimeo", !!acha("https://vimeo.com/123456789"));
+
+  /* A lista é fechada de propósito: ela não é "links de vídeo", é "o que o
+     Discord sabe tocar dentro dele". Mandar para o content um link que ele não
+     toca não faz player — faz uma segunda prévia feia embaixo do cartão,
+     repetindo o que o cartão já mostra. */
+  verdade("um site de vídeo qualquer NÃO entra — ali não nasce player",
+    !acha("https://exemplo.com/video.mp4"));
+  verdade("nem um link comum", !acha("https://portal-alianca.github.io/regras"));
+  verdade("e uma frase sem link nenhum não inventa vídeo", !acha("bom dia pessoal"));
+
+  /* O <> é o jeito do Discord de dizer "não desdobre isto". Se a pessoa pediu
+     silêncio no original, o espelho não vai gritar por ela do outro lado. */
+  verdade("link dentro de <> continua calado, porque foi pedido assim",
+    !acha("olha <https://youtu.be/toDQjo1oz8g> sem prévia por favor"));
+  verdade("mas um link normal na MESMA frase continua valendo",
+    !!acha("<https://youtu.be/aaa> e https://youtu.be/bbb"));
+
+  /* Não pode virar rede de arrastão: um endereço que só CONTÉM a palavra não
+     é um vídeo, e um player que não nasce deixa o cartão sem imagem à toa. */
+  verdade("um domínio parecido não é o YouTube",
+    !acha("https://naoyoutube.com/watch?v=abc"));
+
+  /* ---- a fiação ---- */
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    return semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+  };
+
+  const esp = corpoDe("async function espelharMensagem");
+  /* Do texto ORIGINAL, nunca do traduzido: tradutor mexe em URL, e uma letra
+     trocada no id do vídeo derruba o player. */
+  verdade("o vídeo é lido do texto original, não do traduzido",
+    /videoQueODiscordToca\(msg\.content \|\| ""\)/.test(esp));
+  /* O ponto inteiro: no content, ao lado das menções, que é onde o Discord
+     trabalha. Dentro do embed não nasce player nenhum. */
+  verdade("e viaja no content, junto das menções",
+    /content: \[chamados, video\]\.filter\(Boolean\)/.test(esp));
+  /* Sem isto a mesma miniatura aparece duas vezes: uma no cartão, morta, e
+     outra no player que o Discord desenha embaixo. */
+  verdade("e a prévia sai do cartão para não duplicar a foto",
+    /midiaLink && !video/.test(esp));
+
+  /* A SEGUNDA PASSADA, que desfaria tudo em silêncio. Ela existe para pendurar
+     a prévia quando o Discord resolve o link depois do envio — e penduraria a
+     foto de volta justamente no cartão que ficou sem imagem de propósito. */
+  verdade("a segunda passada não reilustra quem já tem player",
+    /videoQueODiscordToca\(msg\.content \|\| ""\)\) return;/
+      .test(corpoDe("async function ilustrarNasOutrasSalas")));
 }
 
 /* A TRAVA QUE CONTAVA RAJADA E NÃO CONTAVA TEIMOSIA.
