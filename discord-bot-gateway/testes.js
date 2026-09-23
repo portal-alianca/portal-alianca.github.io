@@ -6122,6 +6122,205 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* GRITAR LOBO: o alarme que eu mesmo construí, e que era falso doze vezes.
+ *
+ * Em dois dias o canal de erros recebeu doze cartões iguais, de três em três
+ * horas, todos dizendo:
+ *
+ *   gateway: perdi a conexão com o Discord (shard 0 tentando reconectar).
+ *   A partir de agora nada chega até mim.
+ *
+ * E nenhum era verdade. A prova está no que NÃO apareceu: se a surdez tivesse
+ * passado dos cinco minutos, o processo sairia com erro, o Fly subiria outro e
+ * a volta sairia com a caveira de "morri surdo". Não saiu nenhuma vez. Todas
+ * voltaram em segundos.
+ *
+ * A causa: `shardReconnecting` não é desastre, é rotina -- o próprio Discord
+ * pede reconexão de tempos em tempos. Eu liguei rotina direto no alarme.
+ *
+ * O preço está escrito neste mesmo repositório, na lista ERRO_DO_CLIENTE:
+ * "barulho no canal de erro tem um preço específico: ensina a ignorar o
+ * canal". Escrevi a frase numa semana e o gerador de barulho na seguinte. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre, deParametros = true) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    const chave = fonte.indexOf("{", deParametros ? fonte.indexOf("(", i) : fonte.indexOf("=>", i));
+    return semComentarios(fonte.slice(i, fimDoBloco(chave)));
+  };
+
+  /* A separação que conserta tudo: quem desiste grita, quem está tentando não.
+     Reparar que os três eventos são conferidos JUNTOS -- separar só um deles e
+     esquecer os outros dois foi como isto nasceu. */
+  verdade("reconectar NÃO é urgente (a biblioteca ainda está tentando)",
+    /client\.on\("shardReconnecting",[^]{0,160}ficouSurdo\(`shard \$\{id\} tentando reconectar`\)/
+      .test(codigo));
+  verdade("desconectar É urgente (aí a biblioteca desistiu)",
+    /client\.on\("shardDisconnect",[^]{0,220}ficouSurdo\([^)]*, true\)/.test(codigo));
+  verdade("sessão invalidada também é urgente",
+    /client\.on\("invalidated",[^]{0,160}ficouSurdo\([^)]*, true\)/.test(codigo));
+
+  {
+    const corpo = corpoDe("function ficouSurdo");
+    /* O CORAÇÃO DO CONSERTO. console.error é o que alimenta o canal de erros;
+       se ele voltar pro caminho normal do ficouSurdo, os doze cartões voltam. */
+    verdade("ficar sem sinal não escreve no canal de erros na hora",
+      !/console\.error/.test(corpo));
+    verdade("mas registra no log desde o primeiro segundo",
+      /console\.log/.test(corpo));
+    verdade("e só agenda o grito para depois do prazo",
+      /setTimeout\(gritarDaSurdez, SILENCIO_ANTES_DE_GRITAR\)/.test(corpo));
+    verdade("quem chega urgente fura a fila e grita na hora",
+      /if \(urgente\)[^]{0,60}gritarDaSurdez\(\)/.test(corpo));
+
+    /* O RELÓGIO DA MORTE NÃO PODE TER SIDO ADIADO JUNTO.
+       Este é o jeito mais fácil de "consertar" o barulho e quebrar o conserto
+       de verdade: atrasar o silêncio E a contagem faria o bot aguentar 6
+       minutos surdo em vez de 5, e o buraco original voltaria maior. */
+    /* O `;` no fim não é capricho -- é o teste. Sem ele a regra casa com
+       `surdoDesde = Date.now() + 60000`, e essa sabotagem PASSOU: o bot
+       passaria a aguentar seis minutos surdo em vez de cinco, com o teste
+       verde por cima. De todas as sabotagens deste bloco era a única que
+       trocava barulho a menos por produto quebrado a mais. */
+    verdade("mas o relógio da morte continua começando na hora, sem adiamento",
+      /surdoDesde = Date\.now\(\);/.test(corpo));
+    verdade("e o bilhete do banco continua sendo escrito na hora",
+      /porAjuste\("surdo", String\(surdoDesde\)\)/.test(corpo));
+  }
+
+  /* O PRAZO. Precisa existir, ser maior que zero e -- o que importa -- ser
+     MENOR que a graça: um silêncio maior que a graça faria o bot morrer sem
+     nunca ter avisado, trocando barulho demais por silêncio total. */
+  {
+    const { SILENCIO_ANTES_DE_GRITAR, GRACA_SEM_OUVIDO } =
+      carregar(["SILENCIO_ANTES_DE_GRITAR", "GRACA_SEM_OUVIDO"]);
+    verdade("o silêncio antes do grito existe e é de pelo menos 30s",
+      SILENCIO_ANTES_DE_GRITAR >= 30_000);
+    verdade("e é menor que a graça, senão o bot morreria sem nunca avisar",
+      SILENCIO_ANTES_DE_GRITAR < GRACA_SEM_OUVIDO);
+  }
+
+  /* A OUTRA METADE, e a que faltava por inteiro: quem acorda o dono com a má
+     notícia deve a ele o fim da história. Doze "perdi a conexão" e zero
+     "voltei" fazem o canal parecer um bot caído há dois dias -- e ele nunca
+     esteve caído. voltouAOuvir usava console.log, que não vai pro canal. */
+  {
+    const corpo = corpoDe("function voltouAOuvir");
+    verdade("se o dono foi acordado, ele recebe o aviso de volta",
+      /gritouDaSurdez/.test(corpo) && /avisarNoPainel\(CANAL_ERROS/.test(corpo));
+    verdade("e o grito é rearmado para a próxima queda",
+      /gritouDaSurdez = false/.test(corpo));
+    /* Sem isto, um grito agendado dispararia DEPOIS da volta: o cartão de
+       "perdi a conexão" chegaria no canal com o bot já funcionando. */
+    verdade("e o grito agendado é cancelado ao voltar",
+      /clearTimeout\(relogioDoGrito\)/.test(corpo));
+  }
+
+  /* A FRASE ERA MINHA E EU NÃO A RECONHECIA.
+     Ela saía como "❓ Um erro que eu ainda não sei explicar", pedindo ao dono
+     que me ensinasse um texto escrito neste mesmo arquivo. */
+  {
+    const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+
+    /* Entra EXATAMENTE como o console.error a produz: o embrulho parte o texto
+       nos dois pontos, então `onde` é "gateway" e o resto vem sem eles. Uma
+       regra escrita esperando "gateway:" nunca casaria -- e ficaria no arquivo
+       sem nunca ser usada, que é o defeito mais repetido deste projeto. */
+    const meu = explicarErro("gateway",
+      "perdi a conexão com o Discord (shard 0 tentando reconectar) há 74s e ela não voltou. " +
+      "Enquanto não voltar, nada chega até mim.");
+    verdade("a minha própria frase passa a ter explicação", !!meu);
+    verdade("e ela não pede nada de quem lê", meu?.precisaDeVoce === false);
+    verdade("e conta que reconexão curta não vira cartão",
+      /rotina e eu não aviso/i.test(String(meu?.fazer) + String(meu?.oque)));
+
+    /* A mensagem da morte por surdez também passa pelo mesmo console.error. */
+    verdade("a mensagem de morte por surdez também tem explicação",
+      !!explicarErro("gateway", "surdo há 300s. Saindo com erro para o Fly subir um processo novo."));
+
+    /* E não pode virar rede de arrastão: "perdi a conexão" solto roubaria
+       toda queda de rede da casa, e explicação errada manda procurar no lugar
+       errado -- custa mais que explicação nenhuma. */
+    const doBanco = explicarErro("espelho: passada curta falhou em Ks", "supabase 504");
+    verdade("o 504 do Supabase continua sendo do banco",
+      /banco de dados piscou/i.test(String(doBanco?.titulo)));
+  }
+}
+
+/* A PROMESSA FALSA: "eu refaço sozinho na próxima varredura".
+ *
+ * O cartão "Apagaram algo que eu ainda usava" dizia isso desde sempre, e nada
+ * no código refazia coisa nenhuma. O erro do webhook morto voltava todo dia no
+ * MESMO horário -- 07:00 ontem, 07:00 hoje -- debaixo de uma frase dizendo ao
+ * dono que estava tudo sob controle e que ele não precisava fazer nada.
+ *
+ * Frase tranquilizadora sobre código que não existe é pior que erro sem
+ * explicação: o erro sem explicação ao menos deixa alguém ir olhar. */
+{
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const codigo = semComentarios(fonte);
+  const corpoDe = (abre) => {
+    const i = fonte.indexOf(abre);
+    if (i < 0) return "";
+    return semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+  };
+
+  verdade("existe quem refaça o webhook morto",
+    /async function refazerWebhookDaReplica/.test(codigo));
+
+  /* A FIAÇÃO -- e é aqui que este defeito moraria de novo. Uma função de
+     conserto que ninguém chama deixa tudo exatamente como estava, com um
+     teste verde por cima dizendo que não. */
+  verdade("e ela é chamada quando o webhook some",
+    /Unknown Webhook\/i\.test\(e\?\.message[^]{0,120}refazerWebhookDaReplica\(/.test(codigo));
+
+  {
+    const corpo = corpoDe("async function refazerWebhookDaReplica");
+    verdade("canal vivo: grava o webhook novo por cima do morto",
+      /sbPatch\(chave, \{ webhook: w\.url \}\)/.test(corpo));
+    /* Sem isto o conserto não aparece: a lista fica até um minuto em cache,
+       e todas as mensagens desse minuto falhariam com o webhook já refeito.
+
+       Conferido DEPOIS do sbPatch, e não na função inteira: o outro ramo (o do
+       canal apagado) também derruba o cache, e procurar no corpo todo casava
+       com ele. A sabotagem que tirou a limpeza do ramo do conserto passou
+       verde exatamente assim -- o teste leu a linha do vizinho. */
+    verdade("e derruba o cache no ramo do conserto, não só no do canal apagado",
+      /cacheReplicas\.delete\(servidorId\)/.test(
+        corpo.slice(corpo.indexOf("sbPatch(chave"))));
+    /* Se o canal sumiu, a linha não tem para onde apontar. Deixá-la é
+       exatamente o que fazia este erro se repetir para sempre. */
+    verdade("canal morto: tira a linha do banco em vez de tentar para sempre",
+      /if \(!canal\)/.test(corpo) && /sbDel\(chave\)/.test(corpo));
+    /* Um conserto que cria webhook novo a cada mensagem estoura o limite de
+       15 por canal e transforma um erro diário num canal inutilizado. */
+    verdade("e reaproveita um webhook meu que já esteja no canal",
+      /fetchWebhooks\(\)/.test(corpo));
+  }
+
+  /* O reenvio. Sem ele o conserto chega tarde demais para a mensagem que o
+     disparou -- e ela é justamente a que a pessoa acabou de escrever.
+     Não duplica: o envio de cima falhou com webhook inexistente, então nada
+     tinha chegado do outro lado. */
+  verdade("a mensagem que falhou é reenviada pelo webhook novo",
+    /if \(novo\)[^]{0,200}clienteDoWebhook\(novo\)\.send\(carga\)/.test(codigo));
+
+  /* E O TEXTO TEM QUE PARAR DE PROMETER O QUE NÃO FAZ.
+     Se o conserto um dia for removido, esta linha reprova junto -- que é o
+     ponto: a frase e o código não podem voltar a viver separados. */
+  {
+    const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+    const cartao = explicarErro("idioma", "nao consegui replicar em pt Unknown Webhook");
+    verdade("o cartão do webhook apagado continua existindo", !!cartao);
+    verdade("e não promete mais uma varredura que nunca vinha",
+      !/refaço sozinho na próxima varredura/i.test(String(cartao?.oque)));
+    verdade("e diz o que realmente acontece com o webhook",
+      /reenvio a mensagem que falhou/i.test(String(cartao?.oque)));
+  }
+}
+
 /* PUBLICAÇÃO NÃO É MORTE.
  *
  * O caso real, e o mais constrangedor do dia: quatro deploys numa tarde

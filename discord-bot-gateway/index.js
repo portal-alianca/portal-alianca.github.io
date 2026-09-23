@@ -4272,8 +4272,67 @@ async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
 
       await clienteDoWebhook(destino.webhook).send(carga);
     } catch (e) {
+      /* Webhook apagado na mao: o cartao do canal de erros SEMPRE prometeu
+         "eu refaço sozinho na proxima varredura", e isso nunca foi verdade --
+         ninguem refazia nada. O mesmo erro voltava no mesmo horario, todo dia,
+         debaixo de uma frase dizendo ao dono que nao precisava fazer nada.
+
+         Promessa tranquilizadora sobre codigo que nao existe e' pior que erro
+         sem explicacao: o erro sem explicacao pelo menos deixa alguem olhar.
+         Ou a frase vira verdade, ou a frase sai. Virou verdade. */
+      if (/Unknown Webhook/i.test(e?.message || "")) {
+        const novo = await refazerWebhookDaReplica(servidorId, destino);
+        if (novo) {
+          /* Retentar aqui nao duplica: o envio de cima falhou com webhook
+             inexistente, entao nada chegou do outro lado. */
+          try {
+            await clienteDoWebhook(novo).send(carga);
+            continue;
+          } catch (e2) {
+            console.error("idioma: refiz o webhook de", destino.idioma, "e mesmo assim falhou:",
+              e2?.message || e2);
+            continue;
+          }
+        }
+      }
       console.error("idioma: nao consegui replicar em", destino.idioma, e?.message || e);
     }
+  }
+}
+
+/* Refaz o webhook de uma replica e devolve a URL nova, ou null se nao deu.
+
+   Se o CANAL ainda existe, o conserto e' um webhook novo gravado por cima. Se
+   o canal tambem sumiu, a linha nao tem mais o que apontar e sai do banco --
+   deixa-la la' faria este mesmo erro se repetir para sempre, que e'
+   exatamente o que estava acontecendo. */
+async function refazerWebhookDaReplica(servidorId, destino) {
+  try {
+    const canal = await client.channels.fetch(destino.canal_id).catch(() => null);
+    const chave = `discord_canal_idioma?servidor_id=eq.${encodeURIComponent(servidorId)}` +
+      `&canal_id=eq.${encodeURIComponent(destino.canal_id)}`;
+
+    if (!canal) {
+      await sbDel(chave);
+      cacheReplicas.delete(servidorId);
+      console.log(`idioma: o canal de ${destino.idioma} nao existe mais; tirei a linha do banco.`);
+      return null;
+    }
+
+    /* Pode ter sobrado um webhook meu no canal -- reaproveitar evita encostar
+       no limite de 15 por canal a cada conserto. */
+    const existentes = await canal.fetchWebhooks().catch(() => null);
+    const meu = existentes?.find((w) => w.owner?.id === client.user.id && w.token);
+    const w = meu || await canal.createWebhook({ name: "CYRON" });
+
+    await sbPatch(chave, { webhook: w.url });
+    destino.webhook = w.url;
+    cacheReplicas.delete(servidorId);
+    console.log(`idioma: refiz o webhook de ${destino.idioma} em #${canal.name}.`);
+    return w.url;
+  } catch (e) {
+    console.error("idioma: nao consegui refazer o webhook de", destino.idioma, e?.message || e);
+    return null;
   }
 }
 
@@ -8505,9 +8564,17 @@ const EXPLICA_ERRO = [
     quando: /Unknown Message|Unknown Channel|Unknown Webhook/i,
     titulo: "Apagaram algo que eu ainda usava",
     precisaDeVoce: false,
+    /* O "eu refaço sozinho" daqui foi promessa falsa por meses: ninguem
+       refazia nada, e este mesmo cartao voltava todo dia no mesmo horario
+       dizendo ao dono que estava tudo sob controle. Agora o webhook se refaz
+       de verdade -- e o texto so' promete o que o codigo faz. */
     oque: "Um canal, uma mensagem ou um webhook que eu tinha anotado não existe mais — alguém apagou " +
-      "na mão. Eu refaço sozinho na próxima varredura.",
-    fazer: "Nada.",
+      "na mão.\n\n" +
+      "**Webhook:** eu faço outro na hora e reenvio a mensagem que falhou; se o canal também " +
+      "sumiu, tiro a linha do banco. Nos dois casos este erro não volta.\n\n" +
+      "**Canal ou mensagem:** a anotação fica velha até a próxima varredura passar por ali.",
+    fazer: "Nada. Se o MESMO idioma reaparecer aqui dia após dia, aí me avise: quer dizer que " +
+      "o conserto automático não está pegando.",
   },
   {
     /* ANTES da regra geral de rate limit, e por causa dela.
@@ -8544,6 +8611,31 @@ const EXPLICA_ERRO = [
     fazer: "Se repetir, apague na mão: Portal do Desenvolvedor → o aplicativo → **General Information** → " +
       "esvazie **Interactions Endpoint URL** e salve. É o mesmo lugar da política de privacidade " +
       "e dos termos — quem salvar aquela página com o campo preenchido derruba tudo de novo.",
+  },
+  {
+    /* A FRASE E' MINHA, E MESMO ASSIM EU NAO A RECONHECIA.
+
+       Ela saia no canal como "❓ Um erro que eu ainda nao sei explicar", com
+       "me mostre esta mensagem e eu passo a explicar este aqui tambem" --
+       pedindo ao dono que me ensinasse uma frase que eu mesmo escrevi, duas
+       telas acima neste arquivo. Todo texto que este arquivo manda pro
+       console.error precisa de linha aqui, senao o bot pede socorro sobre si
+       mesmo.
+
+       Exijo a palavra `gateway` junto: "perdi a conexao" solto roubaria
+       qualquer queda de rede da casa, e explicacao errada manda procurar no
+       lugar errado. */
+    quando: /gateway.{0,120}(perdi a conex[aã]o com o Discord|surdo h[aá])/i,
+    titulo: "A conexão com o Discord caiu e demorou a voltar",
+    precisaDeVoce: false,
+    oque: "O canal por onde o Discord me entrega mensagens, cliques e comandos caiu, e " +
+      "passou de um minuto fora. Enquanto esteve assim, **nada chegava até mim** — quem " +
+      "clicou num botão nesse intervalo não foi atendido.\n\n" +
+      "Reconexão curta é rotina e eu não aviso: se este cartão apareceu, é porque passou do prazo.",
+    fazer: "Nada. Se voltar sozinho, sai um ✅ logo abaixo dizendo quanto tempo durou. " +
+      "Se passar de cinco minutos eu saio com erro de propósito e o Fly sobe um processo " +
+      "novo — de dentro não tem conserto, quem reconecta é a biblioteca.\n\n" +
+      "Só vale olhar se isto virar rotina no mesmo horário todo dia: aí é a máquina, não o Discord.",
   },
   {
     quando: /rate limit|Too Many Requests/i,
@@ -12889,9 +12981,38 @@ function fraseDaMemoria(mb) {
    avisar o dono e se consertar, um produto profissional se conserta. */
 const GRACA_SEM_OUVIDO = 5 * 60 * 1000;
 
+/* ANTES DE GRITAR, ESPERAR UM POUCO -- e este numero nasceu de um erro meu.
+
+   A primeira versao mandava pro canal de erros no instante em que a conexao
+   balancava. Em dois dias sairam doze cartoes "perdi a conexao com o Discord,
+   a partir de agora nada chega ate mim", de tres em tres horas, e NENHUM deles
+   era verdade: a conexao voltava em segundos, sempre dentro da graca.
+
+   O motivo e' que `shardReconnecting` nao e' desastre, e' rotina. O proprio
+   Discord pede reconexao de tempos em tempos (opcode 7), e um heartbeat sem
+   resposta tambem gera uma. Todo bot que fica semanas de pe reconecta varias
+   vezes por dia. Tratar isso como incidente e' gritar lobo.
+
+   E o preco esta escrito neste mesmo arquivo, na lista ERRO_DO_CLIENTE:
+   "barulho no canal de erro tem um preco especifico: ensina a ignorar o
+   canal". Eu escrevi aquela frase e construi o gerador de barulho na semana
+   seguinte. Um canal de erro com doze alarmes falsos nao avisa mais nada --
+   e o alarme que importa chega no meio deles.
+
+   Entao a contagem comeca na hora (o relogio da morte continua certo: cinco
+   minutos surdo ainda mata o processo), mas a BOCA so' abre depois deste
+   prazo. Reconexao de rotina passa em silencio; conexao que nao volta em um
+   minuto e' outra coisa, e essa merece o cartao. */
+const SILENCIO_ANTES_DE_GRITAR = 60 * 1000;
+
 /* 0 = estou ouvindo. Qualquer outro numero e' o instante em que fiquei surdo. */
 let surdoDesde = 0;
 let motivoDaSurdez = "";
+/* Ja' contei pro dono que estou surdo? Serve para duas coisas: nao repetir o
+   cartao, e saber se devo o AVISO DE VOLTA. Quem grita a ma' noticia e cala a
+   boa ensina a ler o canal como desastre permanente. */
+let gritouDaSurdez = false;
+let relogioDoGrito = null;
 
 /* Separada da porcaria toda para poder ser testada: e' a decisao de matar o
    processo, e decisao dessas nao pode morar so' dentro de um handler de
@@ -13166,22 +13287,59 @@ client.on("error", (e) => console.error("erro do client:", e?.message || e));
    tentar voltar, desistir e morrer sem que uma linha fosse escrita em lugar
    nenhum -- nem no log, nem no banco, nem no canal de erros. */
 
-function ficouSurdo(motivo) {
+/* `urgente` separa as duas coisas que estavam grudadas: perder o sinal e
+   incomodar o dono.
+
+   shardReconnecting chega com urgente=false -- a biblioteca ainda esta
+   tentando, e quase sempre consegue em segundos. shardDisconnect e
+   invalidated chegam com urgente=true: ali a biblioteca DESISTIU, e isso
+   nunca e' rotina. */
+function ficouSurdo(motivo, urgente = false) {
   if (surdoDesde) return;            // ja' estava surdo: mantem o inicio
   surdoDesde = Date.now();
   motivoDaSurdez = String(motivo || "sem motivo").slice(0, 200);
-  console.error(`gateway: perdi a conexão com o Discord (${motivoDaSurdez}). A partir de agora nada chega até mim.`);
+  /* No log SEMPRE, e desde o primeiro segundo -- log e' de graca e e' onde se
+     procura depois. O que espera o prazo e' o cartao no canal do dono.
+     console.log nao passa pelo embrulho que alimenta o painel. */
+  console.log(`gateway: sinal oscilou (${motivoDaSurdez}); começando a contar.`);
   /* Anotado JA', e nao so' na hora de morrer: se o processo for morto pelo Fly
      no meio da surdez, o bilhete ja' esta' no banco e a proxima subida sabe
      dizer o que aconteceu. */
   porAjuste("surdo", String(surdoDesde)).catch(() => {});
   porAjuste("surdo_porque", motivoDaSurdez).catch(() => {});
+
+  if (urgente) { gritarDaSurdez(); return; }
+  clearTimeout(relogioDoGrito);
+  relogioDoGrito = setTimeout(gritarDaSurdez, SILENCIO_ANTES_DE_GRITAR);
+  /* Um timer pendurado nao pode segurar o processo de pe sozinho. */
+  relogioDoGrito.unref?.();
+}
+
+/* A hora de incomodar. console.error de proposito: e' ele que alimenta o
+   canal de erros e o /admin. */
+function gritarDaSurdez() {
+  if (!surdoDesde || gritouDaSurdez) return;
+  gritouDaSurdez = true;
+  const ha = Math.round((Date.now() - surdoDesde) / 1000);
+  console.error(`gateway: perdi a conexão com o Discord (${motivoDaSurdez}) há ${ha}s ` +
+    "e ela não voltou. Enquanto não voltar, nada chega até mim.");
 }
 
 function voltouAOuvir(como) {
   if (!surdoDesde) return;
   const ha = Date.now() - surdoDesde;
+  clearTimeout(relogioDoGrito);
+  relogioDoGrito = null;
   console.log(`gateway: voltei a ouvir (${como}) depois de ${Math.round(ha / 1000)}s surdo.`);
+  /* Se o dono foi acordado, ele tem direito ao fim da historia. Sem isto o
+     canal so' guarda o susto: doze "perdi a conexao" e nenhum "voltei" fazem
+     parecer que o bot esta caido ha' dois dias -- e ele nunca esteve. */
+  if (gritouDaSurdez) {
+    avisarNoPainel(CANAL_ERROS,
+      `✅ **Voltei a ouvir o Discord** (${como}) depois de ${Math.round(ha / 1000)}s. ` +
+      "O que ficou para trás durante a queda entra na próxima varredura.").catch(() => {});
+  }
+  gritouDaSurdez = false;
   surdoDesde = 0;
   motivoDaSurdez = "";
   /* Apagar os dois: uma reconexao bem-sucedida NAO e' morte, e deixar o
@@ -13218,8 +13376,11 @@ async function morrerPorSurdez(ha) {
 /* shardDisconnect e' o fim da linha do lado da biblioteca: ela desconectou e
    NAO vai tentar de novo sozinha. shardReconnecting ainda tem esperanca. */
 client.on("shardDisconnect", (evento, id) => {
-  ficouSurdo(`shard ${id} desconectou, código ${evento?.code ?? "?"}`);
+  ficouSurdo(`shard ${id} desconectou, código ${evento?.code ?? "?"}`, true);
 });
+/* Sem urgencia: reconectar e' o que a biblioteca faz o dia inteiro. O relogio
+   corre igual -- se em cinco minutos nao voltar, o processo morre do mesmo
+   jeito -- mas o dono so' fica sabendo se passar de um minuto. */
 client.on("shardReconnecting", (id) => {
   ficouSurdo(`shard ${id} tentando reconectar`);
 });
@@ -13238,7 +13399,7 @@ client.on("shardReady", (id) => voltouAOuvir(`shard ${id} pronto`));
    destruir o client. Nao existe graca aqui -- esperar cinco minutos seria
    cinco minutos de produto parado por nada. */
 client.on("invalidated", () => {
-  ficouSurdo("sessão invalidada pelo Discord");
+  ficouSurdo("sessão invalidada pelo Discord", true);
   morrerPorSurdez(0).catch(() => process.exit(1));
 });
 process.on("unhandledRejection", (e) => console.error("rejeicao nao tratada:", e));
