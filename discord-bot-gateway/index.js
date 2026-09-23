@@ -8432,6 +8432,89 @@ const MAX_ERROS = 60;
 const jaAvisado = new Map();
 const ESPERA_AVISO = 60 * 60 * 1000;
 
+/* ---------------- O bot conferindo as proprias promessas ----------------
+
+   A trava de uma hora acima resolve RAJADA e nao resolve TEIMOSIA, e essa
+   diferenca custou dois dias de canal inutil.
+
+   O que aconteceu: um erro voltou de hora em hora por dois dias. Cada cartao
+   passou pela trava legitimamente -- fazia mais de uma hora desde o anterior.
+   Sairam quarenta e oito cartoes, todos dizendo "Precisa de voce? **Nao.**",
+   e os dois problemas por tras deles eram reais. O dono so' descobriu juntando
+   print de tela.
+
+   O sistema nao tinha defeito de repeticao. Ele nao tinha nocao de
+   PERSISTENCIA -- nada nele conseguia perceber que a mesma frase tranquila
+   estava sendo dita pela quadragesima vez sobre um problema que nao passava.
+
+   Duas travas nascem daqui, e as duas valem para todo erro, inclusive os que
+   eu ainda vou escrever:
+
+   1. A espera DOBRA a cada aviso (1h, 2h, 4h ... ate 24h). Problema teimoso
+      vira cinco cartoes por dia em vez de vinte e quatro, e cada cartao diz
+      quantas vezes aconteceu e desde quando -- informacao que o dono nao
+      tinha em nenhum dos quarenta e oito.
+
+   2. `precisaDeVoce: false` e' uma AFIRMACAO sobre o mundo: "isto se resolve
+      sozinho". Repetida seis vezes ao longo de seis horas, ela foi desmentida
+      pelos fatos. O cartao entao se corrige em voz alta em vez de repetir a
+      promessa.
+
+   A segunda e' a que importa. Ela nao depende de eu classificar os eventos
+   certo -- depende de eu estar ERRADO e a realidade discordar, que e'
+   exatamente o caso que nenhum teste meu pega. Os dois defeitos de hoje
+   teriam se denunciado sozinhos: o alarme do gateway no primeiro dia, a
+   promessa do webhook no segundo. */
+const historicoDoAviso = new Map();   // chave -> { vezes, desde, ultimo, avisos }
+const ESPERA_AVISO_MAX = 24 * 60 * 60 * 1000;
+const VEZES_ATE_DESMENTIR = 6;
+const TEMPO_ATE_DESMENTIR = 6 * 60 * 60 * 1000;
+/* Problema que sumiu tem que ser esquecido, senao um erro consertado em maio
+   ainda apareceria em agosto dizendo "aconteceu 412 vezes". O historico mede
+   o que esta' acontecendo, nao o que ja' aconteceu. */
+const ESQUECER_HISTORICO = 48 * 60 * 60 * 1000;
+
+/* Separadas da porcaria toda para poderem ser testadas de verdade.
+
+   A regra antiga morava dentro do anotarErro, entre um `avisarNoPainel` e um
+   embed de setenta linhas -- nenhum teste alcancava, e por isso ninguem
+   percebeu que ela contava rajada e nao teimosia. Decisao que o dono ve na
+   tela nao pode morar num lugar onde teste nao chega. */
+function registrarOcorrencia(historico, chave, agora, esquecer = ESQUECER_HISTORICO) {
+  const velho = historico.get(chave);
+  const h = (!velho || agora - velho.ultimo > esquecer)
+    ? { vezes: 0, desde: agora, ultimo: 0, avisos: 0 }
+    : velho;
+  h.vezes += 1;
+  h.ultimo = agora;
+  historico.set(chave, h);
+  return h;
+}
+
+/* Falo agora? E, se falo, quanto tempo fico calado depois?
+
+   A espera dobra por AVISO dado, nao por ocorrencia: um erro que acontece mil
+   vezes numa hora nao deve pular direto para o teto de 24h -- ele deu um
+   aviso so'. */
+function planoDoAviso(h, agora, base = ESPERA_AVISO, teto = ESPERA_AVISO_MAX) {
+  if (!h.avisos) return { falar: true, espera: base };
+  const espera = Math.min(teto, base * Math.pow(2, h.avisos - 1));
+  return { falar: agora - (h.avisoEm || 0) >= espera, espera };
+}
+
+/* A promessa desmentida pelos fatos.
+
+   Exige as DUAS condicoes -- vezes e tempo. So' contar vezes acusaria uma
+   rajada de seis erros em dez segundos, que e' um tombo unico e realmente se
+   resolve sozinho. So' contar tempo acusaria dois erros distantes, que e'
+   coincidencia. O que desmente uma promessa e' ela ser feita muitas vezes
+   DURANTE muito tempo. */
+function promessaDesmentida(explicacao, h, agora,
+                            vezes = VEZES_ATE_DESMENTIR, tempo = TEMPO_ATE_DESMENTIR) {
+  if (!explicacao || explicacao.precisaDeVoce) return false;
+  return h.vezes >= vezes && (agora - h.desde) >= tempo;
+}
+
 /* O canal de erros falando com gente.
 
    Ele nascia despejando a frase que o programa usa pra falar consigo mesmo:
@@ -8701,9 +8784,23 @@ function anotarErro(onde, porque) {
      DIZER, o mesmo tombo vira uma mensagem, e a janela de silencio depois
      dela vale pro problema inteiro. */
   const chave = explicacao ? `explicado|${explicacao.titulo}` : `${onde}|${String(porque).slice(0, 60)}`;
-  const ultimo = jaAvisado.get(chave) || 0;
-  if (Date.now() - ultimo < ESPERA_AVISO) return;
-  jaAvisado.set(chave, Date.now());
+  const agora = Date.now();
+  const hist = registrarOcorrencia(historicoDoAviso, chave, agora);
+  const plano = planoDoAviso(hist, agora);
+  if (!plano.falar) return;
+  hist.avisos += 1;
+  hist.avisoEm = agora;
+  jaAvisado.set(chave, agora);
+
+  /* A linha que faltava nos quarenta e oito cartoes: quantas vezes, e desde
+     quando. Sem ela cada cartao parece o primeiro. */
+  const teimosia = hist.vezes > 1
+    ? `\n\nAconteceu **${hist.vezes} vezes** desde ${quandoFoi(hist.desde, "f")}.` +
+      (plano.espera >= ESPERA_AVISO_MAX
+        ? " Daqui pra frente eu aviso no máximo uma vez por dia."
+        : "")
+    : "";
+  const desmentida = promessaDesmentida(explicacao, hist, agora);
 
   if (!explicacao) {
     /* Erro que eu ainda nao sei explicar. Aparece cru e ASSUMIDO como cru --
@@ -8714,7 +8811,7 @@ function anotarErro(onde, porque) {
         color: 0x9aa0a6,
         title: "❔ Um erro que eu ainda não sei explicar",
         description: `Me mostre esta mensagem e eu passo a explicar este aqui também.\n\n` +
-          `\`\`\`\n${onde}: ${porque}\n\`\`\``,
+          `\`\`\`\n${onde}: ${porque}\n\`\`\`` + teimosia,
         footer: { text: "sem tradução para o português ainda" },
         timestamp: new Date().toISOString(),
       }],
@@ -8722,17 +8819,36 @@ function anotarErro(onde, porque) {
     return;
   }
 
-  avisarNoPainel(CANAL_ERROS, {
-    embeds: [{
-      color: explicacao.precisaDeVoce ? 0xE03E3E : 0x9aa0a6,
-      title: `${explicacao.precisaDeVoce ? "🔴" : "⚪"} ${explicacao.titulo}`,
-      fields: [
-        { name: "O que aconteceu", value: explicacao.oque.slice(0, 1000) },
+  /* O DESMENTIDO.
+
+     Aqui o cartao para de repetir a promessa e admite que ela nao se
+     sustentou. Nao e' enfeite: e' a unica parte deste arquivo que consegue
+     descobrir que eu errei, porque nao depende de eu ter classificado o
+     evento certo -- depende da realidade discordar de mim. */
+  const urgente = explicacao.precisaDeVoce || desmentida;
+  const campos = desmentida
+    ? [
+        {
+          name: "Eu disse que isto se resolvia sozinho",
+          value: `E já disse **${hist.vezes} vezes**, desde ${quandoFoi(hist.desde, "f")}. ` +
+            "Não está se resolvendo.\n\nOu o conserto automático não está pegando, ou esta " +
+            "explicação está errada. Nos dois casos, quem precisa olhar é você.",
+        },
+        { name: "O que eu vinha dizendo", value: explicacao.oque.slice(0, 900) },
+      ]
+    : [
+        { name: "O que aconteceu", value: (explicacao.oque + teimosia).slice(0, 1000) },
         {
           name: explicacao.precisaDeVoce ? "O que fazer" : "Precisa de você?",
           value: (explicacao.precisaDeVoce ? "" : "**Não.** ") + explicacao.fazer.slice(0, 900),
         },
-      ],
+      ];
+
+  avisarNoPainel(CANAL_ERROS, {
+    embeds: [{
+      color: urgente ? 0xE03E3E : 0x9aa0a6,
+      title: `${desmentida ? "🔁" : urgente ? "🔴" : "⚪"} ${explicacao.titulo}`,
+      fields: campos,
       footer: { text: `${onde}: ${String(porque).slice(0, 120)}` },
       timestamp: new Date().toISOString(),
     }],

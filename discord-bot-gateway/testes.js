@@ -6122,6 +6122,156 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* A TRAVA QUE CONTAVA RAJADA E NÃO CONTAVA TEIMOSIA.
+ *
+ * A dedup por hora funcionou exatamente como foi escrita — e por isso saíram
+ * quarenta e oito cartões em dois dias, cada um passando pela trava com razão,
+ * porque fazia mais de uma hora desde o anterior.
+ *
+ * Nada no sistema conseguia perceber que a MESMA frase tranquila estava sendo
+ * dita pela quadragésima vez sobre um problema que não passava. Os dois
+ * defeitos de hoje erraram na mesma direção: os dois disseram "Precisa de
+ * você? Não." uma vez por hora, para sempre, e os dois estavam errados.
+ *
+ * Isto aqui é a parte que não depende de eu classificar os eventos certo.
+ * Depende de eu estar ERRADO e a realidade discordar — o único caso que
+ * nenhum teste meu pega, porque um teste meu só sabe o que eu já sei. */
+{
+  const { registrarOcorrencia, planoDoAviso, promessaDesmentida,
+          ESPERA_AVISO, ESPERA_AVISO_MAX, VEZES_ATE_DESMENTIR, TEMPO_ATE_DESMENTIR,
+          ESQUECER_HISTORICO } =
+    carregar(["ESPERA_AVISO", "ESPERA_AVISO_MAX", "VEZES_ATE_DESMENTIR",
+              "TEMPO_ATE_DESMENTIR", "ESQUECER_HISTORICO",
+              "registrarOcorrencia", "planoDoAviso", "promessaDesmentida"]);
+
+  const HORA = 60 * 60 * 1000;
+  const t0 = 1_700_000_000_000;
+
+  /* ---- a contagem ---- */
+  {
+    const h = new Map();
+    const a = registrarOcorrencia(h, "x", t0);
+    ok("a primeira ocorrência conta 1", a.vezes, 1);
+    ok("e marca desde quando", a.desde, t0);
+    const b = registrarOcorrencia(h, "x", t0 + HORA);
+    ok("a segunda soma", b.vezes, 2);
+    ok("e o 'desde' NÃO se move — senão a teimosia nunca completa o prazo",
+      b.desde, t0);
+  }
+
+  /* Problema que sumiu tem que ser esquecido. Sem isto, um erro consertado em
+     maio ainda apareceria em agosto dizendo "aconteceu 412 vezes" — e um
+     número desses manda o dono caçar um problema que não existe mais. */
+  {
+    const h = new Map();
+    registrarOcorrencia(h, "x", t0);
+    registrarOcorrencia(h, "x", t0 + HORA);
+    const depois = registrarOcorrencia(h, "x", t0 + HORA + ESQUECER_HISTORICO + 1);
+    ok("depois de muito tempo em paz, a conta recomeça", depois.vezes, 1);
+    ok("e o 'desde' passa a ser agora", depois.desde, t0 + HORA + ESQUECER_HISTORICO + 1);
+  }
+
+  /* ---- o recuo: 1h, 2h, 4h ... até o teto ---- */
+  {
+    verdade("o primeiro aviso sai na hora", planoDoAviso({ avisos: 0 }, t0).falar);
+
+    const h = { avisos: 1, avisoEm: t0 };
+    verdade("logo depois do 1º aviso, cala a boca", !planoDoAviso(h, t0 + HORA / 2).falar);
+    verdade("uma hora depois, fala de novo", planoDoAviso(h, t0 + HORA).falar);
+
+    ok("a espera dobra a cada aviso dado",
+      [1, 2, 3, 4].map((n) => planoDoAviso({ avisos: n, avisoEm: t0 }, t0).espera / HORA),
+      [1, 2, 4, 8]);
+
+    /* Sem teto, o vigésimo aviso sairia daqui a sessenta anos: o erro teimoso
+       desapareceria do canal justamente por ser teimoso. */
+    ok("mas para no teto de um dia",
+      planoDoAviso({ avisos: 30, avisoEm: t0 }, t0).espera, ESPERA_AVISO_MAX);
+
+    /* O recuo conta AVISO, não ocorrência: mil erros numa hora são um aviso
+       só, e não podem empurrar o próximo para daqui a um dia. */
+    ok("mil ocorrências não empurram o recuo — quem conta é o aviso dado",
+      planoDoAviso({ vezes: 1000, avisos: 1, avisoEm: t0 }, t0).espera, ESPERA_AVISO);
+  }
+
+  /* ---- O DESMENTIDO: o cerne de tudo ---- */
+  {
+    const calmo = { precisaDeVoce: false, titulo: "t" };
+    const grave = { precisaDeVoce: true,  titulo: "t" };
+    const muito = VEZES_ATE_DESMENTIR;
+    const longe = TEMPO_ATE_DESMENTIR;
+
+    verdade("uma promessa dita muitas vezes por muito tempo está desmentida",
+      promessaDesmentida(calmo, { vezes: muito, desde: t0 }, t0 + longe));
+
+    /* As DUAS condições, e cada uma sozinha é um falso positivo diferente. */
+    verdade("rajada curta NÃO desmente — seis erros em dez segundos são um tombo só",
+      !promessaDesmentida(calmo, { vezes: muito, desde: t0 }, t0 + 10_000));
+    verdade("duas ocorrências distantes NÃO desmentem — isso é coincidência",
+      !promessaDesmentida(calmo, { vezes: 2, desde: t0 }, t0 + longe * 10));
+
+    /* Quem já é vermelho não vira "desmentido": ele nunca prometeu nada. */
+    verdade("erro que sempre pediu ajuda não tem promessa para desmentir",
+      !promessaDesmentida(grave, { vezes: muito * 10, desde: t0 }, t0 + longe * 10));
+    verdade("e erro sem explicação nenhuma também não",
+      !promessaDesmentida(null, { vezes: muito * 10, desde: t0 }, t0 + longe * 10));
+  }
+
+  /* ---- OS DOIS CASOS REAIS, refeitos com os números dos prints ----
+   *
+   * Esta é a prova que interessa: os defeitos de hoje teriam se denunciado
+   * sozinhos, sem ninguém juntar print de tela. */
+  {
+    const calmo = { precisaDeVoce: false, titulo: "t" };
+    const h = new Map();
+    let avisou = 0, denunciou = 0;
+    /* Dois dias, de hora em hora — a cadência exata dos prints. */
+    for (let i = 0; i < 48; i++) {
+      const agora = t0 + i * HORA;
+      const oc = registrarOcorrencia(h, "webhook", agora);
+      const p = planoDoAviso(oc, agora);
+      if (!p.falar) continue;
+      oc.avisos += 1; oc.avisoEm = agora;
+      avisou++;
+      if (promessaDesmentida(calmo, oc, agora)) denunciou++;
+    }
+    verdade("dois dias de erro teimoso deixam de ser 48 cartões", avisou < 12);
+    verdade("mas não viram silêncio — o problema continua aparecendo", avisou >= 4);
+    verdade("e em algum momento o bot se desmente sozinho", denunciou > 0);
+  }
+
+  /* A FIAÇÃO, que é onde este conserto morreria.
+   *
+   * As três funções acima podem estar perfeitas e nunca serem chamadas — e aí
+   * o canal continua exatamente como estava, com uma bateria de testes verdes
+   * por cima jurando que não. É o defeito mais repetido deste projeto, e já
+   * custou um bot que "media o passado" na semana passada. */
+  const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const i = fonte.indexOf("function anotarErro");
+  const corpo = semComentarios(fonte.slice(i, fimDoBloco(fonte.indexOf("{", fonte.indexOf("(", i)))));
+
+  verdade("anotarErro conta a ocorrência", /registrarOcorrencia\(historicoDoAviso/.test(corpo));
+  verdade("e pergunta se é hora de falar", /planoDoAviso\(/.test(corpo));
+  verdade("e respeita a resposta", /if \(!plano\.falar\) return;/.test(corpo));
+  verdade("e confere a promessa contra os fatos", /promessaDesmentida\(/.test(corpo));
+
+  /* Sem isto o recuo nunca avança: a espera ficaria em uma hora para sempre e
+     os 48 cartões voltariam inteiros, com todos os testes acima verdes. */
+  verdade("e marca que avisou, senão o recuo nunca sai da primeira hora",
+    /hist\.avisos \+= 1/.test(corpo) && /hist\.avisoEm = agora/.test(corpo));
+
+  /* O desmentido tem que MUDAR o cartão. Calcular e ignorar seria o mesmo que
+     não ter calculado — e passaria por todos os testes de lógica acima. */
+  verdade("a promessa desmentida deixa o cartão vermelho",
+    /const urgente = explicacao\.precisaDeVoce \|\| desmentida/.test(corpo));
+  verdade("e troca o texto em vez de repetir a promessa",
+    /desmentida\s*\?/.test(corpo) && /Eu disse que isto se resolvia sozinho/.test(corpo));
+  /* E o número tem que aparecer para quem lê: "aconteceu N vezes desde X" é a
+     informação que faltava em todos os quarenta e oito cartões. */
+  verdade("e o cartão passa a dizer quantas vezes e desde quando",
+    /hist\.vezes > 1/.test(corpo) && /Aconteceu \*\*\$\{hist\.vezes\} vezes\*\*/.test(corpo));
+}
+
 /* GRITAR LOBO: o alarme que eu mesmo construí, e que era falso doze vezes.
  *
  * Em dois dias o canal de erros recebeu doze cartões iguais, de três em três
