@@ -6139,6 +6139,66 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* O ANEXO GRANDE QUE VIRAVA LINK MORTO NO DIA SEGUINTE.
+ *
+ * Trinta linhas acima do defeito, o próprio arquivo já explicava por que ele
+ * era defeito:
+ *
+ *   "link de anexo do Discord vem assinado e CADUCA. A foto aparecia hoje e
+ *    virava quadrado quebrado amanhã, só nas cópias -- a original continuava
+ *    inteira, o que deixaria o defeito ainda mais confuso de entender."
+ *
+ * Foi por isso que os bytes passaram a ser reenviados. Só que o caminho dos
+ * arquivos GRANDES continuou fazendo exatamente a coisa condenada: mandava a
+ * URL assinada. Vídeo espelhado hoje, link morto amanhã.
+ *
+ * É o pior feitio de defeito que existe neste projeto: parece resolvido no dia
+ * em que alguém olha. */
+{
+  const { baixarAnexos, enderecoDaFala, MAX_ANEXO } =
+    carregar(["MAX_ANEXO", "enderecoDaFala", "baixarAnexos"]);
+
+  const msgCom = (anexos) => ({
+    id: "999", channelId: "77", guild: { id: "11" }, guildId: "11",
+    attachments: { size: anexos.length, values: () => anexos[Symbol.iterator]() },
+  });
+
+  ok("o endereço da fala é montado a partir dos três ids",
+    enderecoDaFala(msgCom([])), "https://discord.com/channels/11/77/999");
+  ok("sem os ids não inventa endereço",
+    enderecoDaFala({ id: "1" }), "");
+
+  /* O caso do defeito: um vídeo grande. */
+  {
+    const grande = { size: MAX_ANEXO + 1, name: "rally.mp4", contentType: "video/mp4",
+                     url: "https://cdn.discordapp.com/x.mp4?ex=CADUCA&is=ASSINADO" };
+    const { arquivos, links } = await baixarAnexos(msgCom([grande]));
+    ok("grande demais não é reenviado", arquivos.length, 0);
+    verdade("e NÃO aponta para a URL assinada, que morre em um dia",
+      !links.join(" ").includes("ex=CADUCA"));
+    verdade("aponta para a fala original, que não caduca",
+      links.join(" ").includes("https://discord.com/channels/11/77/999"));
+    /* Quem lê precisa saber que existe um vídeo do outro lado, e por que ele
+       não está ali. Um link pelado não conta nenhuma das duas coisas. */
+    verdade("e diz que é vídeo e quanto pesa", /🎬/.test(links[0]) && /MB/.test(links[0]));
+  }
+
+  /* O download pode falhar mesmo cabendo. A saída de emergência tinha o mesmo
+     defeito: preferia um link que caduca a não ter nada. */
+  {
+    const antes = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("rede caiu"); };
+    try {
+      const pequeno = { size: 10, name: "foto.png", contentType: "image/png",
+                        url: "https://cdn.discordapp.com/y.png?ex=CADUCA" };
+      const { links } = await baixarAnexos(msgCom([pequeno]));
+      verdade("download que falha também cai na fala original, não na URL assinada",
+        links.join(" ").includes("/channels/11/77/999")
+        && !links.join(" ").includes("ex=CADUCA"));
+    } finally { globalThis.fetch = antes; }
+  }
+}
+
 /* O VÍDEO QUE DÁ PARA ASSISTIR SEM SAIR DAQUI.
  *
  * Um link de YouTube colado numa sala espelhada chegava do outro lado como

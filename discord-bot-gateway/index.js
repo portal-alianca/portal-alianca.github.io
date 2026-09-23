@@ -1751,18 +1751,51 @@ const MAX_ANEXO = 8 * 1024 * 1024;
 
    Reenviando os bytes, cada sala ganha um anexo proprio, hospedado pelo
    Discord, sem validade. */
+/* O endereco da fala ORIGINAL. Este nao caduca nunca: enquanto a mensagem
+   existir, o link abre nela. */
+function enderecoDaFala(msg) {
+  const g = msg?.guild?.id || msg?.guildId;
+  if (!g || !msg?.channelId || !msg?.id) return "";
+  return `https://discord.com/channels/${g}/${msg.channelId}/${msg.id}`;
+}
+
 async function baixarAnexos(msg) {
   const arquivos = [];
   const links = [];
   for (const a of msg.attachments.values()) {
-    if (a.size > MAX_ANEXO) { links.push(a.url); continue; }
+    /* GRANDE DEMAIS PARA COPIAR -- e aqui morava o defeito que o comentario
+       acima ja' descrevia.
+
+       A saida antiga era `links.push(a.url)`: a URL assinada do anexo. Ela
+       CADUCA, que e' exatamente o motivo pelo qual os bytes passaram a ser
+       reenviados. O caminho dos pequenos foi consertado e o dos grandes ficou
+       fazendo a coisa condenada trinta linhas acima: o video aparecia hoje e
+       era um link morto amanha, so' nas copias.
+
+       E' o pior feitio de defeito que existe neste projeto: parece resolvido
+       no dia em que se olha.
+
+       Agora aponta para a fala original, que nao caduca. Nao toca dentro do
+       Discord -- nada com esse tamanho toca --, mas leva a pessoa ao video de
+       verdade em vez de a um erro. */
+    if (a.size > MAX_ANEXO) {
+      const eVideo = /^video\//i.test(a.contentType || "") || /\.(mp4|webm|mov|mkv)$/i.test(a.name || "");
+      const onde = enderecoDaFala(msg);
+      const mb = Math.round(a.size / (1024 * 1024));
+      links.push(onde
+        ? `${eVideo ? "🎬" : "📎"} [${a.name || "arquivo"} · ${mb} MB](${onde})`
+        : a.url);
+      continue;
+    }
     try {
       const r = await fetch(a.url, { signal: AbortSignal.timeout(15000) });
       if (!r.ok) throw new Error(`http ${r.status}`);
       arquivos.push({ attachment: Buffer.from(await r.arrayBuffer()), name: a.name || "arquivo" });
     } catch (e) {
       console.error("espelho: nao consegui baixar o anexo:", e?.message || e);
-      links.push(a.url); // melhor um link que caduca do que foto nenhuma
+      /* Mesma regra da linha de cima, e pelo mesmo motivo: o endereco da fala
+         original sobrevive, a URL assinada nao. */
+      links.push(enderecoDaFala(msg) || a.url);
     }
   }
   return { arquivos, links };
