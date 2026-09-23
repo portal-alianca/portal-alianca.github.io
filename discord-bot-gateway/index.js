@@ -2690,10 +2690,32 @@ function linhasDaLeitura(j) {
       const caixa = xs.length && ys.length
         ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map(Math.round)
         : null;
-      fora.push({ texto, caixa });
+      fora.push({ texto, caixa, torta: caixa ? textoTorto(pts, caixa) : false });
     }
   }
   return fora;
+}
+
+/* Texto inclinado nao se redesenha.
+
+   A Azure devolve a linha como um poligono que segue a inclinacao da letra.
+   Para desenhar, ele vira o retangulo RETO que o contem -- e para uma linha
+   inclinada esse retangulo e' enorme. Num banner com "Union of People" em
+   pincel, na diagonal, o tapume virou um caixote preto por cima do logo, e o
+   subtitulo foi desenhado dentro dele.
+
+   Mede-se quanto do retangulo o poligono ocupa: texto reto ocupa quase tudo;
+   inclinado, bem menos. Abaixo de 60%, fica o original. */
+function textoTorto(pts, caixa) {
+  if (!Array.isArray(pts) || pts.length < 3) return false;
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    area += Number(a.x) * Number(b.y) - Number(b.x) * Number(a.y);
+  }
+  area = Math.abs(area) / 2;
+  const ret = Math.max(1, (caixa[2] - caixa[0]) * (caixa[3] - caixa[1]));
+  return area / ret < 0.6;
 }
 
 /* Le a imagem e devolve texto E linhas. Separada da de cima para quem so'
@@ -2867,7 +2889,8 @@ function desenhaEm(idioma) {
    comeca quase na mesma coluna, tem altura parecida e vem logo em seguida. */
 function agruparEmParagrafos(linhas) {
   const comCaixa = linhas.filter((l) => Array.isArray(l.caixa));
-  const ordem = [...comCaixa].sort((a, b) => a.caixa[1] - b.caixa[1] || a.caixa[0] - b.caixa[0]);
+  const tortas = comCaixa.filter((l) => l.torta).map((l) => ({ texto: l.texto, caixa: [...l.caixa], linhas: 1, torta: true }));
+  const ordem = comCaixa.filter((l) => !l.torta).sort((a, b) => a.caixa[1] - b.caixa[1] || a.caixa[0] - b.caixa[0]);
   const blocos = [];
   for (const l of ordem) {
     const [x0, y0, x1, y1] = l.caixa;
@@ -2888,7 +2911,7 @@ function agruparEmParagrafos(linhas) {
       blocos.push({ texto: l.texto, caixa: [...l.caixa], ultima: l.caixa, linhas: 1 });
     }
   }
-  return blocos.map(({ texto, caixa, linhas }) => ({ texto, caixa, linhas }));
+  return [...blocos.map(({ texto, caixa, linhas }) => ({ texto, caixa, linhas })), ...tortas];
 }
 
 /* Um desenho de cada vez. A maquina tem 256 MB, e duas imagens grandes
@@ -2947,38 +2970,33 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
   const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
 
   const camadas = [];
-  let desenhados = 0;
+  let desenhados = 0, pulados = 0;
+  const ocupadas = [];   // caixas ja' desenhadas, para ninguem atropelar ninguem
+  const todas = paragrafos.map((p) => p.caixa.map((v) => Math.round(v * fator)));
+  const cruza = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]))
+    * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const area = (a) => Math.max(1, (a[2] - a[0]) * (a[3] - a[1]));
+
   for (let k = 0; k < paragrafos.length; k++) {
     const original = paragrafos[k].texto;
     const novo = String(traducoes[k] || "").trim();
     if (!novo || !/\p{L}/u.test(original) || novo === original.trim()) continue;
-    const [a0, b0, a1, b1] = paragrafos[k].caixa.map((v) => Math.round(v * fator));
+    /* NA DUVIDA, FICA O ORIGINAL. Um trecho em ingles no meio da imagem e'
+       muito melhor que um caixote preto por cima do desenho -- que foi o que
+       o primeiro banner de verdade mostrou. Cada `pulados++` abaixo e' um
+       caso daquele banner. */
+    if (paragrafos[k].torta) { pulados++; continue; }
+    const [a0, b0, a1, b1] = todas[k];
     let x0 = Math.max(0, a0), x1 = Math.min(W - 1, a1);
     const y0 = Math.max(0, b0), y1 = Math.min(H - 1, b1);
-    /* Rotulo de UMA linha cuja traducao e' mais comprida ("Em breve" ->
-       "Coming soon") alarga para os lados, a partir do centro, ate' 1,8x.
-       Sem isto a letra encolhia ate' ficar ilegivel. Paragrafo de varias
-       linhas nao alarga: ali o lado costuma ser desenho, e tapar desenho e'
-       pior que letra menor. */
-    if ((paragrafos[k].linhas || 1) === 1) {
-      /* Letra ocupa ~75% da altura da caixa, e cada caractere ~60% da
-         altura da letra. A primeira conta usava a caixa inteira como letra e
-         alargava ate' o titulo, que cabia: o tapume passava da borda do
-         cartao. */
-      const precisa = Math.ceil(novo.length * (y1 - y0) * 0.75 * 0.6);
-      if (precisa > x1 - x0) {
-        const nova = Math.min(precisa, Math.round((x1 - x0) * 1.8));
-        const centro = (x0 + x1) / 2;
-        x0 = Math.max(0, Math.round(centro - nova / 2));
-        x1 = Math.min(W - 1, Math.round(centro + nova / 2));
-      }
-    }
-    const w = x1 - x0, h = y1 - y0;
-    if (w < 8 || h < 6) continue;
+    if (x1 - x0 < 8 || y1 - y0 < 6) continue;
+    /* Encavalado em algo ja' desenhado: desenhar por cima apagaria o vizinho. */
+    if (ocupadas.some((o) => cruza(o, [x0, y0, x1, y1]) > area([x0, y0, x1, y1]) * 0.2)) { pulados++; continue; }
 
     /* Fundo: a cor mais comum numa faixa fina FORA do texto, nos quatro
        lados. O que encosta num lado so' (icone, margem) perde a votacao. */
     const votos = new Map();
+    let amostras = 0;
     for (let d = 2; d <= 5; d++) {
       const pontos = [];
       for (let x = x0 - d; x <= x1 + d; x++) pontos.push([x, y0 - d], [x, y1 + d]);
@@ -2986,11 +3004,35 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
       for (const [x, y] of pontos) {
         const c = px(x, y); const chave = c.map((v) => v >> 4).join(",");
         const v = votos.get(chave) || { n: 0, s: [0, 0, 0] };
-        v.n++; v.s = v.s.map((t, q) => t + c[q]); votos.set(chave, v);
+        v.n++; v.s = v.s.map((t, q) => t + c[q]); votos.set(chave, v); amostras++;
       }
     }
     const venc = [...votos.values()].sort((p, q) => q.n - p.n)[0];
+    /* Texto em cima de DESENHO: nenhuma cor domina a borda. Retangulo liso
+       ali fica pior que o original. Em tela de jogo (fundo liso) a cor
+       vencedora passa folgada de metade; no banner, nem de um quarto. */
+    const dominio = venc.n / Math.max(1, amostras);
+    if (dominio < 0.3) { pulados++; continue; }
     const fundo = venc.s.map((t) => Math.round(t / venc.n));
+
+    /* Rotulo de UMA linha cuja traducao e' mais comprida ("Em breve" ->
+       "Coming soon") alarga para os lados, a partir do centro, ate' 1,8x.
+       So' com fundo bem liso, e so' se nao encostar em NENHUM outro texto: no
+       banner, tres rotulos alargaram uns por cima dos outros. */
+    if ((paragrafos[k].linhas || 1) === 1 && dominio >= 0.5) {
+      /* Letra ocupa ~75% da altura da caixa, e cada caractere ~60% da
+         altura da letra. */
+      const precisa = Math.ceil(novo.length * (y1 - y0) * 0.75 * 0.6);
+      if (precisa > x1 - x0) {
+        const nova = Math.min(precisa, Math.round((x1 - x0) * 1.8));
+        const centro = (x0 + x1) / 2;
+        const tenta = [Math.max(0, Math.round(centro - nova / 2)), y0, Math.min(W - 1, Math.round(centro + nova / 2)), y1];
+        const esbarra = todas.some((o, q) => q !== k && cruza(o, tenta) > 0);
+        if (!esbarra) { x0 = tenta[0]; x1 = tenta[2]; }
+      }
+    }
+    const w = x1 - x0, h = y1 - y0;
+    ocupadas.push([x0, y0, x1, y1]);
     /* Letra: os pixels de dentro que mais contrastam com o fundo -- o titulo
        branco continua branco, o dourado continua dourado. */
     const dentro = [];
@@ -3021,8 +3063,10 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
       top: y0 + Math.max(0, Math.floor((h - forma.info.height) / 2)) });
     desenhados++;
   }
-  if (!desenhados) return null;
-  return img.composite(camadas).jpeg({ quality: 86 }).toBuffer();
+  /* Quantos entraram e quantos ficaram de fora: quem chama decide se a
+     imagem vale a pena ou se o texto do 📝 serve melhor. */
+  if (!desenhados) return { imagem: null, desenhados, pulados };
+  return { imagem: await img.composite(camadas).jpeg({ quality: 86 }).toBuffer(), desenhados, pulados };
 }
 
 function midiaDeLink(msg) {
@@ -11328,11 +11372,23 @@ async function cliqueVerNaImagem(inter, buscar = fetch) {
     const r = await buscar(img.url, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error(`baixar a imagem deu HTTP ${r.status}`);
     const bytes = Buffer.from(await r.arrayBuffer());
-    const pronta = await naFilaDeDesenho(() => desenharTraducao(bytes, paragrafos, traducoes, sharp));
-    if (!pronta) {
+    const r2 = await naFilaDeDesenho(() => desenharTraducao(bytes, paragrafos, traducoes, sharp));
+    /* Mais trechos pulados que desenhados e' arte, nao tela de jogo: texto
+       inclinado, em pincel, em cima de desenho. Uma imagem meio traduzida ali
+       confunde mais que ajuda -- o texto do 📝 serve melhor. */
+    if (!r2.imagem && !r2.pulados) {
       return aviso({ title: `🌐 Já está em ${nomeDoIdioma(idioma)}`, description: "O texto desta imagem já está no seu idioma." });
     }
-    return inter.editReply({ embeds: [], components: [], files: [{ attachment: pronta, name: "traduzido.jpg" }] });
+    if (!r2.imagem || r2.pulados > r2.desenhados) {
+      return aviso({ title: "🎨 Essa imagem é arte, não tela de jogo",
+        description: "O texto dela é inclinado ou fica em cima do desenho, e redesenhar estragaria a imagem. " +
+          "O texto traduzido do 📝 serve melhor aqui." });
+    }
+    const nota = r2.pulados
+      ? (await traduzirEmbed({ description: `Deixei ${r2.pulados} trecho(s) como estavam: texto inclinado ou em cima do desenho.` }, idioma, motor)).description
+      : undefined;
+    return inter.editReply({ content: nota, embeds: [], components: [],
+      files: [{ attachment: r2.imagem, name: "traduzido.jpg" }] });
   } catch (e) {
     console.error("imagem: nao consegui desenhar a traducao:", e?.message || e);
     return aviso({ title: "❌ Não deu", description: "Não consegui montar a imagem agora. O texto do 📝 continua funcionando." });

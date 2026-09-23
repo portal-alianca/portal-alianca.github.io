@@ -6534,17 +6534,21 @@ function conferirCartao(onde, embed, componentes = []) {
 {
   const sharp = (await import("sharp")).default;
   const FONTE = new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url).pathname;
-  const d = carregar(["DESENHA_EM", "desenhaEm", "agruparEmParagrafos", "MAX_PIXELS_DESENHO",
+  const d = carregar(["textoTorto", "DESENHA_EM", "desenhaEm", "agruparEmParagrafos", "MAX_PIXELS_DESENHO",
     "desenharTraducao", "naFilaDeDesenho", "linhasDaLeitura", "ROTULO_VER_NA_IMAGEM", "botaoVerNaImagem",
     "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem"]);
+
+  /* A função devolve { imagem, desenhados, pulados }; a maioria dos testes só
+     quer a imagem. */
+  const desenhar = async (...a) => (await d.desenharTraducao(...a)).imagem;
 
   /* ---- da resposta da Azure para retângulos ---- */
   ok("o polígono da Azure vira o retângulo que o contém",
     d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: " Rally ",
       boundingPolygon: [{ x: 10, y: 20 }, { x: 90, y: 22 }, { x: 91, y: 40 }, { x: 9, y: 38 }] }] }] } }),
-    [{ texto: "Rally", caixa: [9, 20, 91, 40] }]);
+    [{ texto: "Rally", caixa: [9, 20, 91, 40], torta: false }]);
   ok("linha sem posição continua valendo para o texto",
-    d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: "oi" }] }] } }), [{ texto: "oi", caixa: null }]);
+    d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: "oi" }] }] } }), [{ texto: "oi", caixa: null, torta: false }]);
 
   /* ---- parágrafos ---- */
   {
@@ -6590,7 +6594,7 @@ function conferirCartao(onde, embed, componentes = []) {
   const perto = (a, b, tol = 40) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
   {
     const original = await fazerImagem(300, 120);
-    const saiu = await d.desenharTraducao(original,
+    const saiu = await desenhar(original,
       [{ texto: "Olá mundo", caixa: [20, 20, 180, 44] }], ["Hello world"], sharp, FONTE);
     verdade("desenhou alguma coisa", Buffer.isBuffer(saiu));
     const meta = await sharp(saiu).metadata();
@@ -6623,18 +6627,94 @@ function conferirCartao(onde, embed, componentes = []) {
   {
     const original = await fazerImagem(300, 120);
     ok("número e hora não são tocados (nada a desenhar)",
-      await d.desenharTraducao(original, [{ texto: "#2311 1d 07:58", caixa: [20, 20, 180, 44] }], ["#2311 1d 07:58"], sharp, FONTE), null);
+      await desenhar(original, [{ texto: "#2311 1d 07:58", caixa: [20, 20, 180, 44] }], ["#2311 1d 07:58"], sharp, FONTE), null);
     ok("tradução igual ao original não é tocada",
-      await d.desenharTraducao(original, [{ texto: "Rally", caixa: [20, 20, 180, 44] }], ["Rally"], sharp, FONTE), null);
+      await desenhar(original, [{ texto: "Rally", caixa: [20, 20, 180, 44] }], ["Rally"], sharp, FONTE), null);
   }
   {
     /* Foto grande é reduzida antes de desenhar: descompactada inteira, ela
        sozinha poderia derrubar a máquina de 256 MB. */
     const grande = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: VERMELHO } }).png().toBuffer();
-    const saiu = await d.desenharTraducao(grande, [{ texto: "Olá", caixa: [100, 100, 700, 180] }], ["Hello"], sharp, FONTE);
+    const saiu = await desenhar(grande, [{ texto: "Olá", caixa: [100, 100, 700, 180] }], ["Hello"], sharp, FONTE);
     const m = await sharp(saiu).metadata();
     verdade("imagem enorme sai reduzida, dentro do teto de pixels", m.width * m.height <= d.MAX_PIXELS_DESENHO * 1.01);
     ok("e na mesma proporção", Math.round((m.width / m.height) * 100), Math.round((2400 / 1800) * 100));
+  }
+
+
+  /* ---- O BANNER: arte, não tela de jogo ----
+   *
+   * O primeiro print de verdade foi um banner de aliança: título em pincel na
+   * diagonal, texto em cima de desenho, rótulos encostados. Saiu um caixote
+   * preto por cima do logo, o subtítulo desenhado dentro dele, e três rótulos
+   * alargados uns por cima dos outros. A regra que conserta tudo: NA DÚVIDA,
+   * FICA O ORIGINAL. */
+  {
+    /* Inclinação: quanto do retângulo reto o polígono da Azure ocupa. */
+    const reto = [{ x: 0, y: 0 }, { x: 800, y: 0 }, { x: 800, y: 120 }, { x: 0, y: 120 }];
+    verdade("texto reto não é torto", !d.textoTorto(reto, [0, 0, 800, 120]));
+    /* "Union of People" em pincel, ~15° de inclinação. */
+    const a = 15 * Math.PI / 180, cx = (x, y) => ({ x: x * Math.cos(a) - y * Math.sin(a) + 100, y: x * Math.sin(a) + y * Math.cos(a) + 50 });
+    const torto = [cx(0, 0), cx(800, 0), cx(800, 120), cx(0, 120)];
+    const caixaTorta = [Math.min(...torto.map((q) => q.x)), Math.min(...torto.map((q) => q.y)), Math.max(...torto.map((q) => q.x)), Math.max(...torto.map((q) => q.y))];
+    verdade("texto inclinado 15° é torto", d.textoTorto(torto, caixaTorta));
+    ok("e a leitura já sai marcada",
+      d.linhasDaLeitura({ readResult: { blocks: [{ lines: [{ text: "Union of People", boundingPolygon: torto }] }] } })[0].torta, true);
+    const g = d.agruparEmParagrafos([
+      { texto: "Union of People", caixa: [20, 20, 200, 60], torta: true },
+      { texto: "Stronger Together", caixa: [20, 62, 200, 80] },
+    ]);
+    verdade("linha torta não gruda na vizinha", g.length === 2 && g.some((q) => q.torta && q.texto === "Union of People"));
+
+    const base = await fazerImagem(300, 120);
+    const r = await d.desenharTraducao(base, [{ texto: "Olá mundo", caixa: [20, 20, 180, 44], torta: true }], ["Hello world"], sharp, FONTE);
+    verdade("texto torto não é redesenhado: fica o original", r.imagem === null && r.pulados === 1);
+
+    /* Texto em cima de DESENHO: nenhuma cor domina em volta. */
+    const ruido = Buffer.alloc(300 * 120 * 3);
+    for (let i = 0; i < ruido.length; i++) ruido[i] = Math.floor(Math.random() * 256);
+    const arte = await sharp(ruido, { raw: { width: 300, height: 120, channels: 3 } }).png().toBuffer();
+    const r2 = await d.desenharTraducao(arte, [{ texto: "Olá mundo", caixa: [20, 20, 180, 44] }], ["Hello world"], sharp, FONTE);
+    verdade("texto em cima de desenho não ganha retângulo liso", r2.imagem === null && r2.pulados === 1);
+
+    /* Dois textos encavalados: o segundo não pode apagar o primeiro. */
+    const r3 = await d.desenharTraducao(base, [
+      { texto: "Olá mundo", caixa: [20, 20, 180, 44] },
+      { texto: "Mais forte", caixa: [60, 26, 200, 46] },
+    ], ["Hello world", "Stronger"], sharp, FONTE);
+    verdade("o texto encavalado no já desenhado fica de fora", r3.desenhados === 1 && r3.pulados === 1);
+
+    /* Alargar não pode invadir o vizinho: foi assim que "Crescimento",
+       "Jogadores de longo prazo" e "JUNTE-SE A NÓS" se atropelaram. */
+    /* Com um rótulo BRANCO de verdade dentro da caixa. A primeira versão era
+       vermelho liso: o bot tira a cor da letra do texto que estiver ali, e sem
+       texto escreveu vermelho sobre vermelho -- o teste não enxergava nada, e
+       passaria alargando ou não. */
+    const lado = await sharp({ create: { width: 300, height: 100, channels: 3, background: VERMELHO } })
+      .composite([{ input: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><rect x="132" y="43" width="36" height="10" fill="white"/></svg>'), left: 0, top: 0 }])
+      .png().toBuffer();
+    const r4 = await d.desenharTraducao(lado, [
+      { texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 1 },
+      { texto: "12", caixa: [176, 40, 200, 56], linhas: 1 },
+    ], ["Coming soon now", "12"], sharp, FONTE);
+    const { data, info } = await sharp(r4.imagem).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    /* Com vizinho do lado, o rótulo NÃO pode alargar: nenhuma letra fora da
+       caixa original, nem para o lado do vizinho nem para o outro. A primeira
+       versão deste teste só olhava dentro da caixa do vizinho, e a sabotagem
+       que tirou a trava passou verde -- o texto alargado não chegava até lá. */
+    let fora = 0;
+    for (let y = 40; y < 56; y++) for (let x = 0; x < info.width; x++) {
+      if (x >= 126 && x <= 174) continue;
+      const i = (y * info.width + x) * 3; if (data[i] > 200 && data[i + 1] > 200) fora++;
+    }
+    ok("rótulo com vizinho do lado não alarga", fora, 0);
+
+    /* A resposta: mais pulado que desenhado é arte, e aí vale o texto. */
+    const src = semComentarios(readFileSync(new URL("./index.js", import.meta.url), "utf8"));
+    verdade("imagem com mais trechos pulados que desenhados responde com o texto",
+      /if \(!r2\.imagem \|\| r2\.pulados > r2\.desenhados\)/.test(src) && /Essa imagem é arte, não tela de jogo/.test(src));
+    verdade("e quando manda a imagem, avisa quantos trechos ficaram como estavam",
+      /Deixei \$\{r2\.pulados\} trecho\(s\) como estavam/.test(src));
   }
 
   /* ---- rótulo curto com tradução comprida ---- */
@@ -6654,16 +6734,16 @@ function conferirCartao(onde, embed, componentes = []) {
     const base = await sharp({ create: { width: 300, height: 100, channels: 3, background: VERMELHO } })
       .composite([{ input: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><rect x="130" y="42" width="40" height="12" fill="white"/></svg>'), left: 0, top: 0 }])
       .png().toBuffer();
-    const um = await d.desenharTraducao(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 1 }],
+    const um = await desenhar(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 1 }],
       ["Coming soon now"], sharp, FONTE);
     verdade("rótulo de uma linha alarga: a tradução passa das bordas originais", (await claroFora(um, 128, 172)) > 10);
     /* Parágrafo de várias linhas NÃO alarga: ali o lado costuma ser desenho. */
-    const varias = await d.desenharTraducao(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 2 }],
+    const varias = await desenhar(base, [{ texto: "Em breve", caixa: [128, 40, 172, 56], linhas: 2 }],
       ["Coming soon now"], sharp, FONTE);
     ok("parágrafo de várias linhas fica dentro da caixa", await claroFora(varias, 124, 176), 0);
     /* E o que já cabe não mexe: o título do Kingshot alargava sem precisar e
        o tapume passava da borda do cartão. */
-    const cabe = await d.desenharTraducao(base, [{ texto: "Oi", caixa: [128, 40, 172, 56], linhas: 1 }],
+    const cabe = await desenhar(base, [{ texto: "Oi", caixa: [128, 40, 172, 56], linhas: 1 }],
       ["Hi"], sharp, FONTE);
     ok("tradução que cabe não alarga", await claroFora(cabe, 124, 176), 0);
   }
