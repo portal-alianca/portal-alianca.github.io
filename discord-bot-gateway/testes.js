@@ -6264,6 +6264,51 @@ function conferirCartao(onde, embed, componentes = []) {
   }
 }
 
+/* NENHUM BOTÃO PODE SER TRATADO NUM RAMO ONDE BOTÃO NÃO ENTRA.
+ *
+ * O roteador de cliques separa por tipo: `isStringSelectMenu()` só deixa
+ * passar menu de seleção, `isModalSubmit()` só formulário. Um `customId ===
+ * "x"` de BOTÃO escrito dentro de um desses blocos nunca é alcançado — o
+ * clique chega, ninguém responde, e o Discord mostra "não respondeu a tempo".
+ *
+ * Foi exatamente o que aconteceu com o 📝 no primeiro print de verdade, e o
+ * teste daquela vez conferia só que a linha existia. Este vale para TODO botão
+ * com custom_id fixo que o código desenha, os de hoje e os que vierem. */
+{
+  const semCom = (t) => semComentarios(t);
+  /* Os blocos onde botão não entra, com as posições do texto ORIGINAL. */
+  const blocos = [];
+  for (const abre of ["if (inter.isStringSelectMenu()) {", "if (inter.isModalSubmit()) {"]) {
+    let i = fonte.indexOf(abre);
+    while (i >= 0) {
+      const chave = i + abre.length - 1;
+      blocos.push({ abre, ini: i, fim: fimDoBloco(chave), texto: semCom(fonte.slice(i, fimDoBloco(chave))) });
+      i = fonte.indexOf(abre, i + 1);
+    }
+  }
+  verdade("o roteador tem os blocos de menu e de formulário (o teste não está vazio)",
+    blocos.some((b) => b.abre.includes("Select")) && blocos.some((b) => b.abre.includes("Modal")));
+
+  /* Os botões que o código desenha com custom_id fixo. */
+  const botoes = new Set();
+  for (const m of semCom(fonte).matchAll(/type: 2,[^\n]*?custom_id: "([^"]+)"/g)) botoes.add(m[1]);
+  verdade("achou botões para conferir", botoes.size >= 5);
+  verdade("o 📝 está entre eles", botoes.has("img:ler"));
+
+  const presos = [];
+  for (const id of botoes) {
+    const alvo = `inter.customId === "${id}"`;
+    for (const b of blocos) {
+      /* Formulário pode ter o MESMO custom_id do botão que o abre (admin:visao
+         abre a janela admin:visao) -- ali a comparação é do formulário, e está
+         certa. Só menu de seleção nunca recebe um id de botão. */
+      if (b.abre.includes("Modal")) continue;
+      if (b.texto.includes(alvo)) presos.push(id);
+    }
+  }
+  ok("nenhum botão tratado dentro do bloco dos menus de seleção", presos, []);
+}
+
 /* LER O TEXTO DE DENTRO DE UM PRINT.
  *
  * O CYRON respondia "só imagem, não há o que traduzir" — e print é a moeda de
@@ -6437,8 +6482,11 @@ function conferirCartao(onde, embed, componentes = []) {
     {
       const fonte = readFileSync(new URL("./index.js", import.meta.url), "utf8");
       const codigo = semComentarios(fonte);
-      verdade("o clique do botão chega no handler",
-        /inter\.customId === "img:ler"\) return await cliqueLerImagem\(inter\)/.test(codigo));
+      /* ONDE, e não só SE. A primeira versão conferia que a linha existia, e
+         ela existia -- dentro do bloco dos menus de seleção, onde botão nenhum
+         entra. No primeiro print de verdade: "CYRON não respondeu a tempo". */
+      verdade("o clique do botão 📝 é tratado no ramo dos BOTÕES",
+        /inter\.isButton\(\) && inter\.customId === "img:ler"\)[^]{0,20}return await cliqueLerImagem\(inter\)/.test(codigo));
       verdade("o handler responde só para quem clicou (efêmero)",
         /async function cliqueLerImagem[^]{0,120}deferReply\(\{ flags: 64 \}\)/.test(codigo));
       /* Chamar e USAR. A primeira versão conferia só a chamada, e a sabotagem
