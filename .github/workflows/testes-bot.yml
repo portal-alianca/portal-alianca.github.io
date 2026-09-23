@@ -79,7 +79,7 @@ jobs:
       # nome e a linha.
       - name: Conferir se o index.js compila
         working-directory: discord-bot-gateway
-        run: node --check index.js
+        run: node --check index.js && node --check alianca.js
 
       - name: Rodar os testes
         working-directory: discord-bot-gateway

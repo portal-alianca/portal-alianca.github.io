@@ -4109,9 +4109,13 @@ function conferirCartao(onde, embed, componentes = []) {
      em vez de conferir alguma coisa. Guarda que mede a coisa errada é guarda
      nenhum. */
   const inicioEntrada = fonteConv.indexOf('client.on("guildMemberAdd"');
-  const entrada = fonteConv.slice(inicioEntrada,
-    fonteConv.indexOf("const aliancaId = await aliancaDoGuild", inicioEntrada));
-  verdade("achei a entrada para conferir, e ela não está vazia", entrada.length > 200);
+  /* O cartão da aliança agora mora no alianca.js; aqui ele é UMA chamada.
+     Se a chamada sumir, `indexOf` devolve -1, e a fatia até -1 seria o
+     arquivo inteiro -- passando por acidente de novo. Por isso o -1 reprova. */
+  const fimEntrada = fonteConv.indexOf("await boasVindasDaAlianca(member", inicioEntrada);
+  verdade("o cartão da aliança é chamado na entrada", inicioEntrada >= 0 && fimEntrada > inicioEntrada);
+  const entrada = fonteConv.slice(inicioEntrada, fimEntrada);
+  verdade("achei a entrada para conferir, e ela não está vazia", entrada.length > 200 && entrada.length < 5000);
   verdade("o convite acontece antes de perguntar pela aliança",
     /convidarParaEscolherIdioma\(member\)/.test(entrada));
 
@@ -4880,6 +4884,10 @@ function conferirCartao(onde, embed, componentes = []) {
      regra. */
   verdade("o catalogo.js entra na imagem",
     existsSync(`${aqui}/catalogo.js`) && !ignorados.includes("catalogo.js"));
+  /* E o alianca.js, pelo mesmo motivo: o index.js importa dele na primeira
+     linha, e sem ele o bot nem liga. */
+  verdade("o alianca.js entra na imagem",
+    existsSync(`${aqui}/alianca.js`) && !ignorados.includes("alianca.js"));
 }
 
 /* ====== a menção que não tocava sino ======
@@ -6538,7 +6546,8 @@ function conferirCartao(onde, embed, componentes = []) {
   const FONTE = new URL("./fontes/DejaVuSans-Bold.ttf", import.meta.url).pathname;
   const d = carregar(["textoTorto", "DESENHA_EM", "desenhaEm", "agruparEmParagrafos", "MAX_PIXELS_DESENHO",
     "desenharTraducao", "naFilaDeDesenho", "linhasDaLeitura", "ROTULO_VER_NA_IMAGEM", "botaoVerNaImagem",
-    "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem", "MAX_NUMEROS_NA_IMAGEM", "legendaDosNumeros"]);
+    "traduzirParagrafos", "ehImagemAnexo", "imagemDaMensagem", "MAX_NUMEROS_NA_IMAGEM", "legendaDosNumeros",
+    "FONTES_LIDAS", "fonteDoDesenho", "arrumarTexto", "textoEmSvg"]);
 
   /* A função devolve { imagem, desenhados, pulados, legenda }; a maioria dos testes só
      quer a imagem. */
@@ -7984,6 +7993,100 @@ function conferirCartao(onde, embed, componentes = []) {
      esquecida deixa de fora, que é o lado seguro de errar. */
   verdade("a lista de tabelas é branca, escrita no arquivo", /TABELAS = \[/.test(codigo));
   verdade("e não existe um 'pega tudo' escondido", !/information_schema|pg_tables/.test(codigo));
+}
+
+/* ============ a aliança [TOP] mora separada, no alianca.js ============
+ *
+ * O CYRON nasceu como o bot da aliança do dono. O que é só dela (boas-vindas
+ * com GIF, rosas, /player, /ranking...) saiu do index.js para o alianca.js.
+ * Estes testes rodam o módulo de verdade, com um banco de mentira, nos dois
+ * lados da regra: servidor de CLIENTE não recebe nada, o da aliança recebe
+ * tudo. */
+{
+  const A = await import("./alianca.js");
+  const respostas = [];
+  let banco = {};   // pedaço do caminho -> linhas
+  const sbFalso = async (caminho) => {
+    for (const [k, v] of Object.entries(banco)) if (caminho.includes(k)) return v;
+    return [];
+  };
+  A.ligarAlianca({
+    sb: sbFalso, rpc: async () => null, menuIdioma: () => ["menu"], SB_URL: "https://x", SB_KEY: "k", COR_OK: 1,
+    responder: async (inter, embed) => { respostas.push(embed); return embed; },
+  });
+  const msgFalsa = (guild, extra = {}) => {
+    const m = { guild: { id: guild }, respondeu: [], reply: async (o) => { m.respondeu.push(o); }, ...extra };
+    return m;
+  };
+
+  /* Servidor de cliente: sem linha em alianca_discord PARA ELE. Os dados da
+     [TOP] existem no banco (como no de verdade): GIF, webhook, canal. O que
+     separa um servidor do outro é só o vínculo -- e é ele que se testa. */
+  banco = {
+    "uso=eq.rosas": [{ url: "https://gif/rosas.gif" }],
+    "uso=eq.boas_vindas": [{ url: "https://gif/oi.gif" }],
+    "select=webhook,webhook_boas_vindas": [{ webhook: "https://discord.com/api/webhooks/123/x" }],
+    "select=aliancas(tag,nome)": [{ aliancas: { tag: "[TOP]", nome: "Best" } }],
+  };
+  const fetchDeVerdade = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ channel_id: "canal-bv" }) });
+  const cliente = msgFalsa("cliente-1");
+  await A.rosasDaAlianca(cliente, "a Lady chegou");
+  ok("servidor de cliente não ganha o GIF de rosas", cliente.respondeu.length, 0);
+  const bvCliente = msgFalsa("cliente-1", { webhookId: "123" });
+  await A.seletorNasBoasVindas(bvCliente);
+  ok("nem o seletor embaixo de webhook nenhum", bvCliente.respondeu.length, 0);
+  let enviou = 0;
+  await A.boasVindasDaAlianca({ guild: { id: "cliente-1", channels: { fetch: async () => ({ isTextBased: () => true, send: async () => { enviou++; } }) } } }, "Ana");
+  ok("nem o cartão de boas-vindas com GIF", enviou, 0);
+  /* A outra metade: no servidor ligado, o mesmo banco FAZ o cartão sair. Sem
+     isto, o "0" de cima poderia ser só o teste que não consegue enviar nada. */
+  banco["alianca_discord?guild_id=eq.top-1&select=alianca_id"] = [{ alianca_id: "a1" }];
+  await A.boasVindasDaAlianca({ guild: { id: "top-1", channels: { fetch: async () => ({ name: "bv", isTextBased: () => true, send: async () => { enviou++; } }) } } }, "Ana");
+  ok("no servidor da aliança, o cartão sai", enviou, 1);
+  globalThis.fetch = fetchDeVerdade;
+
+  /* O servidor da aliança: com vínculo, GIF cadastrado. */
+  banco = {
+    "alianca_discord?guild_id=eq.top-1&select=alianca_id": [{ alianca_id: "a1" }],
+    "uso=eq.rosas": [{ url: "https://gif/rosas.gif" }],
+  };
+  const casa = msgFalsa("top-1");
+  await A.rosasDaAlianca(casa, "bom dia MAELLE");
+  ok("no servidor da aliança, falar da Maelle traz as rosas", casa.respondeu[0]?.files, ["https://gif/rosas.gif"]);
+  const semRosa = msgFalsa("top-1");
+  await A.rosasDaAlianca(semRosa, "bom dia pessoal");
+  ok("e conversa comum não traz nada", semRosa.respondeu.length, 0);
+
+  /* Os comandos. */
+  const inter = (nome) => ({ commandName: nome, guildId: "cliente-1", deferReply: async () => {}, options: { getInteger: () => null } });
+  const lingua = async () => "pt";
+  banco = {};
+  await A.comandoDaAlianca(inter("portal"), lingua);
+  verdade("/portal responde com o endereço do portal", /portal-alianca\.github\.io/.test(respostas.at(-1)?.description || ""));
+  await A.comandoDaAlianca(inter("events"), lingua);
+  verdade("/events num servidor sem aliança explica como ligar", /Falta ligar este servidor/.test(respostas.at(-1)?.title || ""));
+
+  /* E o index.js entrega esses comandos ao módulo, e continua reservando os
+     nomes: um /ranking do dono não pode tomar o lugar do da aliança. */
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  ok("os cinco comandos da aliança", [...A.COMANDOS_DA_ALIANCA].sort(), ["events", "player", "portal", "ranking", "settings"]);
+  const { NOMES_MEUS } = carregar(["NOMES_MEUS"]);
+  verdade("e todos continuam com nome reservado", [...A.COMANDOS_DA_ALIANCA].every((n) => NOMES_MEUS.has(n)));
+  verdade("o roteador manda os comandos da aliança para o alianca.js",
+    /if \(COMANDOS_DA_ALIANCA\.has\(nome\)\) return comandoDaAlianca\(inter, lingua\)/.test(idx));
+  verdade("as rosas e o seletor das boas-vindas continuam ligados",
+    /await rosasDaAlianca\(msg, texto\)/.test(idx) && /await seletorNasBoasVindas\(msg\)/.test(idx));
+  /* Nome importado que o módulo não exporta derruba o bot NA PARTIDA -- e
+     estes testes não carregam o index.js inteiro, então ninguém mais veria. */
+  const importados = (idx.match(/import \{([^}]*)\} from "\.\/alianca\.js"/) || [, ""])[1]
+    .split(",").map((n) => n.trim()).filter(Boolean);
+  verdade(`o index.js importa ${importados.length} nomes do alianca.js`, importados.length >= 6);
+  for (const n of importados) verdade(`e o alianca.js exporta ${n}`, n in A);
+  verdade("o módulo recebe as dependências do bot",
+    /ligarAlianca\(\{ sb, rpc, responder, menuIdioma, SB_URL, SB_KEY, COR_OK \}\)/.test(idx));
+  verdade("e nada da aliança sobrou no index.js",
+    !/\b(aliancaDoGuild|gifRosas|comandoSettings|embedJogador|rankingDoJogo|PORTAL)\b/.test(idx));
 }
 
 let resumiu = false;
