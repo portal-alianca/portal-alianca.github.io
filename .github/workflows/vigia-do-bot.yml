@@ -41,6 +41,11 @@ on:
     # agendador é maior que a diferença.
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      testar_alarme:
+        description: "Mandar um aviso de TESTE no canal de erros (o bot continua no ar)"
+        type: boolean
+        default: false
 
 jobs:
   vigiar:
@@ -50,6 +55,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # UM ALARME QUE NINGUEM VIU TOCAR NAO E' ALARME.
+      #
+      # O aviso abaixo so' roda no dia em que o bot cai -- entao o primeiro
+      # teste de verdade dele seria justamente o dia em que ele precisa
+      # funcionar. Foi assim que esta vigia morreu calada da primeira vez.
+      #
+      # Este botao manda um cartao de teste pelo MESMO segredo e pelo MESMO
+      # curl. Verde aqui e cartao no canal = o caminho inteiro funciona.
+      # Vermelho = o segredo falta ou o webhook nao existe mais, e o log diz
+      # qual dos dois. Nas rodadas agendadas ele nao roda.
+      - name: Testar o alarme
+        if: github.event_name == 'workflow_dispatch' && inputs.testar_alarme
+        env:
+          GANCHO: ${{ secrets.DISCORD_WEBHOOK_ERROS }}
+        run: |
+          if [ -z "$GANCHO" ]; then
+            echo "::error::Nao existe o segredo DISCORD_WEBHOOK_ERROS -- o alarme nao tem para onde ir."
+            exit 1
+          fi
+          python3 - <<'PY' > /tmp/teste.json
+          import json, sys
+          json.dump({"embeds": [{
+              "title": "🧪 Teste do alarme",
+              "color": 0x5865F2,
+              "description": (
+                  "Se você está lendo isto, **o alarme funciona**: no dia em "
+                  "que o bot cair, a vigia avisa aqui, de fora, sem depender "
+                  "dele.\n\nNada está fora do ar. Pode apagar esta mensagem."
+              ),
+          }]}, sys.stdout)
+          PY
+          if curl -fsS -X POST -H "Content-Type: application/json" \
+               --data @/tmp/teste.json "$GANCHO" >/dev/null; then
+            echo "Cartao de teste enviado. Confira o canal de erros."
+          else
+            echo "::error::O Discord recusou o aviso. O webhook foi apagado ou a URL no segredo esta errada: crie outro e troque o segredo."
+            exit 1
+          fi
 
       - name: Perguntar ao Fly
         id: estado
@@ -142,7 +186,11 @@ jobs:
               "description": texto,
           }]}, sys.stdout)
           PY
-          curl -sS -X POST -H "Content-Type: application/json" \
+          # `-f` e' o que faz um webhook apagado CONTAR como falha. Sem ele o
+          # curl sai com 0 mesmo quando o Discord responde 404, e o log dizia
+          # "avisei no Discord" num alarme que nao chegou em lugar nenhum --
+          # uma mentira no unico dia em que este passo roda.
+          curl -fsS -X POST -H "Content-Type: application/json" \
             --data @/tmp/corpo.json "$GANCHO" >/dev/null \
             && echo "avisei no Discord" \
             || echo "::warning::nao consegui avisar no Discord"

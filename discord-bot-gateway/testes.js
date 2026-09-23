@@ -6931,6 +6931,83 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("app sem máquina nenhuma é fora", /^FORA/.test(rodar("[]")));
   verdade("resposta corrompida não vira 'de pé'", /^SEM RESPOSTA/.test(rodar("nao sou json")));
 
+  /* ---- O BOTÃO DE TESTAR O ALARME ----
+
+     O alarme só roda no dia em que o bot cai, então o primeiro teste de
+     verdade dele seria justamente o dia em que ele precisa funcionar. O botão
+     manda um cartão pelo MESMO segredo e o dono vê com os olhos.
+
+     E foi lendo isto que apareceu o defeito pior: o aviso de verdade usava
+     `curl` sem `-f`. Sem ele o curl sai com 0 mesmo quando o Discord responde
+     404, e o log dizia "avisei no Discord" com o webhook apagado. Uma mentira
+     no único dia em que o passo roda.
+
+     Executado com um curl falso que sabe responder "webhook não existe". */
+  {
+    const linhasV = yml.split("\n");
+    const iT = linhasV.findIndex((l) => /name: Testar o alarme/.test(l));
+    verdade("o botão de testar o alarme existe", iT > -1);
+    const passoT = linhasV.slice(iT).join("\n");
+    /* Só no botão: se rodasse no agendamento, seria um cartão de teste a cada
+       15 minutos no canal de erros -- o barulho que ensina a ignorar o canal. */
+    verdade("ele só roda quando alguém aperta, nunca no agendamento",
+      /if: github\.event_name == 'workflow_dispatch' && inputs\.testar_alarme/.test(passoT.split("\n")[1]));
+    verdade("e o botão aparece na aba Actions", /testar_alarme:\s*\n\s*description:/.test(yml));
+
+    const corpoT = passoT.slice(passoT.indexOf("run: |") + 6)
+      .split("\n").map((l) => l.replace(/^ {10}/, ""))
+      .join("\n").split("\n      - name:")[0];
+    writeFileSync(join(base, "teste.sh"), corpoT);
+
+    /* O curl falso honra o -f como o de verdade: com -f, resposta de erro vira
+       saída 22; sem -f, sai 0 como se tivesse dado certo. */
+    const rodarT = (gancho, respostaDoDiscord) => {
+      writeFileSync(join(base, "bin", "curl"),
+        `#!/bin/sh\ncase "$*" in *-f*) com_f=1;; *) com_f=0;; esac\n` +
+        `cp /tmp/teste.json "${join(base, "enviado.json")}" 2>/dev/null\n` +
+        (respostaDoDiscord === 404
+          ? `[ "$com_f" = 1 ] && exit 22 || exit 0\n`
+          : `exit 0\n`));
+      chmodSync(join(base, "bin", "curl"), 0o755);
+      try {
+        return { saida: execFileSync("bash", ["teste.sh"], {
+          cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, PATH: `${join(base, "bin")}:${process.env.PATH}`, GANCHO: gancho },
+        }), codigo: 0 };
+      } catch (e) {
+        return { saida: String(e.stdout || "") + String(e.stderr || ""), codigo: e.status };
+      }
+    };
+
+    {
+      const r = rodarT("https://discord.example/webhook", 200);
+      ok("webhook bom: o teste passa", r.codigo, 0);
+      /* Lido como JSON, e não como texto: o python escapa acento
+         ("está"), e o Discord desfaz isso -- quem lê é ele. */
+      const cartao = JSON.parse(readFileSync(join(base, "enviado.json"), "utf8")).embeds[0];
+      verdade("e o cartão diz que é TESTE, não um bot caído",
+        /Teste do alarme/.test(cartao.title) && /Nada está fora do ar/.test(cartao.description));
+    }
+    {
+      const r = rodarT("", 200);
+      verdade("sem o segredo, o teste reprova", r.codigo !== 0);
+      verdade("e diz que o que falta é o segredo", /DISCORD_WEBHOOK_ERROS/.test(r.saida));
+    }
+    {
+      /* O caso que o botão existe para pegar ANTES do dia da queda. */
+      const r = rodarT("https://discord.example/apagado", 404);
+      verdade("webhook apagado: o teste REPROVA em vez de fingir que avisou", r.codigo !== 0);
+      verdade("e manda criar outro", /crie outro/.test(r.saida));
+    }
+
+    /* E o alarme de verdade, com a mesma trava. */
+    const codigoV = semComentariosDeGrade(yml);
+    const gritar = codigoV.slice(codigoV.indexOf("name: Gritar no Discord"),
+      codigoV.indexOf("name: Reprovar se estiver fora"));
+    verdade("o alarme de verdade trata webhook apagado como falha (curl -f)",
+      /curl -f/.test(gritar));
+  }
+
   /* ---- O DEPLOY TEM A MESMA ARMADILHA, E DOERIA MAIS ----
 
      O passo que espera a máquina ligar guardava o python numa variável entre
