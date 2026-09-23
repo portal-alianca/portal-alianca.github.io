@@ -2695,9 +2695,28 @@ async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
     return aviso({ title: "🖼️ Não achei texto nessa imagem",
       description: "Não tem nada escrito que eu consiga ler aqui." });
   }
-  /* Teto de 4 mil letras: print de jogo tem centenas. Um print de parede de
-     texto nao pode consumir, sozinho, o que cem prints normais gastariam. */
-  const traduzido = await traduzirLongo(texto.slice(0, 4000), idioma, motor);
+  /* PELOS MESMOS PARAGRAFOS DO 🖼️, e nao o texto inteiro de uma vez.
+
+     A memoria de traducoes guarda frase por frase. Traduzido como um bloco
+     so', o 📝 pagava o texto inteiro, e o 🖼️ logo depois pagava de novo
+     paragrafo por paragrafo -- a mesma imagem custava duas vezes. Com os
+     mesmos pedacos, o 🖼️ acha tudo guardado e nao gasta nada.
+
+     O teto de 4 mil letras continua (dentro do traduzirParagrafos): print de
+     parede de texto nao pode gastar sozinho o que cem prints gastariam.
+     Leitura sem posicao (sem paragrafos) cai no texto inteiro, como antes. */
+  const traduziveis = paragrafosDaLeitura(leitura);
+  let traduzido;
+  if (traduziveis.length) {
+    const t = await traduzirParagrafos(traduziveis.map((q) => q.texto), idioma, motor);
+    const porTexto = new Map(traduziveis.map((q, i) => [q.texto, t[i]]));
+    /* Todos os paragrafos, na ordem; o que nao tem letra ("20:00") vai como
+       esta'. */
+    traduzido = agruparEmParagrafos(leitura.linhas || [])
+      .map((q) => porTexto.get(q.texto) || q.texto).join("\n\n");
+  } else {
+    traduzido = await traduzirLongo(texto.slice(0, 4000), idioma, motor);
+  }
   const rodape = await aviso({ footer: { text: "O texto da imagem, traduzido · só você está vendo isto" } });
   return {
     title: `📝 ${nomeDoIdioma(idioma)}`,
@@ -2771,6 +2790,14 @@ function agruparEmParagrafos(linhas) {
   /* Linha sozinha sai centralizada na propria caixa: o centro da traducao
      cai onde estava o centro do original, qualquer que seja o alinhamento. */
   return [...blocos.map(({ texto, caixa, linhas, esq, cen }) => ({ texto, caixa, linhas, esquerda: linhas > 1 && esq < cen })), ...tortas];
+}
+
+/* Os paragrafos que vao para o tradutor: os com letra. UMA funcao para o 📝
+   e o 🖼️ -- se cada botao escolhesse os seus pedacos, um deixaria de achar a
+   traducao do outro na memoria, e a mesma imagem voltaria a custar dobrado. */
+function paragrafosDaLeitura(leitura) {
+  const temLetra = /\p{L}/u;
+  return agruparEmParagrafos(leitura?.linhas || []).filter((p) => temLetra.test(p.texto));
 }
 
 /* Um desenho de cada vez. A maquina tem 256 MB, e duas imagens grandes
@@ -11077,7 +11104,7 @@ async function cliqueVerNaImagem(inter, buscar = fetch) {
 
   let leitura;
   try { leitura = await lerImagemDaMensagem(img, buscar); } catch (e) { return aviso(falhaDeLeitura(e)); }
-  const paragrafos = agruparEmParagrafos(leitura.linhas || []).filter((p) => /\p{L}/u.test(p.texto));
+  const paragrafos = paragrafosDaLeitura(leitura);
   if (!paragrafos.length) {
     return aviso({ title: "🖼️ Não achei texto nessa imagem", description: "Não tem nada escrito que eu consiga ler aqui." });
   }
