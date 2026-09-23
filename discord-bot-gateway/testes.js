@@ -6568,6 +6568,24 @@ function conferirCartao(onde, embed, componentes = []) {
     /* Letra de tamanho diferente é outra coisa: título não gruda na descrição. */
     verdade("o título não gruda na descrição", p[0].texto === "O Governador mais Forte");
   }
+  {
+    /* Rótulo de card, centralizado: "UNITED" / "WE GROW" / "& STRATEGIZE" têm
+       larguras diferentes, então as bordas esquerdas não batem -- os centros
+       sim. Antes não juntava, e a tradução saía colada à esquerda. */
+    const c = d.agruparEmParagrafos([
+      { texto: "CHAT, SHARE", caixa: [1050, 1003, 1130, 1022] },
+      { texto: "& STRATEGIZE", caixa: [1024, 1025, 1156, 1044] },
+      { texto: "UNITED", caixa: [140, 1003, 180, 1022] },
+      { texto: "WE GROW", caixa: [118, 1025, 202, 1044] },
+    ]);
+    ok("rótulo centralizado de duas linhas vira um bloco só", c.map((q) => q.texto).sort(), ["CHAT, SHARE & STRATEGIZE", "UNITED WE GROW"]);
+    verdade("e sabe que é centralizado", c.every((q) => q.esquerda === false));
+    const t = d.agruparEmParagrafos([
+      { texto: "Cada Reino pode competir pela glória, mas", caixa: [24, 192, 368, 210] },
+      { texto: "apenas um", caixa: [24, 212, 110, 230] },
+    ]);
+    verdade("parágrafo de documento continua à esquerda", t.length === 1 && t[0].esquerda === true);
+  }
   ok("duas colunas lado a lado continuam separadas",
     d.agruparEmParagrafos([
       { texto: "Reino Atual", caixa: [20, 938, 93, 956] },
@@ -6738,6 +6756,38 @@ function conferirCartao(onde, embed, componentes = []) {
     const clique = src.slice(src.indexOf("async function cliqueVerNaImagem"));
     verdade("a imagem vai com a legenda dos números",
       /content: legendaDosNumeros\(r2\.legenda\)/.test(clique.slice(0, clique.indexOf("async function cliqueTraduzirMsg"))));
+  }
+
+  /* ---- alinhamento e borda ---- */
+  {
+    /* Caixa larga, tradução curta: centralizado, a letra fica no meio; à
+       esquerda, encostada no começo da caixa. */
+    const larga = await sharp({ create: { width: 400, height: 80, channels: 3, background: VERMELHO } })
+      .composite([{ input: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="80"><rect x="20" y="20" width="360" height="40" fill="white"/></svg>'), left: 0, top: 0 }])
+      .png().toBuffer();
+    const colunas = async (esquerda) => {
+      const r = await d.desenharTraducao(larga, [{ texto: "Um texto bem comprido aqui", caixa: [20, 20, 380, 60], linhas: 2, esquerda }],
+        ["Oi\nOi"], sharp, FONTE);
+      const { data, info } = await sharp(r.imagem).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      const xs = [];
+      for (let y = 20; y < 60; y++) for (let x = 0; x < info.width; x++) {
+        const i = (y * info.width + x) * 3; if (data[i] > 200 && data[i + 1] > 200) xs.push(x);
+      }
+      return [Math.min(...xs), Math.max(...xs)];
+    };
+    const [c0, c1] = await colunas(false);
+    verdade(`centralizado sai no meio da caixa (${c0}-${c1})`, Math.abs((c0 + c1) / 2 - 200) < 12);
+    const [e0] = await colunas(true);
+    verdade(`à esquerda encosta no começo (${e0})`, e0 < 40);
+
+    /* A borda do tapume some aos poucos: nada de quina dura. Fora da caixa,
+       a 6px, a mistura entre o fundo e o que havia ali. */
+    const listrada = await sharp({ create: { width: 300, height: 120, channels: 3, background: VERMELHO } })
+      .composite([{ input: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="120"><rect x="0" y="0" width="300" height="10" fill="rgb(40,40,200)"/><rect x="20" y="20" width="160" height="24" fill="white"/></svg>'), left: 0, top: 0 }])
+      .png().toBuffer();
+    const r = await d.desenharTraducao(listrada, [{ texto: "Olá mundo", caixa: [20, 20, 180, 44] }], ["Hello world"], sharp, FONTE);
+    verdade("o texto original continua tapado até a borda", perto(await pixel(r.imagem, 178, 22), [VERMELHO.r, VERMELHO.g, VERMELHO.b]));
+    verdade("e longe da caixa nada muda (a faixa azul lá em cima)", perto(await pixel(r.imagem, 100, 4), [40, 40, 200], 25));
   }
 
   /* ---- rótulo curto com tradução comprida ---- */

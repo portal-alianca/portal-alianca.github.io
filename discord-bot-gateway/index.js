@@ -2886,7 +2886,11 @@ function desenhaEm(idioma) {
    Traduzir linha por linha quebra a frase no meio: "Cada Reino pode competir
    pela gloria, mas" / "apenas um pode resgatar..." vira duas frases soltas,
    e a traducao de cada metade sai sem sentido. Junta quando a linha de baixo
-   comeca quase na mesma coluna, tem altura parecida e vem logo em seguida. */
+   comeca quase na mesma coluna (ou tem o mesmo CENTRO: cartaz, botao, card),
+   tem altura parecida e vem logo em seguida.
+
+   E anota o alinhamento: paragrafo de documento e' alinhado a' esquerda,
+   rotulo de cartaz e' centralizado -- a traducao tem que sair igual. */
 function agruparEmParagrafos(linhas) {
   const comCaixa = linhas.filter((l) => Array.isArray(l.caixa));
   const tortas = comCaixa.filter((l) => l.torta).map((l) => ({ texto: l.texto, caixa: [...l.caixa], linhas: 1, torta: true }));
@@ -2895,23 +2899,28 @@ function agruparEmParagrafos(linhas) {
   for (const l of ordem) {
     const [x0, y0, x1, y1] = l.caixa;
     const alt = Math.max(1, y1 - y0);
+    const desvios = (b) => [Math.abs(x0 - b.caixa[0]), Math.abs((x0 + x1) / 2 - (b.ultima[0] + b.ultima[2]) / 2)];
     const junta = blocos.find((b) => {
       const ult = b.ultima;
       const altU = Math.max(1, ult[3] - ult[1]);
-      return Math.abs(x0 - b.caixa[0]) <= altU * 0.8
+      return Math.min(...desvios(b)) <= altU * 0.8
         && y0 - ult[3] >= -altU * 0.3 && y0 - ult[3] <= altU * 0.9
         && Math.abs(alt - altU) <= altU * 0.35;
     });
     if (junta) {
+      const [pelaEsquerda, peloCentro] = desvios(junta);
+      junta.esq += pelaEsquerda; junta.cen += peloCentro;
       junta.linhas++;
       junta.texto += " " + l.texto;
       junta.caixa = [Math.min(junta.caixa[0], x0), junta.caixa[1], Math.max(junta.caixa[2], x1), Math.max(junta.caixa[3], y1)];
       junta.ultima = l.caixa;
     } else {
-      blocos.push({ texto: l.texto, caixa: [...l.caixa], ultima: l.caixa, linhas: 1 });
+      blocos.push({ texto: l.texto, caixa: [...l.caixa], ultima: l.caixa, linhas: 1, esq: 0, cen: 0 });
     }
   }
-  return [...blocos.map(({ texto, caixa, linhas }) => ({ texto, caixa, linhas })), ...tortas];
+  /* Linha sozinha sai centralizada na propria caixa: o centro da traducao
+     cai onde estava o centro do original, qualquer que seja o alinhamento. */
+  return [...blocos.map(({ texto, caixa, linhas, esq, cen }) => ({ texto, caixa, linhas, esquerda: linhas > 1 && esq < cen })), ...tortas];
 }
 
 /* Um desenho de cada vez. A maquina tem 256 MB, e duas imagens grandes
@@ -3044,9 +3053,13 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
     const top = dentro.slice(0, Math.max(3, dentro.length >> 5));
     const letra = [0, 1, 2].map((c) => { const v = top.map((p) => p[c]).sort((m, n) => m - n); return v[v.length >> 1]; });
 
-    const tapume = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w + 4}" height="${h + 4}">` +
-      `<rect width="${w + 4}" height="${h + 4}" rx="3" fill="${hex(fundo)}"/></svg>`);
-    camadas.push({ input: tapume, left: Math.max(0, x0 - 2), top: Math.max(0, y0 - 2) });
+    /* Borda esfumada: fundo com textura (card, cartaz) nao fica com um
+       retangulo de quina dura em volta da traducao. O miolo cobre 4px alem
+       da caixa, e so' o que passa disso some aos poucos. */
+    const tapume = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w + 16}" height="${h + 16}">` +
+      `<filter id="e"><feGaussianBlur stdDeviation="2"/></filter>` +
+      `<rect x="4" y="4" width="${w + 8}" height="${h + 8}" rx="3" fill="${hex(fundo)}" filter="url(#e)"/></svg>`);
+    camadas.push({ input: tapume, left: x0 - 8, top: y0 - 8 });
 
     /* O proprio processador acha o maior tamanho de letra que cabe na caixa.
 
@@ -3057,12 +3070,14 @@ async function desenharTraducao(bytes, paragrafos, traducoes, sharp, fontfile = 
     const esc = novo.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const forma = await sharp({ text: {
       text: esc, font: "DejaVu Sans Bold", fontfile, width: w, height: h, rgba: true, wrap: "word",
+      align: paragrafos[k].esquerda ? "left" : "centre",
     } }).extractChannel(3).raw().toBuffer({ resolveWithObject: true });
     const tinta = await sharp({ create: { width: forma.info.width, height: forma.info.height, channels: 3,
       background: { r: letra[0], g: letra[1], b: letra[2] } } })
       .joinChannel(forma.data, { raw: { width: forma.info.width, height: forma.info.height, channels: 1 } })
       .png().toBuffer();
-    camadas.push({ input: tinta, left: x0,
+    camadas.push({ input: tinta,
+      left: x0 + (paragrafos[k].esquerda ? 0 : Math.max(0, Math.floor((w - forma.info.width) / 2))),
       top: y0 + Math.max(0, Math.floor((h - forma.info.height) / 2)) });
     desenhados++;
   }
