@@ -2758,6 +2758,12 @@ async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
    FALA_CHAVE), senao /admin → 🎧, cifrada. Sem chave, o botao nem aparece. */
 let falaDoDono = null; // { endpoint, chave } ou null
 
+/* O teto por servidor, do /admin. Vazio ou lixo, fica o padrao. */
+function minutosDeAudio(a = {}) {
+  const n = parseInt(String(a.audio_minutos ?? ""), 10);
+  return Number.isFinite(n) && n >= 0 && n <= 6000 ? n : 60;
+}
+
 function lerFalaDoDono(a = {}) {
   const endpoint = String(process.env.FALA_ENDPOINT || a.fala_endpoint || "").trim().replace(/\/+$/, "");
   const chave = String(process.env.FALA_CHAVE || "").trim() || (a.fala_chave ? decifrar(a.fala_chave) : "");
@@ -2823,25 +2829,69 @@ async function transcrever(bytes, nome, fala, locale, buscar = fetch) {
   return { texto, segundos: Math.round((Number(j?.durationMilliseconds) || 0) / 1000) };
 }
 
+/* O TETO DE CADA SERVIDOR.
+
+   A cota gratis (5 h por mes) e' de todos os servidores juntos. Cada um tem
+   o seu pedaco -- 60 minutos por mes, a nao ser que o dono mude no /admin
+   → 🎧. Estourou, o 🎧 daquele servidor avisa ate' o mes virar; os outros
+   seguem normais. Um servidor gigante nao derruba o de ninguem.
+
+   A conta mora no banco (cyron_uso_audio), somada pelo proprio banco: dois
+   cliques ao mesmo tempo nao perdem segundo nenhum. */
+let minutosDeAudioPorServidor = 60;
+
+function mesISO(agora = new Date()) {
+  return `${agora.toISOString().slice(0, 7)}-01`;
+}
+
+/* Segundos ja' usados no mes. Se o banco nao responder (ou a tabela ainda
+   nao existir), deixa passar: o teto e' protecao, e a Azure continua com o
+   limite dela de qualquer jeito. Travar o 🎧 de todo mundo por um tropeco
+   do banco seria pior do que um servidor passar um pouco do dele. */
+async function segundosDeAudioDoMes(servidorId) {
+  try {
+    const r = await sb(`cyron_uso_audio?servidor_id=eq.${encodeURIComponent(servidorId)}&mes=eq.${mesISO()}&select=segundos`);
+    return Number(r?.[0]?.segundos) || 0;
+  } catch (e) {
+    console.log("audio: nao consegui ler o uso do mes:", e?.message || e);
+    return 0;
+  }
+}
+
+async function somarAudioDoMes(servidorId, segundos) {
+  try {
+    await rpc("cyron_somar_audio", { p_servidor: servidorId, p_mes: mesISO(), p_segundos: Math.max(1, Math.round(segundos)) });
+  } catch (e) {
+    console.log("audio: nao consegui somar o uso do mes:", e?.message || e);
+  }
+}
+
 const falasOuvidas = new Map(); // "idDoAudio|locale" -> { texto, segundos }
 const MAX_AUDIOS_LEMBRADOS = 300;
 
 /* Baixa, transcreve e GUARDA. A chave leva a lingua junto: o mesmo audio
    ouvido "em portugues" e "adivinhando" sao duas transcricoes diferentes. */
-async function ouvirAudio(audio, locale, buscar = fetch) {
+async function ouvirAudio(audio, locale, buscar = fetch, servidorId = null) {
   const chave = `${audio.id}|${locale || ""}`;
   const guardada = falasOuvidas.get(chave);
+  /* O que ja' foi ouvido sai da memoria sem gastar -- e sem olhar teto:
+     nao custa nada a ninguem. */
   if (guardada !== undefined) return guardada;
   const longo = () => Object.assign(new Error("audio longo demais"), { motivo: "longo" });
   /* Antes de baixar: o Discord ja' disse o tamanho e, na mensagem de voz, a
      duracao. Nao se baixa o que nao vai ser transcrito. */
   if (audio.segundos !== null && audio.segundos > MAX_SEGUNDOS_AUDIO) throw longo();
   if (audio.bytes > MAX_BYTES_AUDIO) throw longo();
+  if (servidorId && await segundosDeAudioDoMes(servidorId) >= minutosDeAudioPorServidor * 60) {
+    throw Object.assign(new Error("teto do servidor"), { motivo: "teto" });
+  }
   const r = await buscar(audio.url, { signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error(`baixar o audio deu HTTP ${r.status}`);
   const bytes = Buffer.from(await r.arrayBuffer());
   if (bytes.length > MAX_BYTES_AUDIO) throw longo();
   const ouvido = await transcrever(bytes, audio.nome, falaDoDono, locale, buscar);
+  /* A Azure cobra pela duracao; se ela nao disser, vale a do Discord. */
+  if (servidorId) await somarAudioDoMes(servidorId, ouvido.segundos || audio.segundos || 1);
   falasOuvidas.set(chave, ouvido);
   while (falasOuvidas.size > MAX_AUDIOS_LEMBRADOS) falasOuvidas.delete(falasOuvidas.keys().next().value);
   return ouvido;
@@ -2851,6 +2901,10 @@ function falhaDeAudio(e) {
   if (e?.motivo === "longo") {
     return { title: "🎧 Áudio longo demais",
       description: `Eu transcrevo áudios de até ${MAX_SEGUNDOS_AUDIO / 60} minutos.` };
+  }
+  if (e?.motivo === "teto") {
+    return { title: "🎧 O áudio deste servidor acabou este mês",
+      description: `Cada servidor transcreve até ${minutosDeAudioPorServidor} minutos de áudio por mês. Volta a funcionar no dia 1.` };
   }
   if (e?.motivo === "cota") {
     console.error("audio: a cota gratuita de transcricao de audio do mes acabou");
@@ -2875,7 +2929,8 @@ async function explicarAudio(msg, idioma, guildId, locale, buscar = fetch) {
       description: "Ainda não ligaram a transcrição de áudio neste bot." });
   }
   let ouvido;
-  try { ouvido = await ouvirAudio(audio, locale, buscar); } catch (e) { return aviso(falhaDeAudio(e)); }
+  const servidor = guildId ? await servidorDoGuild(guildId) : null;
+  try { ouvido = await ouvirAudio(audio, locale, buscar, servidor?.id || null); } catch (e) { return aviso(falhaDeAudio(e)); }
   if (!ouvido.texto) {
     return aviso({ title: "🎧 Não ouvi fala nesse áudio", description: "Não tem nada dito que eu consiga entender aqui." });
   }
@@ -3969,6 +4024,7 @@ async function recarregarAjustes() {
   }
   const tinhaFala = !!falaDoDono;
   falaDoDono = lerFalaDoDono(a);
+  minutosDeAudioPorServidor = minutosDeAudio(a);
   if (tinhaFala !== !!falaDoDono) {
     console.log(`audio: transcricao de audio ${falaDoDono ? "LIGADA" : "desligada"}`);
   }
@@ -10514,8 +10570,26 @@ async function janelaDaFala() {
         label: (noCofre ? "Chave (no cofre da máquina)"
           : a.fala_chave ? "Chave (tenho uma; escreva pra trocar)" : "Chave (KEY 1)").slice(0, 45),
         placeholder: "apagar = desliga o áudio" }] },
+      { type: 1, components: [{ type: 4, custom_id: "audio_minutos", style: 1, required: false, max_length: 4,
+        label: "Minutos por servidor, por mês",
+        placeholder: "60", ...(a.audio_minutos ? { value: String(a.audio_minutos) } : {}) }] },
     ],
   };
+}
+
+/* Quem mais usou o 🎧 neste mes: o dono ve de onde vem o gasto. */
+async function resumoDoAudio() {
+  const linhas = await sb(`cyron_uso_audio?mes=eq.${mesISO()}&select=servidor_id,segundos&order=segundos.desc`).catch(() => null);
+  if (!linhas) return "";
+  const total = linhas.reduce((a, l) => a + (Number(l.segundos) || 0), 0);
+  const min = (s) => Math.round(s / 60);
+  const topo = linhas.slice(0, 3);
+  const nomes = topo.length
+    ? await sb(`cyron_servidor?id=in.(${topo.map((l) => l.servidor_id).join(",")})&select=id,nome`).catch(() => []) || []
+    : [];
+  const nomeDe = new Map(nomes.map((n) => [n.id, n.nome || "?"]));
+  return `\n\n📊 **Este mês:** ${min(total)} de 300 minutos grátis, em ${linhas.length} servidor(es).` +
+    topo.map((l) => `\n• ${nomeDe.get(l.servidor_id) || "?"}: ${min(l.segundos)} min`).join("");
 }
 
 /* Testa sem gastar: um pedido SEM audio. Chave e endereco certos, a Azure
@@ -10558,13 +10632,19 @@ async function salvarFala(inter) {
   if (endpoint && !/^https:\/\/[^\s/]+/i.test(endpoint)) {
     return inter.editReply("O endpoint precisa começar com https://. **Não gravei nada.**");
   }
+  const minutos = campo("audio_minutos");
+  if (minutos && !/^\d{1,4}$/.test(minutos)) {
+    return inter.editReply("Os minutos por servidor precisam ser um número, como 60. **Não gravei nada.**");
+  }
   if (endpoint) await porAjuste("fala_endpoint", endpoint);
   if (chave) await porAjuste("fala_chave", cifrar(chave));
+  if (minutos) await porAjuste("audio_minutos", minutos);
   await recarregarAjustes();
   if (!falaDoDono) {
     return inter.editReply("Gravei o que veio, mas ainda falta o endpoint ou a chave. O botão só aparece com os dois.");
   }
-  return inter.editReply((await conferirFala(falaDoDono)).frase);
+  return inter.editReply((await conferirFala(falaDoDono)).frase +
+    `\n⏱️ Cada servidor pode transcrever **${minutosDeAudioPorServidor} min** por mês.` + await resumoDoAudio());
 }
 
 async function salvarChaves(inter) {
