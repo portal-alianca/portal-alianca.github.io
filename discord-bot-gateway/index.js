@@ -6315,6 +6315,12 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
     /* O codigo continua a mao mesmo em quem ja' e' pago por data: resgatar
        soma dias, entao renovar por codigo e' legitimo. So' some pra quem esta
        liberado sem prazo, onde nao ha dia pra somar. */
+    /* Pix pelo Mercado Pago: sem cartao e sem burocracia, e o plano liga
+       sozinho quando o dinheiro cai. Tambem serve para RENOVAR: cada Pix
+       soma 31 dias. */
+    ...(!servidor.stripe_assinatura && servidor.plano !== "pago"
+      ? [{ type: 2, custom_id: "cyron:pix", style: 3, emoji: { name: "💠" }, label: "Pagar com Pix" }]
+      : []),
     ...(servidor.plano === "pago"
       ? []
       : [{ type: 2, custom_id: "cyron:codigo", style: 1, emoji: { name: "🎟️" }, label: "Ativar código" }]),
@@ -8801,6 +8807,85 @@ async function definirFontes(guild, servidor, ids) {
   cacheFontes.delete(servidor.id);
 }
 
+/* ---------------- Pix pelo Mercado Pago ----------------
+
+   Quem cria a cobranca e' a funcao cyron-mercadopago, no Supabase: e' la'
+   que mora o token do Mercado Pago, e o bot nunca o ve. O bot so' pede
+   ("este servidor, este plano"), provando quem e' com a propria chave de
+   servico, e mostra o QR. Quando o dinheiro cai, o Mercado Pago avisa a
+   funcao, e ela liga o plano -- o bot descobre na volta seguinte do relogio.
+
+   O PRECO NAO SAI DAQUI: a funcao e' que sabe quanto custa cada plano. Um
+   bot adulterado nao consegue cobrar menos. */
+const FUNCAO_DO_PIX = `${SB_URL}/functions/v1/cyron-mercadopago`;
+const NIVEIS_DO_PIX = { pro: "Pro · R$ 29,90/mês", alianca: "Aliança · R$ 79/mês", teste: "Teste · R$ 1" };
+
+function telaDoPix() {
+  return {
+    color: COR,
+    title: "💠 Pagar com Pix",
+    description: "Escolha o plano. Cada Pix vale **31 dias**; para renovar, é só pagar de novo " +
+      "antes de vencer — os dias se somam.\n\n" +
+      "⭐ **Pro** — até 5 idiomas, 3 canais copiados, 🖼️ imagem e 🎧 áudio.\n" +
+      "🏆 **Aliança** — até 20 idiomas, 10 canais, e o triplo de tradução e de áudio.",
+  };
+}
+
+function botoesDoPix(dono = false) {
+  return [{ type: 1, components: [
+    { type: 2, style: 1, custom_id: "cyron:pix:pro", emoji: { name: "⭐" }, label: NIVEIS_DO_PIX.pro },
+    { type: 2, style: 1, custom_id: "cyron:pix:alianca", emoji: { name: "🏆" }, label: NIVEIS_DO_PIX.alianca },
+    /* O Pix de R$ 1 existe para o dono ver o caminho inteiro funcionando:
+       nao liga plano nenhum, so' avisa no canal de pagamentos. */
+    ...(dono ? [{ type: 2, style: 2, custom_id: "cyron:pix:teste", emoji: { name: "🧪" }, label: "Teste · R$ 1 (só o dono)" }] : []),
+  ] }];
+}
+
+async function pedirPix(servidorId, nivel, buscar = fetch) {
+  const r = await buscar(FUNCAO_DO_PIX, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${SB_KEY}`, apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ acao: "criar", servidor: servidorId, nivel }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j?.copiaecola) throw new Error(`cobranca Pix respondeu HTTP ${r.status}${j?.erro ? ` (${j.erro})` : ""}`);
+  return j;
+}
+
+async function cobrarPix(inter, servidor, nivel, buscar = fetch) {
+  if (!NIVEIS_DO_PIX[nivel]) return inter.reply({ flags: 64, content: "🤔 Não conheço esse plano." });
+  if (nivel === "teste" && !await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "🔒 O Pix de teste é só do dono do CYRON." });
+  }
+  await inter.deferReply({ flags: 64 });
+  let pix;
+  try {
+    pix = await pedirPix(servidor.id, nivel, buscar);
+  } catch (e) {
+    console.error("pix: nao consegui criar a cobranca:", e?.message || e);
+    return inter.editReply({ content: "❌ Não consegui gerar o Pix agora. Tente de novo em um minuto." });
+  }
+  const valor = `R$ ${Number(pix.valor).toFixed(2).replace(".", ",")}`;
+  return inter.editReply({
+    embeds: [{
+      color: COR,
+      title: `💠 Pix · ${NIVEIS_DO_PIX[nivel].split(" · ")[0]} · ${valor}`,
+      description: [
+        "**1.** Abra o app do seu banco → **Pix** → **Pagar com QR Code** (ou **Pix Copia e Cola**).",
+        `**2.** Pague **${valor}**.`,
+        "**3.** Pronto: o plano liga **sozinho** em alguns segundos, e o painel atualiza em até um minuto.",
+        "",
+        "**Pix Copia e Cola:**",
+        "```" + String(pix.copiaecola).slice(0, 3500) + "```",
+      ].join("\n"),
+      ...(pix.qr ? { image: { url: "attachment://pix.png" } } : {}),
+      footer: { text: "Este Pix vale 30 minutos · pago pelo Mercado Pago" },
+    }],
+    files: pix.qr ? [{ attachment: Buffer.from(String(pix.qr), "base64"), name: "pix.png" }] : [],
+  });
+}
+
 async function cliquePainel(inter) {
   const servidor = await servidorDoGuild(inter.guildId);
   if (!servidor) {
@@ -8835,6 +8920,11 @@ async function cliquePainel(inter) {
   if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
   }
+
+  if (acao === "pix") {
+    return inter.reply({ flags: 64, embeds: [telaDoPix()], components: botoesDoPix(await ehDono(inter.user.id)) });
+  }
+  if (acao.startsWith("pix:")) return await cobrarPix(inter, servidor, acao.slice("pix:".length));
 
   /* Publicar o recibo para o servidor.
 
