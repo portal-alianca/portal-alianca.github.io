@@ -8095,7 +8095,8 @@ function conferirCartao(onde, embed, componentes = []) {
 {
   const salvo = {};
   for (const n of ["decifrar", "traduzirLongo", "motorDoGuild", "traduzirEmbed", "nomeDoIdioma",
-    "idiomaDoJogador", "planoDe", "servidorDoGuild", "COR", "falaDoDono"]) salvo[n] = globalThis[n];
+    "idiomaDoJogador", "planoDe", "servidorDoGuild", "COR", "falaDoDono", "sb", "rpc",
+    "minutosDeAudioPorServidor"]) salvo[n] = globalThis[n];
   const envAntes = { e: process.env.FALA_ENDPOINT, c: process.env.FALA_CHAVE };
   delete process.env.FALA_ENDPOINT; delete process.env.FALA_CHAVE;
   try {
@@ -8109,11 +8110,20 @@ function conferirCartao(onde, embed, componentes = []) {
     let pro = true;
     globalThis.servidorDoGuild = async () => ({ id: "s" });
     globalThis.planoDe = () => (pro ? "pago" : "gratis");
+    /* O banco de mentira do teto: segundos por servidor, e quem somou quanto. */
+    const usoDoMes = new Map();
+    const somas = [];
+    globalThis.sb = async (caminho) => {
+      const m = /cyron_uso_audio\?servidor_id=eq\.([^&]+)/.exec(caminho);
+      return m ? [{ segundos: usoDoMes.get(decodeURIComponent(m[1])) || 0 }] : [];
+    };
+    globalThis.rpc = async (fn, corpo) => { if (fn === "cyron_somar_audio") somas.push(corpo); return null; };
+    globalThis.minutosDeAudioPorServidor = 60;
 
     const A = carregar(["lerFalaDoDono", "MAX_SEGUNDOS_AUDIO", "MAX_BYTES_AUDIO", "ehAudioAnexo", "audioDaMensagem",
       "LOCALE_DA_FALA", "localeDaFala", "transcrever", "falasOuvidas", "MAX_AUDIOS_LEMBRADOS", "ouvirAudio",
       "falhaDeAudio", "explicarAudio", "ROTULO_OUVIR", "botaoDeOuvir", "ehPro", "avisoDoPro", "cliqueOuvirAudio",
-      "conferirFala", "linhaDaVoz"]);
+      "conferirFala", "linhaDaVoz", "mesISO", "segundosDeAudioDoMes", "somarAudioDoMes", "minutosDeAudio"]);
     const comVoz = (d) => ({ attachments: new Map([["v", { name: "voice-message.ogg", contentType: "audio/ogg", duration: d }]]) });
     ok("áudio de 65 s no cartão", A.linhaDaVoz(comVoz(65.4)), "🎤 1:05");
     ok("arquivo de áudio sem duração: só o 🎤", A.linhaDaVoz(comVoz(undefined)), "🎤");
@@ -8196,6 +8206,44 @@ function conferirCartao(onde, embed, componentes = []) {
       globalThis.falaDoDono = { endpoint: "https://f.cognitiveservices.azure.com", chave: "k" };
     }
 
+    /* ---- o teto de cada servidor ----
+       A cota grátis é de TODOS os servidores juntos; cada um tem o seu
+       pedaço, e um servidor gigante não derruba os outros. */
+    {
+      ok("o mês é guardado pelo dia 1", A.mesISO(new Date("2026-09-24T12:00:00Z")), "2026-09-01");
+      ok("teto padrão: 60 minutos", A.minutosDeAudio({}), 60);
+      ok("o /admin muda o teto", A.minutosDeAudio({ audio_minutos: "120" }), 120);
+      ok("lixo no /admin: fica o padrão", A.minutosDeAudio({ audio_minutos: "muito" }), 60);
+
+      A.falasOuvidas.clear(); somas.length = 0;
+      const f = azure(200, dito);
+      await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", f);
+      ok("cada transcrição soma os segundos no servidor", somas, [{ p_servidor: "s", p_mes: A.mesISO(), p_segundos: 12 }]);
+      await A.explicarAudio(vozDoDiscord, "es", "g", "pt-BR", f);
+      ok("o que veio da memória não soma de novo", somas.length, 1);
+
+      A.falasOuvidas.clear();
+      usoDoMes.set("s", 3600);
+      const f2 = azure(200, dito);
+      const r = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", f2);
+      verdade("servidor que gastou os 60 minutos: aviso até o mês virar", /acabou este mês/.test(r.title));
+      ok("e o áudio nem é baixado", f2.pedidos.length, 0);
+      globalThis.minutosDeAudioPorServidor = 120;
+      const r2 = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", azure(200, dito));
+      verdade("com o teto aumentado no /admin, volta a funcionar", /Rally/.test(r2.description || ""));
+      globalThis.minutosDeAudioPorServidor = 60;
+      usoDoMes.delete("s");
+
+      /* O banco caiu: o teto é proteção, não pode travar o 🎧 de todo mundo. */
+      A.falasOuvidas.clear();
+      const sbAntes = globalThis.sb;
+      globalThis.sb = async () => { throw new Error("supabase 503"); };
+      const r3 = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", azure(200, dito));
+      verdade("banco fora do ar: o 🎧 continua funcionando", /Rally/.test(r3.description || ""));
+      globalThis.sb = sbAntes;
+      A.falasOuvidas.clear();
+    }
+
     /* ---- o botão e a trava do Pro ---- */
     {
       ok("o botão leva a língua da origem", A.botaoDeOuvir("es", "ru")[0].components[0].custom_id, "aud:ouvir:ru");
@@ -8253,6 +8301,22 @@ function conferirCartao(onde, embed, componentes = []) {
         /if \(inter\.customId === "admin:fala"\) return await salvarFala\(inter\)/.test(codigo));
       verdade("a chave de áudio é guardada cifrada", /porAjuste\("fala_chave", cifrar\(chave\)\)/.test(codigo));
       verdade("e o bot a recarrega sem publicar", /falaDoDono = lerFalaDoDono\(a\)/.test(codigo));
+      verdade("o teto por servidor também recarrega sem publicar", /minutosDeAudioPorServidor = minutosDeAudio\(a\)/.test(codigo));
+      verdade("o /admin grava o teto", /porAjuste\("audio_minutos", minutos\)/.test(codigo));
+      verdade("e mostra quem mais usou no mês", /conferirFala\(falaDoDono\)\)\.frase \+[^;]*await resumoDoAudio\(\)/.test(codigo));
+
+      /* A tabela: soma feita pelo banco (dois cliques não perdem segundo), e
+         nada de pessoa, áudio ou texto guardado. */
+      const sql = readFileSync(`${aqui}/../supabase/migracoes/003-audio.sql`, "utf8");
+      const ddl = sql.replace(/^\s*--.*$/gm, "");
+      verdade("uma linha por servidor por mês", /primary key \(servidor_id, mes\)/.test(ddl));
+      verdade("a soma é um upsert que acumula", /on conflict \(servidor_id, mes\) do update[^;]*segundos\s*=\s*cyron_uso_audio\.segundos \+ excluded\.segundos/.test(ddl));
+      verdade("só o bot lê (RLS ligado, sem policy)", /enable row level security/.test(ddl) && !/create policy/i.test(ddl));
+      verdade("nenhuma coluna de pessoa, áudio ou texto",
+        !/^\s*(discord_user_id|user_id|texto|audio|url|nome)\s/mi.test(ddl));
+      verdade("e some junto com o servidor", /references cyron_servidor\(id\) on delete cascade/.test(ddl));
+      verdade("só o bot pode chamar a soma", /revoke execute on function cyron_somar_audio[^;]*from public, anon, authenticated/.test(ddl) &&
+        /grant execute on function cyron_somar_audio[^;]*to service_role/.test(ddl));
     }
   } finally {
     for (const [n, v] of Object.entries(salvo)) globalThis[n] = v;
