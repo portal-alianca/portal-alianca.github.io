@@ -2692,6 +2692,77 @@ function conferirCartao(onde, embed, componentes = []) {
     /update cyron_servidor set nivel = 'alianca'[^;]*plano = 'pago' or pago_ate > now\(\)/.test(sql));
 }
 
+/* ---- Pix pelo Mercado Pago ---- */
+{
+  const salvo = { d: globalThis.ehDono, c: globalThis.COR, u: globalThis.SB_URL, k: globalThis.SB_KEY };
+  globalThis.COR = 1; globalThis.SB_URL = "https://sb.test"; globalThis.SB_KEY = "chave-do-bot";
+  let dono = false;
+  globalThis.ehDono = async () => dono;
+  const P = carregar(["FUNCAO_DO_PIX", "NIVEIS_DO_PIX", "telaDoPix", "botoesDoPix", "pedirPix", "cobrarPix"]);
+  const pedidos = [];
+  const mp = (status, corpo) => async (url, o) => {
+    pedidos.push({ url, o });
+    return { ok: status < 300, status, json: async () => corpo };
+  };
+  const clique = () => {
+    const i = { user: { id: "u" }, respostas: [],
+      reply: async (x) => { i.respostas.push(x); }, deferReply: async () => {}, editReply: async (x) => { i.respostas.push(x); } };
+    return i;
+  };
+  const servidor = { id: "11111111-2222-3333-4444-555555555555" };
+
+  let i = clique();
+  await P.cobrarPix(i, servidor, "pro", mp(200, { valor: 29.9, copiaecola: "00020126PIXCOPIAECOLA", qr: Buffer.from("png").toString("base64") }));
+  const pedido = pedidos.at(-1);
+  ok("o Pix é pedido à função do Mercado Pago", pedido.url, "https://sb.test/functions/v1/cyron-mercadopago");
+  verdade("provando que é o bot, com a chave de serviço", pedido.o.headers.Authorization === "Bearer chave-do-bot");
+  ok("pedindo este servidor e este plano — sem dizer o preço", JSON.parse(pedido.o.body),
+    { acao: "criar", servidor: servidor.id, nivel: "pro" });
+  const e = i.respostas.at(-1).embeds[0];
+  ok("a resposta diz o plano e o valor", e.title, "💠 Pix · Pro · R$ 29,90");
+  verdade("traz o copia e cola", e.description.includes("00020126PIXCOPIAECOLA"));
+  verdade("e o QR como imagem", i.respostas.at(-1).files[0].name === "pix.png" && e.image.url === "attachment://pix.png");
+
+  i = clique();
+  await P.cobrarPix(i, servidor, "pro", mp(502, { erro: "o Mercado Pago recusou a cobrança" }));
+  verdade("Mercado Pago fora: pede para tentar de novo", /Não consegui gerar o Pix/.test(i.respostas.at(-1).content));
+
+  const antes = pedidos.length;
+  i = clique();
+  await P.cobrarPix(i, servidor, "teste", mp(200, {}));
+  verdade("Pix de teste de quem não é o dono: recusado, sem cobrança", /só do dono/.test(i.respostas.at(-1).content) && pedidos.length === antes);
+  i = clique();
+  await P.cobrarPix(i, servidor, "diamante", mp(200, {}));
+  verdade("plano inventado: recusado, sem cobrança", pedidos.length === antes);
+
+  const rotulos = (d) => P.botoesDoPix(d)[0].components.map((b) => b.custom_id);
+  ok("clientes veem Pro e Aliança", rotulos(false), ["cyron:pix:pro", "cyron:pix:alianca"]);
+  ok("o dono vê também o teste de R$ 1", rotulos(true), ["cyron:pix:pro", "cyron:pix:alianca", "cyron:pix:teste"]);
+
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  const painel = idx.slice(idx.indexOf("async function cliquePainel"));
+  const checagem = painel.indexOf("PermissionFlagsBits.ManageGuild");
+  verdade("o clique chega (depois da checagem de Gerenciar Servidor)",
+    checagem > 0 && painel.indexOf('if (acao === "pix")') > checagem &&
+    /if \(acao\.startsWith\("pix:"\)\) return await cobrarPix\(inter, servidor, acao\.slice\("pix:"\.length\)\)/.test(idx));
+  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  const temPix = (s) => componentesDoPainel(s, [], { fontes: 10, idiomas: 20 }, [], [])
+    .flatMap((l) => l.components).some((c) => c.custom_id === "cyron:pix");
+  verdade("o painel oferece Pix a quem não é pago", temPix({ id: "s1", plano: "gratis" }));
+  verdade("e não a quem já assina pela Stripe", !temPix({ id: "s1", plano: "gratis", stripe_assinatura: "sub_1" }));
+
+  /* A função do Supabase: o preço mora lá, e o aviso só liga o plano depois
+     de ler o pagamento de novo no próprio Mercado Pago. */
+  const f = semComentarios(readFileSync(`${aqui}/../supabase/functions/cyron-mercadopago/index.ts`, "utf8"));
+  verdade("o preço é da função, não do bot", /const PRECOS[^;]*pro: 29\.9, alianca: 79, teste: 1/.test(f));
+  verdade("o aviso relê o pagamento no Mercado Pago antes de ligar", /fetch\(`\$\{MP\}\/v1\/payments\/\$\{id\}`/.test(f) && /p\?\.status !== "approved"/.test(f));
+  verdade("pagou menos que o plano, não liga", /Number\(p\.transaction_amount\) \+ 0\.001 < PRECOS\[ref\.nivel\]/.test(f));
+  verdade("criar cobrança exige a chave do bot", /acao === "criar"[^]*?if \(!await ehOBot\(quem\)\) return json\(\{ erro: "não autorizado" \}, 401\)/.test(f));
+  verdade("o mesmo Pix não liga duas vezes (evento único mp:<id>)", /p_evento: `mp:\$\{id\}`/.test(f));
+
+  globalThis.ehDono = salvo.d; globalThis.COR = salvo.c; globalThis.SB_URL = salvo.u; globalThis.SB_KEY = salvo.k;
+}
+
 /* ---- as faixas ---- */
 {
   const { faixaDe, PLANOS, linksDePagamento, precoDoPlano } =
