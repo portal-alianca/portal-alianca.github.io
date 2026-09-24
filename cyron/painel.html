@@ -225,7 +225,7 @@ function linha(s) {
     var ate = quando(s.ate);
     cracha = s.motivo === "teste"
       ? '<span class="cracha c-teste">' + pt("teste", "trial") + "</span>"
-      : '<span class="cracha c-pago">' + pt("pago", "paid") + "</span>";
+      : '<span class="cracha c-pago">' + (s.nivel === "pro" ? pt("Pro", "Pro") : pt("Aliança", "Alliance")) + "</span>";
     detalhe = s.motivo === "teste"
       ? pt("Teste até " + ate, "Trial until " + ate)
       : (ate ? pt("Pago até " + ate, "Paid through " + ate)
@@ -244,8 +244,10 @@ function linha(s) {
 
        Agora a ausência aparece como ausência. Não é botão, porque não há para
        onde ir; é a frase que explica por que não há. */
-    acao = s.pagar
-      ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Assinar R$ 79/mês", "Subscribe $15/mo") + "</a>"
+    /* Dois degraus: Pro (se o link dele existir) e Aliança. */
+    acao = s.pagar || s.pagarPro
+      ? (s.pagarPro ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagarPro) + '">' + pt("Pro R$ 29,90/mês", "Pro $6/mo") + "</a>" : "") +
+        (s.pagar ? '<a class="bt bt-3 bt-p" href="' + esc(s.pagar) + '">' + pt("Aliança R$ 79/mês", "Alliance $15/mo") + "</a>" : "")
       : '<span class="indisponivel">' + pt(
           "Assinatura ainda não disponível",
           "Subscription not available yet") + "</span>";

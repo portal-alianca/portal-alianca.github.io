@@ -2871,7 +2871,8 @@ const MAX_AUDIOS_LEMBRADOS = 300;
 
 /* Baixa, transcreve e GUARDA. A chave leva a lingua junto: o mesmo audio
    ouvido "em portugues" e "adivinhando" sao duas transcricoes diferentes. */
-async function ouvirAudio(audio, locale, buscar = fetch, servidorId = null) {
+/* `multiplo`: o teto do /admin e' o do Pro; a Alianca tem o triplo. */
+async function ouvirAudio(audio, locale, buscar = fetch, servidorId = null, multiplo = 1) {
   const chave = `${audio.id}|${locale || ""}`;
   const guardada = falasOuvidas.get(chave);
   /* O que ja' foi ouvido sai da memoria sem gastar -- e sem olhar teto:
@@ -2882,7 +2883,7 @@ async function ouvirAudio(audio, locale, buscar = fetch, servidorId = null) {
      duracao. Nao se baixa o que nao vai ser transcrito. */
   if (audio.segundos !== null && audio.segundos > MAX_SEGUNDOS_AUDIO) throw longo();
   if (audio.bytes > MAX_BYTES_AUDIO) throw longo();
-  if (servidorId && await segundosDeAudioDoMes(servidorId) >= minutosDeAudioPorServidor * 60) {
+  if (servidorId && await segundosDeAudioDoMes(servidorId) >= minutosDeAudioPorServidor * multiplo * 60) {
     throw Object.assign(new Error("teto do servidor"), { motivo: "teto" });
   }
   const r = await buscar(audio.url, { signal: AbortSignal.timeout(15000) });
@@ -2897,14 +2898,14 @@ async function ouvirAudio(audio, locale, buscar = fetch, servidorId = null) {
   return ouvido;
 }
 
-function falhaDeAudio(e) {
+function falhaDeAudio(e, multiplo = 1) {
   if (e?.motivo === "longo") {
     return { title: "🎧 Áudio longo demais",
       description: `Eu transcrevo áudios de até ${MAX_SEGUNDOS_AUDIO / 60} minutos.` };
   }
   if (e?.motivo === "teto") {
     return { title: "🎧 O áudio deste servidor acabou este mês",
-      description: `Cada servidor transcreve até ${minutosDeAudioPorServidor} minutos de áudio por mês. Volta a funcionar no dia 1.` };
+      description: `Este servidor transcreve até ${minutosDeAudioPorServidor * multiplo} minutos de áudio por mês. Volta a funcionar no dia 1.` };
   }
   if (e?.motivo === "cota") {
     console.error("audio: a cota gratuita de transcricao de audio do mes acabou");
@@ -2930,7 +2931,8 @@ async function explicarAudio(msg, idioma, guildId, locale, buscar = fetch) {
   }
   let ouvido;
   const servidor = guildId ? await servidorDoGuild(guildId) : null;
-  try { ouvido = await ouvirAudio(audio, locale, buscar, servidor?.id || null); } catch (e) { return aviso(falhaDeAudio(e)); }
+  const multiplo = Math.max(1, PLANOS[faixaDe(servidor)]?.audio || 1);
+  try { ouvido = await ouvirAudio(audio, locale, buscar, servidor?.id || null, multiplo); } catch (e) { return aviso(falhaDeAudio(e, multiplo)); }
   if (!ouvido.texto) {
     return aviso({ title: "🎧 Não ouvi fala nesse áudio", description: "Não tem nada dito que eu consiga entender aqui." });
   }
@@ -3875,10 +3877,47 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
    O teto de canais fica em 20 e nao em zero por causa disso: com zero, o
    orcamento da passada nasceria vazio e nem a manutencao do que ja existe
    aconteceria. */
+/* TRES FAIXAS, PELO CUSTO.
+
+   O que pesa na conta e' a traducao das salas espelhadas: cada frase vai para
+   cada lingua do servidor. Medido no servidor mais ativo (8 linguas): ~91
+   caracteres por fala, ~544 mil por mes -- uns R$ 30 de tradutor pago.
+
+   - Pro: ate' 5 linguas, e 13 mil caracteres/dia da minha chave (~400 mil no
+     mes, ~R$ 22 no pior caso). R$ 29,90.
+   - Alianca: o "pago" de antes, igual: 20 linguas e 40 mil/dia (~1,2 milhao,
+     ~R$ 66 no pior caso). R$ 79.
+   Passou da cota, a traducao nao para: cai para a chave do proprio servidor,
+   se houver, e depois para os gratuitos.
+
+   `pago` continua existindo e e' a Alianca: todo lugar que falava do plano
+   pago de antes continua dizendo a verdade. */
 const PLANOS = {
-  gratis: { idiomas: 0,  canais: 20,  fontes: 0,  cotaDoDono: 8000 },
-  pago:   { idiomas: 20, canais: 200, fontes: 10, cotaDoDono: 40000 },
+  gratis:  { idiomas: 0,  canais: 20,  fontes: 0,  cotaDoDono: 8000,  audio: 0 },
+  pro:     { idiomas: 5,  canais: 80,  fontes: 3,  cotaDoDono: 13000, audio: 1 },
+  alianca: { idiomas: 20, canais: 200, fontes: 10, cotaDoDono: 40000, audio: 3 },
+  get pago() { return this.alianca; },
 };
+
+/* O preco na moeda de quem le. */
+const PRECOS = {
+  pro:     { pt: "R$ 29,90/mês", en: "US$ 6/mês" },
+  alianca: { pt: "R$ 79/mês",    en: "US$ 15/mês" },
+};
+
+/* QUAL pago. planoDe diz SE e' pago (e todo o resto do bot pergunta isso);
+   aqui se escolhe a faixa de limites. Beta aberto da' tudo. Sem `nivel`
+   gravado (servidor de antes da migracao 004), vale a Alianca -- que e' o que
+   o pago era. */
+function faixaDe(servidor) {
+  if (planoDe(servidor) !== "pago") return "gratis";
+  if (BETA || venceEm(BETA_ATE)) return "alianca";
+  return servidor?.nivel === "pro" ? "pro" : "alianca";
+}
+
+function nomeDaFaixa(faixa) {
+  return { gratis: "Grátis", pro: "Pro", alianca: "Aliança" }[faixa] || "Grátis";
+}
 
 /* Quanto das MINHAS chaves cada servidor pode gastar por dia.
 
@@ -3899,7 +3938,7 @@ const PLANOS = {
    grandes na bolsa. 8 mil no gratis e' o bastante pra um servidor pequeno
    conversar o dia inteiro, e pouco pra alguem morar de graca na minha conta. */
 function cotaDoDonoNoDia(servidor) {
-  return PLANOS[planoDe(servidor)]?.cotaDoDono ?? PLANOS.gratis.cotaDoDono;
+  return PLANOS[faixaDe(servidor)]?.cotaDoDono ?? PLANOS.gratis.cotaDoDono;
 }
 
 /* O plano que VALE agora, que nem sempre e' o que esta gravado.
@@ -3987,13 +4026,24 @@ const BETA_ATE_DO_AMBIENTE = process.env.CYRON_BETA_ATE || "";
    assincrono contaminaria metade do arquivo. */
 let BETA = BETA_DO_AMBIENTE;
 let BETA_ATE = BETA_ATE_DO_AMBIENTE;
-let LINK_PAGAMENTO_VIVO = "";
+let LINK_PAGAMENTO_VIVO = "";   // Alianca (o link de sempre)
+let LINK_PRO_VIVO = "";         // Pro
+
+/* O campo do /admin guarda os dois links, um por linha: o primeiro e' o da
+   Alianca (o que ja' existia), o segundo o do Pro. A janela ja' tem os cinco
+   campos que o Discord deixa, e um campo a mais nao cabe. */
+function linksDePagamento(valor) {
+  const [alianca = "", pro = ""] = String(valor || "").split(/\s*\n\s*/).map((l) => l.trim());
+  return { alianca, pro };
+}
 
 async function recarregarAjustes() {
   const a = await ajustes();
   BETA = a.beta != null ? a.beta === "1" || a.beta === "sim" : BETA_DO_AMBIENTE;
   BETA_ATE = a.beta_ate || BETA_ATE_DO_AMBIENTE;
-  LINK_PAGAMENTO_VIVO = a.stripe_link || LINK_PAGAMENTO;
+  const links = linksDePagamento(a.stripe_link);
+  LINK_PAGAMENTO_VIVO = links.alianca || LINK_PAGAMENTO;
+  LINK_PRO_VIVO = links.pro;
 
   /* Os tradutores de reserva sao lidos aqui, e nao a cada mensagem: enderecos
      mudam de mes em mes, nao de fala em fala. A cada minuto os ajustes voltam
@@ -4126,7 +4176,7 @@ function podeCriarCanal(orcamento, guild, limite) {
 }
 
 function limitesDo(servidor) {
-  const base = PLANOS[planoDe(servidor)] || PLANOS.gratis;
+  const base = PLANOS[faixaDe(servidor)] || PLANOS.gratis;
   return {
     idiomas: servidor?.limite_idiomas ?? base.idiomas,
     canais: servidor?.limite_canais ?? base.canais,
@@ -6251,11 +6301,16 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
 
        Quem esta no teste de 7 dias CONTINUA vendo o botao, e isso e' o certo:
        o teste e' exatamente o momento de assinar. */
-    ...(LINK_PAGAMENTO_VIVO && !servidor.stripe_assinatura && servidor.plano !== "pago"
-      ? [{
-          type: 2, style: 5, emoji: { name: "💳" }, label: "Assinar o plano pago",
-          url: `${LINK_PAGAMENTO_VIVO}${LINK_PAGAMENTO_VIVO.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
-        }]
+    /* Dois degraus, e o id do servidor pendurado em cada um: e' por ele que
+       o pagamento sabe de quem e'. O Pro so' aparece quando o link dele
+       existe no /admin. */
+    ...(!servidor.stripe_assinatura && servidor.plano !== "pago"
+      ? [[LINK_PRO_VIVO, "Assinar Pro"], [LINK_PAGAMENTO_VIVO, "Assinar Aliança"]]
+          .filter(([url]) => url)
+          .map(([url, rotulo]) => ({
+            type: 2, style: 5, emoji: { name: "💳" }, label: rotulo,
+            url: `${url}${url.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(servidor.id)}`,
+          }))
       : []),
     /* O codigo continua a mao mesmo em quem ja' e' pago por data: resgatar
        soma dias, entao renovar por codigo e' legitimo. So' some pra quem esta
@@ -8480,7 +8535,7 @@ async function montarPainel(guild, servidor, idioma = "") {
        em italiano. A frase inteira, com as duas versões escritas à mão, é uma
        chave fixa cada e não tem como sair errada. */
     footer: {
-      text: (planoDe(servidor) === "pago" ? await T("Plano pago") : await T("Plano grátis")) + prazo,
+      text: await T({ gratis: "Plano grátis", pro: "Plano Pro", alianca: "Plano Aliança" }[faixaDe(servidor)]) + prazo,
     },
   };
 
@@ -9965,6 +10020,7 @@ async function cartaoDoCliente(guild, servidor) {
     `discord_fonte_replica?servidor_id=eq.${servidor.id}&gera_replica=is.true&select=canal_id`) || [];
   const cliente = client.guilds.cache.get(String(servidor.guild_id));
   const plano = planoDe(servidor);
+  const faixa = faixaDe(servidor);
 
   const embed = {
     color: servidor.saiu_em ? 0x8A3A33 : plano === "pago" ? 0x2E8B7A : 0xB08A2E,
@@ -9973,7 +10029,7 @@ async function cartaoDoCliente(guild, servidor) {
       ? `⚠️ **Me tiraram deste servidor** ${quandoFoi(Date.parse(servidor.saiu_em), "R")}.`
       : `${cliente ? `${cliente.memberCount} membros` : "_não estou vendo este servidor agora_"}`,
     fields: [
-      { name: "Plano", value: plano === "pago" ? "🟢 pago" : "⚪ grátis", inline: true },
+      { name: "Plano", value: plano === "pago" ? `🟢 ${nomeDaFaixa(faixa)}` : "⚪ grátis", inline: true },
       { name: "Idiomas", value: String(idiomas.length), inline: true },
       { name: "Canais traduzidos", value: String(fontes.length), inline: true },
       { name: "Hoje", value: `${uso.traducoes} traduções\n${(uso.caracteres / 1000).toFixed(1)}k caracteres`, inline: true },
@@ -10347,6 +10403,8 @@ function botoesDaFicha(servidor) {
     { type: 2, custom_id: `cli:tirar:${servidor.id}`, style: 4, emoji: { name: "🚫" }, label: "Tirar plano" },
     { type: 2, custom_id: `cli:remontar:${servidor.id}`, style: 2, emoji: { name: "🔄" }, label: "Remontar" },
     { type: 2, custom_id: `cli:detalhes:${servidor.id}`, style: 2, emoji: { name: "🔍" }, label: "Detalhes" },
+    { type: 2, custom_id: `cli:nivel:${servidor.id}`, style: 1, emoji: { name: "🔀" },
+      label: servidor.nivel === "pro" ? "Passar p/ Aliança" : "Passar p/ Pro" },
   ] }];
 }
 
@@ -10370,6 +10428,15 @@ async function cliqueDaFicha(inter) {
     cacheServidor.delete(String(servidor.guild_id));
     await refazerFicha(servidor.id);
     return inter.editReply(`➕ **${servidor.nome}** agora está pago até ${new Date(novo).toLocaleDateString("pt-BR")}.`);
+  }
+
+  if (acao === "nivel") {
+    const novo = servidor.nivel === "pro" ? "alianca" : "pro";
+    await sbPatch(`cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}`, { nivel: novo });
+    cacheServidor.delete(String(servidor.guild_id));
+    await refazerFicha(servidor.id);
+    return inter.editReply(`🔀 **${servidor.nome}** agora é **${nomeDaFaixa(novo)}** quando estiver pago.` +
+      "\n_Nada foi apagado: o que passa do limite novo apenas para de crescer._");
   }
 
   if (acao === "tirar") {
@@ -10571,7 +10638,7 @@ async function janelaDaFala() {
           : a.fala_chave ? "Chave (tenho uma; escreva pra trocar)" : "Chave (KEY 1)").slice(0, 45),
         placeholder: "apagar = desliga o áudio" }] },
       { type: 1, components: [{ type: 4, custom_id: "audio_minutos", style: 1, required: false, max_length: 4,
-        label: "Minutos por servidor, por mês",
+        label: "Minutos de áudio por mês no Pro (Aliança = 3x)",
         placeholder: "60", ...(a.audio_minutos ? { value: String(a.audio_minutos) } : {}) }] },
     ],
   };
@@ -10644,7 +10711,7 @@ async function salvarFala(inter) {
     return inter.editReply("Gravei o que veio, mas ainda falta o endpoint ou a chave. O botão só aparece com os dois.");
   }
   return inter.editReply((await conferirFala(falaDoDono)).frase +
-    `\n⏱️ Cada servidor pode transcrever **${minutosDeAudioPorServidor} min** por mês.` + await resumoDoAudio());
+    `\n⏱️ Por mês: **${minutosDeAudioPorServidor} min** no Pro, **${minutosDeAudioPorServidor * PLANOS.alianca.audio} min** na Aliança.` + await resumoDoAudio());
 }
 
 async function salvarChaves(inter) {
@@ -10685,8 +10752,9 @@ async function janelaDeAjustes() {
     custom_id: "admin:ajustes",
     title: "Ajustes do CYRON",
     components: [
-      { type: 1, components: [{ type: 4, custom_id: "stripe_link", style: 1, required: false, max_length: 300,
-        label: "Link de pagamento", placeholder: "https://buy.stripe.com/...", ...cheio(a.stripe_link || LINK_PAGAMENTO) }] },
+      { type: 1, components: [{ type: 4, custom_id: "stripe_link", style: 2, required: false, max_length: 600,
+        label: "Links Stripe: 1ª linha Aliança, 2ª linha Pro",
+        placeholder: "https://buy.stripe.com/...(Aliança)\nhttps://buy.stripe.com/...(Pro)", ...cheio(a.stripe_link || LINK_PAGAMENTO) }] },
       { type: 1, components: [{ type: 4, custom_id: "beta", style: 1, required: false, max_length: 12,
         label: "Beta ligado? (1 ou 0)", placeholder: "1", ...cheio(a.beta ?? (BETA ? "1" : "0")) }] },
       { type: 1, components: [{ type: 4, custom_id: "beta_ate", style: 1, required: false, max_length: 12,
@@ -10716,8 +10784,8 @@ async function salvarAjustes(inter) {
     return inter.editReply("A data do beta precisa ser AAAA-MM-DD. **Não gravei nada.**");
   }
   const link = campo("stripe_link");
-  if (link && !/^https:\/\//.test(link)) {
-    return inter.editReply("O link de pagamento precisa começar com https://. **Não gravei nada.**");
+  if (link && !String(link).split(/\s*\n\s*/).filter(Boolean).every((l) => /^https:\/\//.test(l))) {
+    return inter.editReply("Cada link de pagamento precisa começar com https://. **Não gravei nada.**");
   }
 
   /* Confere ANTES de gravar, e diz qual linha esta errada.
@@ -11761,8 +11829,8 @@ async function telaDeApresentacao(idioma) {
    "R$ 79/mês" não diz nada a um americano: ele não sabe se é caro ou barato, e
    ir procurar a cotação é onde ele fecha a conversa. É o mesmo conserto que o
    site levou, e que aqui tinha ficado para trás. */
-function precoDoPlano(idioma) {
-  return idioma === "pt" ? "R$ 79/mês" : "US$ 15/mês";
+function precoDoPlano(idioma, faixa = "alianca") {
+  return (PRECOS[faixa] || PRECOS.alianca)[idioma === "pt" ? "pt" : "en"];
 }
 
 /* Texto meu passa por tradução automática, e frase curta de venda é
@@ -11795,10 +11863,15 @@ function paginaDosPlanos(idioma) {
           "pede uma tradução._",
       },
       {
-        name: `⭐ Pago — ${precoDoPlano(idioma)}`,
-        value: "Cada língua ganha uma ala própria, com os seus canais copiados e " +
-          "traduzidos. Quem escreve na sala dele aparece na dos outros já traduzido, " +
-          "com nome e foto. Até 20 idiomas.",
+        name: `⭐ Pro — ${precoDoPlano(idioma, "pro")}`,
+        value: "Cada língua ganha uma sala própria: quem escreve na sala dele aparece " +
+          "na dos outros já traduzido, com nome e foto. Até 5 idiomas e 3 canais copiados. " +
+          "Imagem traduzida e áudio traduzido.",
+      },
+      {
+        name: `🏆 Aliança — ${precoDoPlano(idioma, "alianca")}`,
+        value: "A Aliança tem o Pro inteiro, para comunidades grandes: até 20 idiomas, 10 canais copiados " +
+          "e o triplo de tradução e de áudio por mês.",
       },
     ],
     footer: { text: "Você começa no plano grátis. Eu não peço cartão." },

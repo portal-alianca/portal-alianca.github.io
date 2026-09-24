@@ -478,7 +478,7 @@ html[lang="en"] [data-en]{display:revert}
       </div>
 
       <div class="forma viva">
-        <div class="tipo"><span data-pt>Plano pago</span><span data-en>Paid plan</span></div>
+        <div class="tipo"><span data-pt>Pro e Aliança</span><span data-en>Pro and Alliance</span></div>
         <h3><span data-pt>O servidor inteiro, em cada língua</span><span data-en>The whole server, in every language</span></h3>
         <p>
           <span data-pt>As alas por idioma da seção acima. A conversa acontece traduzida para todo mundo ao mesmo tempo, sem ninguém pedir nada.</span>
@@ -488,7 +488,7 @@ html[lang="en"] [data-en]{display:revert}
           <li><span data-pt><strong>Salas de conversa espelhadas</strong> — a mesma conversa, uma sala por língua.</span><span data-en><strong>Mirrored chat rooms</strong> — one conversation, one room per language.</span></li>
           <li><span data-pt><strong>Cópias dos seus canais</strong> — anúncio, evento, regras, tudo traduzido.</span><span data-en><strong>Copies of your channels</strong> — announcements, events, rules, all translated.</span></li>
           <li><span data-pt><strong>Categoria por idioma</strong>, montada e mantida sozinha.</span><span data-en><strong>A category per language</strong>, built and maintained on its own.</span></li>
-          <li><span data-pt>Até 20 idiomas convivendo.</span><span data-en>Up to 20 languages living together.</span></li>
+          <li><span data-pt>Até 5 idiomas no <strong>Pro</strong>, até 20 na <strong>Aliança</strong>.</span><span data-en>Up to 5 languages on <strong>Pro</strong>, up to 20 on <strong>Alliance</strong>.</span></li>
         </ul>
       </div>
     </div>
@@ -507,7 +507,8 @@ html[lang="en"] [data-en]{display:revert}
           <tr>
             <th scope="col"></th>
             <th scope="col"><span data-pt>Grátis</span><span data-en>Free</span></th>
-            <th scope="col" class="col-pago"><span data-pt>Pago</span><span data-en>Paid</span></th>
+            <th scope="col" class="col-pago"><span data-pt>Pro</span><span data-en>Pro</span></th>
+            <th scope="col"><span data-pt>Aliança</span><span data-en>Alliance</span></th>
           </tr>
         </thead>
         <tbody>
@@ -522,55 +523,81 @@ html[lang="en"] [data-en]{display:revert}
               <span class="preco" data-en>$0</span>
             </td>
             <td class="col-pago">
+              <span class="preco" data-pt>R$ 29,90</span>
+              <span class="preco" data-en>$6</span>
+              <small> <span data-pt>/mês</span><span data-en>/mo</span></small>
+            </td>
+            <td>
               <span class="preco" data-pt>R$ 79</span>
               <span class="preco" data-en>$15</span>
               <small> <span data-pt>/mês</span><span data-en>/mo</span></small>
             </td>
           </tr>
           <tr>
-            <th scope="row"><span data-pt>Tradução por bandeira</span><span data-en>Flag translation</span></th>
+            <th scope="row"><span data-pt>Tradução por bandeira e pelo menu Translate</span><span data-en>Flag and Translate-menu translation</span></th>
             <td class="sim"><span data-pt>ilimitada</span><span data-en>unlimited</span></td>
             <td class="col-pago sim"><span data-pt>ilimitada</span><span data-en>unlimited</span></td>
+            <td class="sim"><span data-pt>ilimitada</span><span data-en>unlimited</span></td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Botão de tradução nos avisos</span><span data-en>Translate button on notices</span></th>
             <td class="sim">✓</td>
             <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
+          </tr>
+          <tr>
+            <th scope="row"><span data-pt>📝 Ler o texto de uma imagem</span><span data-en>📝 Read the text in an image</span></th>
+            <td class="sim">✓</td>
+            <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Salas de conversa espelhadas</span><span data-en>Mirrored chat rooms</span></th>
             <td class="nao">—</td>
             <td class="col-pago sim">✓</td>
-          </tr>
-          <tr>
-            <th scope="row"><span data-pt>Categorias e cópias por idioma</span><span data-en>Per-language categories and copies</span></th>
-            <td class="nao">—</td>
-            <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Idiomas convivendo no servidor</span><span data-en>Languages living in the server</span></th>
             <td class="nao">—</td>
-            <td class="col-pago">20</td>
+            <td class="col-pago">5</td>
+            <td>20</td>
           </tr>
           <tr>
-            <th scope="row"><span data-pt>Canais que o bot traduz</span><span data-en>Channels the bot translates</span></th>
+            <th scope="row"><span data-pt>Canais copiados e traduzidos</span><span data-en>Channels copied and translated</span></th>
             <td class="nao">—</td>
-            <td class="col-pago">10</td>
+            <td class="col-pago">3</td>
+            <td>10</td>
+          </tr>
+          <tr>
+            <th scope="row"><span data-pt>🖼️ A imagem, já traduzida</span><span data-en>🖼️ The image, already translated</span></th>
+            <td class="nao">—</td>
+            <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
+          </tr>
+          <tr>
+            <th scope="row"><span data-pt>🎧 Áudio traduzido, por mês</span><span data-en>🎧 Translated voice messages, per month</span></th>
+            <td class="nao">—</td>
+            <td class="col-pago"><span data-pt>60 min</span><span data-en>60 min</span></td>
+            <td><span data-pt>180 min</span><span data-en>180 min</span></td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Cota diária do tradutor incluído</span><span data-en>Daily quota on the included translator</span></th>
             <td><span data-pt>8 mil caracteres</span><span data-en>8k characters</span></td>
-            <td class="col-pago"><span data-pt>40 mil caracteres</span><span data-en>40k characters</span></td>
+            <td class="col-pago"><span data-pt>13 mil caracteres</span><span data-en>13k characters</span></td>
+            <td><span data-pt>40 mil caracteres</span><span data-en>40k characters</span></td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Chave própria de tradutor (sem teto)</span><span data-en>Your own translator key (no ceiling)</span></th>
             <td class="sim">✓</td>
             <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
           </tr>
           <tr>
             <th scope="row"><span data-pt>Glossário de nomes e siglas</span><span data-en>Glossary of names and tags</span></th>
             <td class="sim">✓</td>
             <td class="col-pago sim">✓</td>
+            <td class="sim">✓</td>
           </tr>
         </tbody>
       </table>
@@ -578,7 +605,7 @@ html[lang="en"] [data-en]{display:revert}
 
     <div class="pos-tabela">
       <a class="bt bt-2 convite" href="#"><span data-pt>Começar de graça</span><span data-en>Start free</span></a>
-      <a class="bt bt-3" href="./painel.html"><span data-pt>Assinar o plano pago</span><span data-en>Subscribe to Paid</span></a>
+      <a class="bt bt-3" href="./painel.html"><span data-pt>Assinar Pro ou Aliança</span><span data-en>Subscribe to Pro or Alliance</span></a>
     </div>
 
     <div class="nota">

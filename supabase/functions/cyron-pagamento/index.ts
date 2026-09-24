@@ -32,12 +32,11 @@ const DIAS = 31;
 async function assinaturaConfere(corpo: string, cabecalho: string): Promise<boolean> {
   if (!SEGREDO || !cabecalho) return false;
 
-  const partes = Object.fromEntries(
-    cabecalho.split(",").map((p) => {
-      const i = p.indexOf("=");
-      return [p.slice(0, i).trim(), p.slice(i + 1).trim()];
-    }),
-  );
+  const partes: Record<string, string> = {};
+  for (const p of cabecalho.split(",")) {
+    const i = p.indexOf("=");
+    if (i > 0) partes[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  }
   const t = partes["t"];
   const v1 = partes["v1"];
   if (!t || !v1) return false;
@@ -81,12 +80,12 @@ async function rpc(fn: string, corpo: unknown) {
    O Stripe mudou isso de lugar entre versoes da API: era invoice.subscription,
    virou invoice.parent.subscription_details.subscription, e tambem aparece
    dentro de cada linha da fatura. No primeiro teste real a fatura chegou sem
-   nada no lugar antigo, e eu so' nao perdi o pagamento porque o checkout ja
+   nada no lugar antigo -- e eu so' nao perdi o pagamento porque o checkout ja
    tinha creditado.
 
    Na RENOVACAO nao existe checkout: a fatura e' o unico aviso que chega. Se
    eu procurasse num lugar so', o mes 2 nao creditaria, o cliente cairia pro
-   gratis -- tendo pago. Procuro nos tres. */
+   gratis -- tendo pago. Procuro nos quatro. */
 function assinaturaDaFatura(obj: any): string | null {
   const candidatos = [
     obj?.subscription,
@@ -121,6 +120,25 @@ async function avisarDono(texto: string) {
     });
   } catch (e) {
     console.error("pagamento: não consegui avisar no Discord:", e instanceof Error ? e.message : e);
+  }
+}
+
+function nivelDaCompra(obj: any): "pro" | "alianca" {
+  return String(obj?.metadata?.nivel ?? "").toLowerCase() === "pro" ? "pro" : "alianca";
+}
+
+/* Nunca derruba o credito: se gravar o nivel falhar, o servidor fica pago
+   no nivel que tinha, e o dono ajusta pela ficha (🔀). */
+async function gravarNivel(servidor: string, nivel: string) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/cyron_servidor?id=eq.${encodeURIComponent(servidor)}`, {
+      method: "PATCH",
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ nivel }),
+    });
+    if (!r.ok) console.error(`pagamento: não gravei o nível (HTTP ${r.status})`);
+  } catch (e) {
+    console.error("pagamento: não gravei o nível:", e instanceof Error ? e.message : e);
   }
 }
 
@@ -185,13 +203,20 @@ Deno.serve(async (req) => {
 
     if (r?.ok) {
       console.log(`pagamento: ${evento.type} creditado, pago até ${r.ate}`);
+      /* QUAL plano. So' na primeira compra: a renovacao continua no nivel que
+         ja' esta'. O link de pagamento do Pro leva a etiqueta nivel=pro (o
+         Stripe copia a etiqueta do link para a compra); sem etiqueta, e' o
+         link de sempre -- a Alianca. */
+      const nivel = evento.type === "checkout.session.completed" && servidor
+        ? nivelDaCompra(obj) : null;
+      if (nivel) await gravarNivel(servidor as string, nivel);
       const ate = new Date(r.ate).toLocaleDateString("pt-BR");
       await avisarDono(evento.type === "checkout.session.completed"
-        ? `💳 **Nova assinatura** · pago até ${ate}\n\`${assinatura ?? "sem assinatura"}\``
+        ? `💳 **Nova assinatura (${nivel === "pro" ? "Pro" : "Aliança"})** · pago até ${ate}\n\`${assinatura ?? "sem assinatura"}\``
         : `🔁 **Renovação** · pago até ${ate}\n\`${assinatura ?? "sem assinatura"}\``);
+    } else {
+      console.log(`pagamento: ${evento.type} não creditado (${r?.motivo})`);
     }
-    else console.log(`pagamento: ${evento.type} não creditado (${r?.motivo})`);
-
 
     /* 200 mesmo quando nao credita. "Repetido" e "sem servidor" nao melhoram
        com reenvio -- devolver erro faria o Stripe insistir por dias e encher

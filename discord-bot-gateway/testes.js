@@ -1868,12 +1868,16 @@ function conferirCartao(onde, embed, componentes = []) {
    Estourar o teto não corta a tradução: corta o acesso à chave do dono. */
 {
   const { cotaDoDonoNoDia, jaGastouHoje, somarGasto, estourouACota, gastoDoDia } =
-    carregar(["PLANOS", "gastoDoDia", "cotaDoDonoNoDia", "jaGastouHoje", "somarGasto", "estourouACota"]);
+    carregar(["PLANOS", "faixaDe", "gastoDoDia", "cotaDoDonoNoDia", "jaGastouHoje", "somarGasto", "estourouACota"]);
 
   globalThis.planoDe = (s) => s.plano;
+  globalThis.BETA = false; globalThis.BETA_ATE = "";
+  globalThis.venceEm = () => 0;
   globalThis.hojeISO = () => "2026-08-30";
 
   ok("servidor pago tem a cota maior", cotaDoDonoNoDia({ plano: "pago" }), 40000);
+  ok("o Pro tem a do meio (cabe nos R$ 29,90)", cotaDoDonoNoDia({ plano: "pago", nivel: "pro" }), 13000);
+  ok("a Aliança, a de sempre", cotaDoDonoNoDia({ plano: "pago", nivel: "alianca" }), 40000);
   ok("servidor grátis tem a menor", cotaDoDonoNoDia({ plano: "gratis" }), 8000);
   /* Plano desconhecido cai no menor, não no maior: errar para o lado que
      protege a bolsa. */
@@ -1918,7 +1922,7 @@ function conferirCartao(onde, embed, componentes = []) {
    todas as línguas. Estes testes existem porque essa mudança tem um jeito
    silencioso de dar muito errado -- tirar o espelho de quem já o tem. */
 {
-  const { PLANOS, limitesDo } = carregar(["PLANOS", "venceEm", "planoDe", "limitesDo"]);
+  const { PLANOS, limitesDo } = carregar(["PLANOS", "venceEm", "planoDe", "faixaDe", "limitesDo"]);
   globalThis.BETA = false;
   globalThis.BETA_ATE = null;
 
@@ -1970,7 +1974,7 @@ function conferirCartao(onde, embed, componentes = []) {
   } = carregar([
     "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
     "PASSO", "TEMAS", "menuDeTemas", "botoesDaPergunta", "botoesDeConvite", "botoesDosPlanos",
-    "paginaDeApresentacao", "precoDoPlano", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
+    "paginaDeApresentacao", "PRECOS", "precoDoPlano", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
     "APRESENTEI", "ESPERA_APRESENTACAO", "podeApresentar", "marcarApresentado",
   ]);
 
@@ -1998,10 +2002,11 @@ function conferirCartao(onde, embed, componentes = []) {
 
      "R$ 79/mês" não diz nada a um americano -- ele não sabe se é caro ou
      barato, e procurar a cotação é onde ele fecha a conversa. */
+  /* Os dois degraus pagos: Pro (campo 1) e Aliança (campo 2). */
   verdade("em português o preço é em reais",
-    paginaDosPlanos("pt").fields[1].name.includes("R$ 79"));
+    paginaDosPlanos("pt").fields[1].name.includes("R$ 29,90") && paginaDosPlanos("pt").fields[2].name.includes("R$ 79"));
   verdade("em inglês o preço é em dólares",
-    paginaDosPlanos("en").fields[1].name.includes("US$ 15"));
+    paginaDosPlanos("en").fields[1].name.includes("US$ 6") && paginaDosPlanos("en").fields[2].name.includes("US$ 15"));
   verdade("em árabe também não é em reais",
     !paginaDosPlanos("ar").fields[1].name.includes("R$"));
 
@@ -2626,6 +2631,7 @@ function conferirCartao(onde, embed, componentes = []) {
      roda, então o botão de assinar entra pelo mesmo caminho de um servidor
      sem link configurado. */
   globalThis.LINK_PAGAMENTO_VIVO = "https://pague.exemplo/x";
+  globalThis.LINK_PRO_VIVO = "https://pague.exemplo/pro";
   const servidor = { id: "s1", plano: "gratis", tradutor_topico: true };
   const linhas = componentesDoPainel(servidor, [], { fontes: 10, idiomas: 20 }, [], []);
   const botoes = linhas.flatMap((l) => l.components).filter((c) => c.type === 2);
@@ -2642,6 +2648,78 @@ function conferirCartao(onde, embed, componentes = []) {
   }
   ok("nenhum rótulo se repete", new Set(rotulos).size, rotulos.length);
   for (const r of rotulos) verdade(`"${r}" cabe no botão`, r.length <= 80);
+}
+
+/* ---- os dois degraus de assinatura ---- */
+{
+  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  globalThis.LINK_PAGAMENTO_VIVO = "https://pague.exemplo/alianca";
+  globalThis.LINK_PRO_VIVO = "https://pague.exemplo/pro";
+  const assinar = (servidor) => componentesDoPainel(servidor, [], { fontes: 10, idiomas: 20 }, [], [])
+    .flatMap((l) => l.components).filter((c) => c.style === 5 && /Assinar/.test(c.label));
+  const gratis = assinar({ id: "s1", plano: "gratis" });
+  ok("servidor grátis vê os dois degraus, Pro primeiro", gratis.map((b) => b.label), ["Assinar Pro", "Assinar Aliança"]);
+  verdade("e cada link leva o id do servidor (é por ele que o pagamento sabe de quem é)",
+    gratis.every((b) => b.url.endsWith("client_reference_id=s1")));
+  globalThis.LINK_PRO_VIVO = "";
+  ok("sem o link do Pro no /admin, só a Aliança", assinar({ id: "s1", plano: "gratis" }).map((b) => b.label), ["Assinar Aliança"]);
+  ok("quem já assina não vê botão de assinar", assinar({ id: "s1", plano: "gratis", stripe_assinatura: "sub_1" }).length, 0);
+  const linhas = componentesDoPainel({ id: "s1", plano: "gratis" }, [], { fontes: 10, idiomas: 20 }, [{}, {}], []);
+  verdade("nenhuma fileira passa de 5 botões (o Discord recusa o painel inteiro)", linhas.every((l) => l.components.length <= 5));
+  globalThis.LINK_PRO_VIVO = "";
+}
+
+/* ---- o pagamento sabe QUAL plano foi comprado ---- */
+{
+  const pag = semComentarios(readFileSync(`${aqui}/../supabase/functions/cyron-pagamento/index.ts`, "utf8"));
+  verdade("a etiqueta nivel=pro do link vira Pro; sem etiqueta, Aliança (o link de sempre)",
+    /metadata\?\.nivel[^;]*=== "pro" \? "pro" : "alianca"/.test(pag));
+  verdade("o nível só é gravado na primeira compra, não na renovação",
+    /evento\.type === "checkout\.session\.completed" && servidor\s*\? nivelDaCompra\(obj\) : null/.test(pag));
+  verdade("e gravar o nível nunca derruba o crédito (fica dentro de try)",
+    /async function gravarNivel[^]*?try \{[^]*?\} catch/.test(pag));
+  const entrar = semComentarios(readFileSync(`${aqui}/../supabase/functions/cyron-entrar/index.ts`, "utf8"));
+  verdade("o painel do site separa as duas linhas do campo (um endereço só quebraria)",
+    /\[linkBase = "", linkPro = ""\] = String\(v\)\.split/.test(entrar));
+  const painel = readFileSync(`${aqui}/../cyron/painel.html`, "utf8");
+  verdade("e mostra os dois botões", /s\.pagarPro/.test(painel) && /Aliança R\$ 79\/mês/.test(painel));
+  const site = readFileSync(`${aqui}/../cyron/index.html`, "utf8");
+  verdade("a tabela do site tem as três colunas com os preços",
+    /R\$ 29,90/.test(site) && /R\$ 79/.test(site) && />Aliança</.test(site));
+  const sql = readFileSync(`${aqui}/../supabase/migracoes/004-niveis.sql`, "utf8").replace(/^\s*--.*$/gm, "");
+  verdade("o nível só aceita pro ou alianca", /check \(nivel in \('pro', 'alianca'\)\)/.test(sql));
+  verdade("e quem já pagava vira Aliança (não perde nada)",
+    /update cyron_servidor set nivel = 'alianca'[^;]*plano = 'pago' or pago_ate > now\(\)/.test(sql));
+}
+
+/* ---- as faixas ---- */
+{
+  const { faixaDe, PLANOS, linksDePagamento, precoDoPlano } =
+    carregar(["PLANOS", "PRECOS", "faixaDe", "nomeDaFaixa", "linksDePagamento", "precoDoPlano"]);
+  const antes = { p: globalThis.planoDe, b: globalThis.BETA, a: globalThis.BETA_ATE, v: globalThis.venceEm };
+  globalThis.planoDe = (s) => (s?.plano === "pago" ? "pago" : "gratis");
+  globalThis.BETA = false; globalThis.BETA_ATE = ""; globalThis.venceEm = () => 0;
+  ok("grátis é grátis", faixaDe({ plano: "gratis", nivel: "alianca" }), "gratis");
+  ok("pago com nível Pro", faixaDe({ plano: "pago", nivel: "pro" }), "pro");
+  /* Servidor de antes da migração 004 não tem `nivel`: vale o pago de antes. */
+  ok("pago sem nível (antes da migração) = Aliança, o que ele já tinha", faixaDe({ plano: "pago" }), "alianca");
+  globalThis.BETA = true;
+  ok("beta aberto dá tudo", faixaDe({ plano: "pago", nivel: "pro" }), "alianca");
+  globalThis.BETA = false;
+  ok("o pago de antes É a Aliança (nada muda para quem já tem)", PLANOS.pago, PLANOS.alianca);
+  verdade("o Pro cabe no custo: menos línguas e menos cota que a Aliança",
+    PLANOS.pro.idiomas < PLANOS.alianca.idiomas && PLANOS.pro.cotaDoDono < PLANOS.alianca.cotaDoDono);
+  /* ~91 caracteres por fala espelhada, em 8 línguas (medido). 30 dias de
+     cota cheia a US$ 10 o milhão, dólar a R$ 5,50: tem que caber no preço. */
+  const custo = (f) => PLANOS[f].cotaDoDono * 30 / 1e6 * 10 * 5.5;
+  verdade(`Pro no pior caso (R$ ${custo("pro").toFixed(0)}) cabe nos R$ 29,90`, custo("pro") < 29.9);
+  verdade(`Aliança no pior caso (R$ ${custo("alianca").toFixed(0)}) cabe nos R$ 79`, custo("alianca") < 79);
+  ok("dois links, um por linha", linksDePagamento("https://a\nhttps://p"), { alianca: "https://a", pro: "https://p" });
+  ok("um link só = o da Aliança (o de sempre)", linksDePagamento("https://a"), { alianca: "https://a", pro: "" });
+  ok("preço do Pro em real", precoDoPlano("pt", "pro"), "R$ 29,90/mês");
+  ok("e em dólar para quem não lê português", precoDoPlano("de", "pro"), "US$ 6/mês");
+  ok("sem faixa, o de sempre", precoDoPlano("pt"), "R$ 79/mês");
+  globalThis.planoDe = antes.p; globalThis.BETA = antes.b; globalThis.BETA_ATE = antes.a; globalThis.venceEm = antes.v;
 }
 
 /* ---- a tradução por bandeira vem ligada, e sem precisar de nada ---- */
@@ -3657,7 +3735,7 @@ function conferirCartao(onde, embed, componentes = []) {
   /* ---- as telas do privado, que é onde chega quem não conhece o bot ---- */
   {
     const { paginaDeApresentacao, paginaDosPlanos, paginaDoPasso, PASSOS } = carregar([
-      "SITE_DO_CYRON", "PLANOS", "PASSOS", "precoDoPlano", "passoValido", "fotoDoPasso",
+      "SITE_DO_CYRON", "PLANOS", "PRECOS", "PASSOS", "precoDoPlano", "passoValido", "fotoDoPasso",
       "paginaDeApresentacao", "paginaDosPlanos", "paginaDoPasso"]);
 
     conferirCartao("a apresentação", paginaDeApresentacao());
@@ -8096,7 +8174,7 @@ function conferirCartao(onde, embed, componentes = []) {
   const salvo = {};
   for (const n of ["decifrar", "traduzirLongo", "motorDoGuild", "traduzirEmbed", "nomeDoIdioma",
     "idiomaDoJogador", "planoDe", "servidorDoGuild", "COR", "falaDoDono", "sb", "rpc",
-    "minutosDeAudioPorServidor"]) salvo[n] = globalThis[n];
+    "minutosDeAudioPorServidor", "BETA", "BETA_ATE", "venceEm"]) salvo[n] = globalThis[n];
   const envAntes = { e: process.env.FALA_ENDPOINT, c: process.env.FALA_CHAVE };
   delete process.env.FALA_ENDPOINT; delete process.env.FALA_CHAVE;
   try {
@@ -8108,7 +8186,8 @@ function conferirCartao(onde, embed, componentes = []) {
     globalThis.idiomaDoJogador = async () => "en";
     globalThis.COR = 1;
     let pro = true;
-    globalThis.servidorDoGuild = async () => ({ id: "s" });
+    let nivelDoServidor = "pro";
+    globalThis.servidorDoGuild = async () => ({ id: "s", plano: "pago", nivel: nivelDoServidor });
     globalThis.planoDe = () => (pro ? "pago" : "gratis");
     /* O banco de mentira do teto: segundos por servidor, e quem somou quanto. */
     const usoDoMes = new Map();
@@ -8123,7 +8202,9 @@ function conferirCartao(onde, embed, componentes = []) {
     const A = carregar(["lerFalaDoDono", "MAX_SEGUNDOS_AUDIO", "MAX_BYTES_AUDIO", "ehAudioAnexo", "audioDaMensagem",
       "LOCALE_DA_FALA", "localeDaFala", "transcrever", "falasOuvidas", "MAX_AUDIOS_LEMBRADOS", "ouvirAudio",
       "falhaDeAudio", "explicarAudio", "ROTULO_OUVIR", "botaoDeOuvir", "ehPro", "avisoDoPro", "cliqueOuvirAudio",
-      "conferirFala", "linhaDaVoz", "mesISO", "segundosDeAudioDoMes", "somarAudioDoMes", "minutosDeAudio"]);
+      "conferirFala", "linhaDaVoz", "mesISO", "segundosDeAudioDoMes", "somarAudioDoMes", "minutosDeAudio",
+      "PLANOS", "faixaDe"]);
+    globalThis.BETA = false; globalThis.BETA_ATE = ""; globalThis.venceEm = () => 0;
     const comVoz = (d) => ({ attachments: new Map([["v", { name: "voice-message.ogg", contentType: "audio/ogg", duration: d }]]) });
     ok("áudio de 65 s no cartão", A.linhaDaVoz(comVoz(65.4)), "🎤 1:05");
     ok("arquivo de áudio sem duração: só o 🎤", A.linhaDaVoz(comVoz(undefined)), "🎤");
@@ -8232,6 +8313,16 @@ function conferirCartao(onde, embed, componentes = []) {
       const r2 = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", azure(200, dito));
       verdade("com o teto aumentado no /admin, volta a funcionar", /Rally/.test(r2.description || ""));
       globalThis.minutosDeAudioPorServidor = 60;
+      /* A Aliança tem o triplo: os mesmos 60 minutos gastos não a param. */
+      A.falasOuvidas.clear();
+      nivelDoServidor = "alianca";
+      const r4 = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", azure(200, dito));
+      verdade("na Aliança, 60 minutos gastos ainda não são o teto (ela tem 180)", /Rally/.test(r4.description || ""));
+      A.falasOuvidas.clear();
+      usoDoMes.set("s", 3 * 3600);
+      const r5 = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", azure(200, dito));
+      verdade("e com 180 gastos, para", /acabou este mês/.test(r5.title) && /180 minutos/.test(r5.description));
+      nivelDoServidor = "pro";
       usoDoMes.delete("s");
 
       /* O banco caiu: o teto é proteção, não pode travar o 🎧 de todo mundo. */
