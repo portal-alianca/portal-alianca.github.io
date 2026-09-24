@@ -1,44 +1,26 @@
-/* Login com Discord para a área do cliente do CYRON.
+/* Login com Discord para a area do cliente do CYRON.
 
-   Por que uma função no Supabase e não a página sozinha: trocar o `code` do
-   OAuth por um token exige o CLIENT SECRET do aplicativo, e segredo em página
-   estática não é segredo -- qualquer pessoa abre o "ver código-fonte" e leva.
-   Então a página só carrega o code até aqui, e o secret nunca sai daqui.
+   Trocar o `code` do OAuth por um token exige o CLIENT SECRET, e segredo em
+   pagina estatica nao e segredo -- qualquer um abre o "ver codigo-fonte" e
+   leva. Entao a pagina so carrega o code ate aqui, e o secret nunca sai daqui.
 
-   O que esta função devolve é deliberadamente pequeno: os servidores que a
-   PESSOA administra, e de cada um só o que ela precisa ver -- nome, plano,
-   até quando está pago. Nada de chave de tradutor, nada de token, nada de
-   outro cliente.
-
-   E ela não guarda sessão. Nenhum token nosso nasce, então nenhum token nosso
-   vaza; recarregar a página faz login de novo, e como o Discord lembra a
-   autorização, isso é um clique que a pessoa mal vê. A alternativa seria
-   emitir um cookie de sessão e passar a ter que protegê-lo -- trabalho e risco
-   novos para resolver um problema que não existe. */
+   Nao guarda sessao: nenhum token nosso nasce, entao nenhum token nosso vaza.
+   Recarregar refaz o login, e como o Discord lembra a autorizacao isso e um
+   clique que a pessoa mal ve. */
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 /* O id do aplicativo e o client_id do OAuth sao o MESMO numero, com dois
-   nomes -- e neste projeto ele ja aparece nos dois: como DISCORD_CLIENT_ID
-   aqui e como DISCORD_APP_ID na funcao de interacoes. Aceitar os dois, e cair
-   no numero escrito, evita a unica pergunta que essa duplicidade poderia
-   gerar: "o que ja esta guardado ali e' do mesmo aplicativo?".
-
-   O numero nao e' segredo: ele viaja em todo convite do bot e ja esta escrito
-   na pagina do site. Segredo e' so' o CLIENT_SECRET, logo abaixo, e esse nao
-   tem valor de reserva nenhum -- sem ele a funcao recusa o login em vez de
-   tentar com um vazio. */
+   nomes. Aceitar os dois, e cair no numero escrito, tira a duvida do caminho.
+   Ele nao e segredo: viaja em todo convite do bot. */
 const CLIENT_ID = Deno.env.get("DISCORD_CLIENT_ID")
   || Deno.env.get("DISCORD_APP_ID")
   || "1498142929041096856";
 const CLIENT_SECRET = Deno.env.get("DISCORD_CLIENT_SECRET") ?? "";
 
-/* De onde a página pode chamar.
-
-   Lista fechada, e não "*": com `*` qualquer site do mundo poderia montar uma
-   cópia da nossa tela de login, receber o code de um cliente nosso e ler os
-   servidores dele daqui. A lista aceita mais de uma origem porque o site tem
-   um endereço no GitHub Pages e pode ganhar um domínio próprio depois. */
+/* Lista fechada, e nao "*": com "*" qualquer site do mundo poderia montar uma
+   copia da nossa tela de login, receber o code de um cliente nosso e ler os
+   servidores dele daqui. */
 const ORIGENS = new Set([
   "https://portal-alianca.github.io",
   "http://localhost:8000",
@@ -52,17 +34,14 @@ function cabecalhos(origem: string | null) {
     "Access-Control-Allow-Headers": "content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Content-Type": "application/json",
-    /* A resposta é sobre UMA pessoa. Um cache no meio do caminho que a
-       guardasse entregaria os servidores dela para o próximo que perguntasse. */
+    /* A resposta e sobre UMA pessoa: um cache no meio do caminho entregaria os
+       servidores dela para o proximo que perguntasse. */
     "Cache-Control": "no-store",
   };
 }
 
-/* "Gerenciar servidor" é a permissão que define quem manda ali.
-
-   Não uso "dono" porque em servidor grande quem cuida do bot quase nunca é a
-   conta dona -- é um administrador. Exigir a conta dona faria a área do
-   cliente não servir justamente para os servidores que mais interessam. */
+/* "Gerenciar servidor", e nao "dono": em servidor grande quem cuida do bot
+   quase nunca e a conta dona -- e um administrador. */
 const GERENCIAR_SERVIDOR = 1n << 5n;
 /* Administrator entra explicitamente, e nao por consequencia.
 
@@ -92,13 +71,9 @@ async function sb(caminho: string) {
   return await r.json();
 }
 
-/* O plano, calculado do mesmo jeito que o bot calcula.
-
-   Isto é uma repetição de `planoDe` do index.js, e é proposital: importar de
-   lá não dá (outro runtime, outra máquina), e a alternativa -- confiar só na
-   coluna `plano` -- mostraria "grátis" para quem está em teste de 7 dias ou
-   pagou pelo Stripe, que são exatamente as duas horas em que a pessoa vai
-   olhar esta tela. */
+/* Mesma conta que o bot faz em planoDe. Confiar so na coluna `plano` mostraria
+   "gratis" para quem esta em teste ou acabou de pagar -- que sao exatamente as
+   duas horas em que a pessoa olha esta tela. */
 function futuro(quando: string | null | undefined): number {
   const t = quando ? Date.parse(quando) : 0;
   return t && t > Date.now() ? t : 0;
@@ -113,12 +88,9 @@ function planoDe(s: any): { plano: string; ate: string | null; motivo: string } 
   return { plano: "gratis", ate: null, motivo: "" };
 }
 
-/* Devolve o token ao Discord assim que termino de usá-lo.
-
-   Ele vale por uma semana e dá acesso à lista de servidores da pessoa. Eu
-   precisei dele por dois segundos; deixá-lo vivo mais que isso é guardar uma
-   chave que não é minha, numa gaveta que eu não vou vigiar. Falhar aqui não
-   quebra nada -- o token expira sozinho de qualquer forma. */
+/* Devolve o token ao Discord assim que termino de usa-lo. Ele vale uma semana
+   e da acesso a lista de servidores da pessoa; eu precisei dele por dois
+   segundos. Falhar aqui nao quebra nada -- ele expira sozinho. */
 async function devolverToken(token: string) {
   try {
     await fetch("https://discord.com/api/oauth2/token/revoke", {
@@ -137,17 +109,17 @@ Deno.serve(async (req) => {
   const cab = cabecalhos(origem);
 
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cab });
-  if (req.method !== "POST") return new Response("só POST", { status: 405, headers: cab });
+  if (req.method !== "POST") return new Response("so POST", { status: 405, headers: cab });
 
-  /* Origem desconhecida sai aqui, antes de qualquer trabalho: sem o cabeçalho
-     de liberação o navegador já recusaria a resposta, mas eu não quero nem
-     ter gasto uma troca de token com o Discord por causa dela. */
+  /* Origem desconhecida sai aqui, antes de qualquer trabalho: o navegador ja
+     recusaria a resposta sem o cabecalho, mas eu nao quero nem ter gasto uma
+     troca de token com o Discord por causa dela. */
   if (!cab["Access-Control-Allow-Origin"]) {
-    return new Response(JSON.stringify({ erro: "origem não liberada" }), { status: 403, headers: cab });
+    return new Response(JSON.stringify({ erro: "origem nao liberada" }), { status: 403, headers: cab });
   }
   if (!CLIENT_SECRET) {
-    console.error("entrar: falta DISCORD_CLIENT_SECRET nos segredos da função");
-    return new Response(JSON.stringify({ erro: "login ainda não configurado" }), { status: 500, headers: cab });
+    console.error("entrar: falta DISCORD_CLIENT_SECRET nos segredos da funcao");
+    return new Response(JSON.stringify({ erro: "login ainda nao configurado" }), { status: 500, headers: cab });
   }
 
   let code = "", redirect_uri = "";
@@ -155,22 +127,18 @@ Deno.serve(async (req) => {
     const corpo = await req.json();
     code = String(corpo?.code ?? "");
     redirect_uri = String(corpo?.redirect_uri ?? "");
-  } catch { /* cai na validação abaixo */ }
+  } catch { /* cai na validacao abaixo */ }
 
   if (!code || !redirect_uri) {
     return new Response(JSON.stringify({ erro: "faltou o code" }), { status: 400, headers: cab });
   }
-  /* O redirect_uri volta da página, e o Discord confere se ele bate com o que
-     está cadastrado no aplicativo. Mas eu confiro ANTES: sem isto, alguém
-     poderia mandar aqui um code obtido para outro destino.
-
-     O try existe porque `new URL` ESTOURA com texto que não é endereço, e um
-     estouro aqui viraria 500 -- ou seja, um campo inválido de fora derrubando
-     a função em vez de ser recusado por ela. */
+  /* new URL ESTOURA com texto que nao e endereco, e um estouro aqui viraria
+     500 -- um campo invalido vindo de fora derrubando a funcao em vez de ser
+     recusado por ela. */
   let destino = "";
   try { destino = new URL(redirect_uri).origin; } catch { /* fica vazio */ }
   if (!ORIGENS.has(destino)) {
-    return new Response(JSON.stringify({ erro: "destino não liberado" }), { status: 400, headers: cab });
+    return new Response(JSON.stringify({ erro: "destino nao liberado" }), { status: 400, headers: cab });
   }
 
   let token = "";
@@ -184,15 +152,15 @@ Deno.serve(async (req) => {
       }),
     });
     if (!r.ok) {
-      /* Code já usado ou expirado é o caso comum (a pessoa recarregou a
-         página). Não é erro de servidor, e não deve virar alarme. */
+      /* Code ja usado ou expirado e o caso comum (a pessoa recarregou). Nao e
+         erro de servidor, e nao deve virar alarme. */
       console.log(`entrar: o Discord recusou o code (${r.status})`);
       return new Response(JSON.stringify({ erro: "login expirou, tente de novo" }), { status: 401, headers: cab });
     }
     token = (await r.json())?.access_token ?? "";
   } catch (e) {
     console.error("entrar: falhei ao falar com o Discord:", e instanceof Error ? e.message : e);
-    return new Response(JSON.stringify({ erro: "o Discord não respondeu" }), { status: 502, headers: cab });
+    return new Response(JSON.stringify({ erro: "o Discord nao respondeu" }), { status: 502, headers: cab });
   }
   if (!token) return new Response(JSON.stringify({ erro: "login expirou, tente de novo" }), { status: 401, headers: cab });
 
@@ -203,35 +171,40 @@ Deno.serve(async (req) => {
       fetch("https://discord.com/api/users/@me/guilds", como),
     ]);
     if (!rUser.ok || !rGuilds.ok) {
-      return new Response(JSON.stringify({ erro: "o Discord não deixou ler seus servidores" }),
+      return new Response(JSON.stringify({ erro: "o Discord nao deixou ler seus servidores" }),
         { status: 502, headers: cab });
     }
     const user = await rUser.json();
     const guilds: any[] = await rGuilds.json();
 
-    /* Daqui pra baixo só existem servidores que ESTA pessoa administra. É a
-       única checagem de autorização da função, e ela vem do próprio Discord:
-       a lista já chega filtrada para a conta que autorizou. */
+    /* A unica checagem de autorizacao da funcao, e ela vem do proprio Discord:
+       a lista ja chega filtrada para a conta que autorizou. */
     const meus = (Array.isArray(guilds) ? guilds : []).filter(podeMandar);
 
     let instalados: any[] = [];
     if (meus.length) {
       const ids = meus.map((g) => `"${String(g.id).replace(/[^0-9]/g, "")}"`).join(",");
-      /* Colunas escolhidas a dedo, e nunca `select=*`: a linha do servidor
-         carrega a CHAVE DE TRADUTOR cifrada do cliente, e um `*` aqui a
-         mandaria para o navegador junto com o resto. */
+      /* Colunas a dedo, nunca select=*: a linha do servidor carrega a chave de
+         tradutor cifrada do cliente, e um * a mandaria para o navegador. */
       instalados = await sb(
-        `cyron_servidor?guild_id=in.(${ids})&select=id,guild_id,nome,plano,pago_ate,teste_ate,stripe_assinatura`,
+        `cyron_servidor?guild_id=in.(${ids})&select=id,guild_id,nome,plano,pago_ate,teste_ate,stripe_assinatura,nivel`,
       );
     }
     const porGuild = new Map(instalados.map((s: any) => [String(s.guild_id), s]));
 
-    /* O link de pagamento é o mesmo que o bot usa: um Payment Link do Stripe
-       guardado nos ajustes. Nenhuma credencial do Stripe passa por aqui. */
-    let linkBase = "";
+    /* O mesmo Payment Link que o bot usa, guardado nos ajustes. Nenhuma
+       credencial do Stripe passa por aqui. Vazio quer dizer que ninguem
+       cadastrou ainda -- e a pagina precisa DIZER isso, nao mandar a pessoa
+       para uma tabela de precos que a traz de volta. */
+    /* Dois links, um por linha, como o bot le: 1a Alianca, 2a Pro. Juntar as
+       duas linhas num endereco so' daria um link quebrado. */
+    let linkBase = "", linkPro = "";
     try {
-      linkBase = (await sb("cyron_ajuste?chave=eq.stripe_link&select=valor"))?.[0]?.valor ?? "";
-    } catch { /* sem link, a tela mostra "fale comigo" */ }
+      const v = (await sb("cyron_ajuste?chave=eq.stripe_link&select=valor"))?.[0]?.valor ?? "";
+      [linkBase = "", linkPro = ""] = String(v).split(/\s*\n\s*/).map((l: string) => l.trim());
+    } catch { /* sem link, a tela diz que a assinatura nao esta disponivel */ }
+    const comServidor = (link: string, s: any) =>
+      `${link}${link.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(s.id)}`;
 
     const servidores = meus.map((g) => {
       const s = porGuild.get(String(g.id));
@@ -239,39 +212,34 @@ Deno.serve(async (req) => {
       return {
         guild_id: String(g.id),
         nome: s?.nome || g.name || "",
-        icone: g.icon
-          ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=64`
-          : null,
+        icone: g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=64` : null,
         instalado: !!s,
         plano: p?.plano ?? null,
         ate: p?.ate ?? null,
         motivo: p?.motivo ?? "",
         assinado: !!s?.stripe_assinatura,
-        /* O id do servidor só viaja pendurado no link de pagamento, que é
-           onde ele precisa estar: é ele que a função do Stripe usa depois
-           para saber quem pagou. */
-        pagar: s && linkBase && !s.stripe_assinatura
-          ? `${linkBase}${linkBase.includes("?") ? "&" : "?"}client_reference_id=${encodeURIComponent(s.id)}`
-          : null,
+        /* O id do servidor so viaja pendurado no link de pagamento, que e onde
+           ele precisa estar: e ele que a funcao do Stripe usa depois para
+           saber quem pagou. */
+        nivel: s?.nivel === "pro" ? "pro" : "alianca",
+        pagar: s && linkBase && !s.stripe_assinatura ? comServidor(linkBase, s) : null,
+        pagarPro: s && linkPro && !s.stripe_assinatura ? comServidor(linkPro, s) : null,
       };
     }).sort((a, b) => Number(b.instalado) - Number(a.instalado) || a.nome.localeCompare(b.nome));
 
     return new Response(JSON.stringify({
       usuario: {
         nome: user?.global_name || user?.username || "",
-        avatar: user?.avatar
-          ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`
-          : null,
+        avatar: user?.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64` : null,
       },
       servidores,
     }), { status: 200, headers: cab });
   } catch (e) {
     console.error("entrar: falhei ao montar a lista:", e instanceof Error ? e.message : e);
-    return new Response(JSON.stringify({ erro: "não consegui montar sua lista agora" }),
+    return new Response(JSON.stringify({ erro: "nao consegui montar sua lista agora" }),
       { status: 500, headers: cab });
   } finally {
-    /* No finally: mesmo que a montagem da lista estoure, o token da pessoa
-       volta para o Discord. */
+    /* No finally: mesmo que a montagem estoure, o token da pessoa volta. */
     await devolverToken(token);
   }
 });
