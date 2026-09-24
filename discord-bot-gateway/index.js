@@ -2727,6 +2727,202 @@ async function explicarImagem(msg, idioma, guildId, buscar = fetch) {
   };
 }
 
+/* ---------------- ouvir o audio ----------------
+
+   O 🎧 embaixo de uma mensagem de voz: quem toca recebe, so' para si, o que
+   foi dito ja' na lingua dele. Mesmo desenho do 📝 da imagem:
+
+     - TRANSCREVE UMA VEZ. Dez pessoas tocando no mesmo audio custam uma
+       transcricao; a traducao fica na memoria de traducoes, por lingua.
+     - SO' QUANDO ALGUEM TOCA. Nada e' transcrito sozinho.
+     - PLANO PRO. A cota gratis da Azure Speech (F0) e' de 5 HORAS de audio
+       por mes, somando todos os servidores -- uns 1.200 audios de 15
+       segundos. Aberta a todo mundo, um servidor animado gastaria a de todos.
+     - AUDIO CURTO. Acima de 2 minutos nao transcrevo: um audio de 20 minutos
+       comeria 7% da cota do mes de uma vez.
+
+   A chave mora como a da imagem: cofre da maquina (FALA_ENDPOINT,
+   FALA_CHAVE), senao /admin → 🎧, cifrada. Sem chave, o botao nem aparece. */
+let falaDoDono = null; // { endpoint, chave } ou null
+
+function lerFalaDoDono(a = {}) {
+  const endpoint = String(process.env.FALA_ENDPOINT || a.fala_endpoint || "").trim().replace(/\/+$/, "");
+  const chave = String(process.env.FALA_CHAVE || "").trim() || (a.fala_chave ? decifrar(a.fala_chave) : "");
+  if (!chave || !/^https:\/\/[^\s/]+/i.test(endpoint)) return null;
+  return { endpoint, chave };
+}
+
+const MAX_SEGUNDOS_AUDIO = 120;
+/* Quando o Discord nao diz a duracao (arquivo de audio comum, ou a copia de
+   uma sala espelhada), o tamanho responde por ela: mensagem de voz do Discord
+   e' Opus a ~32 kbps, 2 minutos dao ~0,5 MB; MP3 a 128 kbps, ~2 MB. */
+const MAX_BYTES_AUDIO = 3 * 1024 * 1024;
+
+function ehAudioAnexo(a) {
+  return /^audio\//i.test(a?.contentType || "") ||
+    /\.(ogg|oga|opus|mp3|m4a|wav|flac|aac|amr|weba)(\?|$)/i.test(a?.name || a?.url || "");
+}
+
+function audioDaMensagem(msg) {
+  const anexos = msg?.attachments?.values ? [...msg.attachments.values()] : (msg?.attachments || []);
+  for (const a of anexos) {
+    if (!ehAudioAnexo(a) || !a.url) continue;
+    return {
+      url: a.url, id: String(a.id || a.url.split("?")[0]), nome: a.name || "audio.ogg",
+      bytes: Number(a.size) || 0,
+      segundos: Number.isFinite(Number(a.duration)) && a.duration !== null ? Number(a.duration) : null,
+    };
+  }
+  return null;
+}
+
+/* A lingua de quem GRAVOU, para a Azure. Sem ela, a Azure adivinha -- mas o
+   modelo que adivinha so' conhece nove linguas (pt, en, es, fr, de, it, ja,
+   ko, zh), e um audio em russo sairia como lixo em alguma delas. */
+const LOCALE_DA_FALA = {
+  pt: "pt-BR", en: "en-US", es: "es-ES", fr: "fr-FR", de: "de-DE", it: "it-IT", ru: "ru-RU",
+  uk: "uk-UA", tr: "tr-TR", pl: "pl-PL", ar: "ar-SA", id: "id-ID", vi: "vi-VN", th: "th-TH",
+  zh: "zh-CN", ja: "ja-JP", ko: "ko-KR", nl: "nl-NL", hi: "hi-IN", ms: "ms-MY", fil: "fil-PH",
+};
+function localeDaFala(idioma) {
+  return LOCALE_DA_FALA[String(idioma || "").toLowerCase().split(/[-_]/)[0]] || null;
+}
+
+async function transcrever(bytes, nome, fala, locale, buscar = fetch) {
+  const form = new FormData();
+  form.append("audio", new Blob([bytes]), nome);
+  form.append("definition", JSON.stringify({ locales: locale ? [locale] : [] }));
+  const r = await buscar(`${fala.endpoint}/speechtotext/transcriptions:transcribe?api-version=2024-11-15`, {
+    method: "POST",
+    headers: { "Ocp-Apim-Subscription-Key": fala.chave },
+    body: form,
+    signal: AbortSignal.timeout(60000),
+  });
+  if (r.status === 429) {
+    const corpo = await r.text().catch(() => "");
+    const e = new Error("transcricao recusada (429)");
+    e.motivo = /quota|volume|hours/i.test(corpo) ? "cota" : "pressa";
+    throw e;
+  }
+  if (!r.ok) throw new Error(`transcricao respondeu HTTP ${r.status}`);
+  const j = await r.json();
+  const texto = (j?.combinedPhrases || []).map((f) => String(f?.text || "").trim()).filter(Boolean).join("\n");
+  return { texto, segundos: Math.round((Number(j?.durationMilliseconds) || 0) / 1000) };
+}
+
+const falasOuvidas = new Map(); // "idDoAudio|locale" -> { texto, segundos }
+const MAX_AUDIOS_LEMBRADOS = 300;
+
+/* Baixa, transcreve e GUARDA. A chave leva a lingua junto: o mesmo audio
+   ouvido "em portugues" e "adivinhando" sao duas transcricoes diferentes. */
+async function ouvirAudio(audio, locale, buscar = fetch) {
+  const chave = `${audio.id}|${locale || ""}`;
+  const guardada = falasOuvidas.get(chave);
+  if (guardada !== undefined) return guardada;
+  const longo = () => Object.assign(new Error("audio longo demais"), { motivo: "longo" });
+  /* Antes de baixar: o Discord ja' disse o tamanho e, na mensagem de voz, a
+     duracao. Nao se baixa o que nao vai ser transcrito. */
+  if (audio.segundos !== null && audio.segundos > MAX_SEGUNDOS_AUDIO) throw longo();
+  if (audio.bytes > MAX_BYTES_AUDIO) throw longo();
+  const r = await buscar(audio.url, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`baixar o audio deu HTTP ${r.status}`);
+  const bytes = Buffer.from(await r.arrayBuffer());
+  if (bytes.length > MAX_BYTES_AUDIO) throw longo();
+  const ouvido = await transcrever(bytes, audio.nome, falaDoDono, locale, buscar);
+  falasOuvidas.set(chave, ouvido);
+  while (falasOuvidas.size > MAX_AUDIOS_LEMBRADOS) falasOuvidas.delete(falasOuvidas.keys().next().value);
+  return ouvido;
+}
+
+function falhaDeAudio(e) {
+  if (e?.motivo === "longo") {
+    return { title: "🎧 Áudio longo demais",
+      description: `Eu transcrevo áudios de até ${MAX_SEGUNDOS_AUDIO / 60} minutos.` };
+  }
+  if (e?.motivo === "cota") {
+    console.error("audio: a cota gratuita de transcricao de audio do mes acabou");
+    return { title: "🎧 Acabou a transcrição grátis deste mês",
+      description: "O limite gratuito de áudio do mês foi atingido. Volta a funcionar no dia 1." };
+  }
+  if (e?.motivo === "pressa") {
+    return { title: "⏳ Muita gente pedindo agora", description: "Tente de novo em um minuto." };
+  }
+  console.error("audio: nao consegui ouvir o audio:", e?.message || e);
+  return { title: "❌ Não deu", description: "Não consegui ouvir esse áudio agora. Tente de novo em instantes." };
+}
+
+/* O que dizer para quem tocou -- o botao e o menu Translate usam a mesma. */
+async function explicarAudio(msg, idioma, guildId, locale, buscar = fetch) {
+  const audio = audioDaMensagem(msg);
+  if (!audio) return null;
+  const motor = await motorDoGuild(guildId);
+  const aviso = (embed) => traduzirEmbed(embed, idioma, motor);
+  if (!falaDoDono) {
+    return aviso({ title: "🎧 Transcrição de áudio desligada",
+      description: "Ainda não ligaram a transcrição de áudio neste bot." });
+  }
+  let ouvido;
+  try { ouvido = await ouvirAudio(audio, locale, buscar); } catch (e) { return aviso(falhaDeAudio(e)); }
+  if (!ouvido.texto) {
+    return aviso({ title: "🎧 Não ouvi fala nesse áudio", description: "Não tem nada dito que eu consiga entender aqui." });
+  }
+  const traduzido = await traduzirLongo(ouvido.texto.slice(0, 4000), idioma, motor);
+  const rodape = await aviso({ footer: { text: "O que foi dito, traduzido · só você está vendo isto" } });
+  return {
+    title: `🎧 ${nomeDoIdioma(idioma)}`,
+    description: (traduzido || ouvido.texto).slice(0, 3800),
+    footer: rodape.footer,
+  };
+}
+
+const ROTULO_OUVIR = {
+  pt: "Ouvir traduzido", en: "Translate audio", es: "Traducir audio", fr: "Traduire l'audio",
+  de: "Audio übersetzen", it: "Traduci audio", ar: "ترجمة الصوت", ru: "Перевести аудио",
+  tr: "Sesi çevir", pl: "Przetłumacz nagranie", id: "Terjemahkan audio", vi: "Dịch âm thanh",
+  th: "แปลเสียง", zh: "翻译语音", ja: "音声を翻訳", ko: "음성 번역", uk: "Перекласти аудіо",
+};
+
+/* A lingua de quem gravou vai NO BOTAO: o clique chega da copia, numa sala
+   de outra lingua, e o botao e' o unico lugar que sabe de onde o audio veio. */
+function botaoDeOuvir(idiomaDaSala, idiomaDoAudio) {
+  const base = String(idiomaDaSala || "").toLowerCase().split(/[-_]/)[0];
+  const de = String(idiomaDoAudio || "").toLowerCase().replace(/[^a-z-]/g, "").slice(0, 10);
+  return [{ type: 1, components: [{
+    type: 2, style: 2, custom_id: `aud:ouvir:${de}`,
+    emoji: { name: "🎧" }, label: ROTULO_OUVIR[base] || ROTULO_OUVIR.en,
+  }] }];
+}
+
+/* ---------------- o que e' do plano Pro ----------------
+
+   🖼️ e 🎧 sao os recursos que mais gastam: memoria da maquina e cotas que
+   sao UMA para todos os servidores. No servidor gratis o botao continua
+   aparecendo -- com 🔒 --, e quem toca fica sabendo o que existe. Esconder
+   venderia menos e explicaria nada.
+
+   Enquanto o beta estiver ligado no /admin, todo servidor e' Pro (planoDe). */
+async function ehPro(guildId) {
+  return planoDe(guildId ? await servidorDoGuild(guildId) : null) === "pago";
+}
+
+function avisoDoPro(recurso) {
+  return { title: "🔒 Recurso do plano Pro",
+    description: `${recurso} faz parte do plano Pro. Quem administra o servidor vê os planos no \`/cyron\`.` };
+}
+
+async function cliqueOuvirAudio(inter, buscar = fetch) {
+  await inter.deferReply({ flags: 64 });
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
+  const motor = await motorDoGuild(inter.guildId);
+  if (!await ehPro(inter.guildId)) {
+    return inter.editReply({ embeds: [{ color: COR, ...(await traduzirEmbed(avisoDoPro("Ouvir áudio traduzido 🎧"), idioma, motor)) }] });
+  }
+  const origem = inter.customId.split(":")[2] || "";
+  const embed = await explicarAudio(inter.message, idioma, inter.guildId, localeDaFala(origem), buscar);
+  return inter.editReply({ embeds: [{ color: COR, ...(embed || await traduzirEmbed({
+    title: "🤔 Não achei o áudio", description: "Essa mensagem não tem mais áudio." }, idioma, motor)) }] });
+}
+
 /* ---------------- a imagem traduzida ----------------
 
    O print volta com o texto trocado NO LUGAR, no idioma de quem pediu. Cada
@@ -3478,9 +3674,14 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
            @everyone passa quando -- e so' quando -- passou no original. */
         allowedMentions: { parse: avisaTodos ? ["everyone"] : [], users: marcados },
       };
-      /* O botao de ler a imagem, so' quando ha' imagem e ha' quem leia. */
-      const comBotao = !!visaoDoDono && arquivos.some(ehImagemAnexo);
-      if (comBotao) carga.components = botaoDeLerImagem(destino.idioma);
+      /* O 📝 so' quando ha' imagem e ha' quem leia; o 🎧 so' quando ha'
+         audio e ha' quem ouca. Os dois na mesma fileira. */
+      const botoes = [
+        ...(visaoDoDono && arquivos.some(ehImagemAnexo) ? botaoDeLerImagem(destino.idioma)[0].components : []),
+        ...(falaDoDono && arquivos.some(ehAudioAnexo) ? botaoDeOuvir(destino.idioma, origem.idioma)[0].components : []),
+      ];
+      const comBotao = botoes.length > 0;
+      if (comBotao) carga.components = [{ type: 1, components: botoes }];
 
       let posta;
       try {
@@ -3751,6 +3952,11 @@ async function recarregarAjustes() {
   visaoDoDono = lerVisaoDoDono(a);
   if (tinhaVisao !== !!visaoDoDono) {
     console.log(`imagem: leitura de texto em imagens ${visaoDoDono ? "LIGADA" : "desligada"}`);
+  }
+  const tinhaFala = !!falaDoDono;
+  falaDoDono = lerFalaDoDono(a);
+  if (tinhaFala !== !!falaDoDono) {
+    console.log(`audio: transcricao de audio ${falaDoDono ? "LIGADA" : "desligada"}`);
   }
 }
 
@@ -9222,6 +9428,25 @@ const EXPLICA_ERRO = [
       "imagem que eu não sei abrir.",
   },
   {
+    quando: /audio.{0,20}cota gratuita de transcricao/i,
+    titulo: "Acabou a transcrição grátis de áudio do mês",
+    precisaDeVoce: false,
+    oque: "O plano gratuito da Azure transcreve 5 horas de áudio por mês, somando todos os " +
+      "servidores, e esse limite foi atingido. Quem tocar no 🎧 recebe um aviso educado até o " +
+      "mês virar.\n\n**Ninguém é cobrado:** o plano F0 não tem como gerar fatura — ele só recusa.",
+    fazer: "Nada. Volta sozinho no dia 1. Se acontecer todo mês, o próximo nível da Azure cobra " +
+      "cerca de US$ 1 por hora de áudio — decisão de custo, não conserto.",
+  },
+  {
+    quando: /audio.{0,20}nao consegui ouvir o audio/i,
+    titulo: "Não consegui transcrever um áudio",
+    precisaDeVoce: false,
+    oque: "Alguém tocou no 🎧 e a transcrição falhou — quase sempre a Azure ou o Discord lentos " +
+      "naquele instante. Quem pediu recebeu \"tente de novo em instantes\".",
+    fazer: "Nada, se for de vez em quando. Se virar rotina, confira a chave em /admin → 🎧 Áudio: " +
+      "salvar de novo faz um teste na hora.",
+  },
+  {
     quando: /imagem.{0,20}nao consegui ler a imagem/i,
     titulo: "Não consegui ler uma imagem",
     precisaDeVoce: false,
@@ -9851,6 +10076,7 @@ function linhasDoAdmin() {
   ] }, { type: 1, components: [
     { type: 2, custom_id: "admin:chaves", style: 1, emoji: { name: "🔑" }, label: "Chaves de tradução" },
     { type: 2, custom_id: "admin:visao", style: 1, emoji: { name: "👁️" }, label: "Leitura de imagem" },
+    { type: 2, custom_id: "admin:fala", style: 1, emoji: { name: "🎧" }, label: "Áudio" },
     { type: 2, custom_id: "admin:comandos", style: 2, emoji: { name: "🧪" }, label: "Meus comandos" },
     { type: 2, custom_id: "admin:novocomando", style: 4, emoji: { name: "➕" }, label: "Novo comando" },
   ] }];
@@ -9943,6 +10169,7 @@ async function cliqueAdmin(inter) {
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
   if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
   if (acao === "visao" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaVisao()));
+  if (acao === "fala" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaFala()));
   if (acao === "novocomando" && inter.isButton()) {
     return inter.showModal(janelaValida(await janelaDeComando(null)));
   }
@@ -10255,6 +10482,75 @@ async function salvarVisao(inter) {
   }
   const teste = await conferirVisao(visaoDoDono);
   return inter.editReply(teste.frase);
+}
+
+/* A janela do audio: o recurso "Fala" (Speech) da Azure, plano F0. */
+async function janelaDaFala() {
+  const a = await ajustes();
+  const noCofre = !!process.env.FALA_CHAVE;
+  return {
+    custom_id: "admin:fala",
+    title: "Transcrição de áudio",
+    components: [
+      { type: 1, components: [{ type: 4, custom_id: "fala_endpoint", style: 1, required: false, max_length: 200,
+        label: "Endpoint (página Keys and Endpoint)",
+        placeholder: "https://nome-do-recurso.cognitiveservices.azure.com",
+        ...(a.fala_endpoint ? { value: a.fala_endpoint } : {}) }] },
+      { type: 1, components: [{ type: 4, custom_id: "fala_chave", style: 1, required: false, max_length: 200,
+        label: (noCofre ? "Chave (no cofre da máquina)"
+          : a.fala_chave ? "Chave (tenho uma; escreva pra trocar)" : "Chave (KEY 1)").slice(0, 45),
+        placeholder: "apagar = desliga o áudio" }] },
+    ],
+  };
+}
+
+/* Testa sem gastar: um pedido SEM audio. Chave e endereco certos, a Azure
+   reclama da falta do audio (400/415/422); chave errada, 401; endereco
+   errado, 404. */
+async function conferirFala(fala, buscar = fetch) {
+  try {
+    const form = new FormData();
+    form.append("definition", JSON.stringify({ locales: [] }));
+    const r = await buscar(`${fala.endpoint}/speechtotext/transcriptions:transcribe?api-version=2024-11-15`, {
+      method: "POST", headers: { "Ocp-Apim-Subscription-Key": fala.chave }, body: form,
+      signal: AbortSignal.timeout(15000),
+    });
+    if ([400, 415, 422].includes(r.status)) {
+      return { ok: true, frase: "✅ **Chave e endpoint funcionando.** O botão 🎧 começa a aparecer nos áudios em até um minuto." };
+    }
+    if (r.status === 401) return { ok: false, frase: "❌ A Azure **recusou a chave**. Confira se copiou a KEY 1 inteira." };
+    if (r.status === 403) return { ok: false, frase: "❌ A Azure **negou acesso**. Confira se o recurso é do tipo Fala (Speech) e está ativo." };
+    if (r.status === 404) return { ok: false, frase: "❌ **Endpoint errado.** Copie o endereço inteiro da página Keys and Endpoint do recurso de Fala." };
+    if (r.status === 429) return { ok: true, frase: "✅ A chave existe, mas a Azure pediu calma agora. Deve funcionar em instantes." };
+    return { ok: false, frase: `❌ A Azure respondeu HTTP ${r.status}. Confira o recurso no portal.` };
+  } catch {
+    return { ok: false, frase: "❌ **Não achei esse endereço.** Confira o endpoint — ele termina em `.cognitiveservices.azure.com`." };
+  }
+}
+
+async function salvarFala(inter) {
+  if (!await ehDono(inter.user.id)) {
+    return inter.reply({ flags: 64, content: "Não conheço esse comando." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const campo = (n) => { try { return String(inter.fields.getTextInputValue(n) || "").trim(); } catch { return ""; } };
+  const endpoint = campo("fala_endpoint").replace(/\/+$/, "");
+  const chave = campo("fala_chave");
+  if (chave.toLowerCase() === "apagar") {
+    await porAjuste("fala_chave", null);
+    await recarregarAjustes();
+    return inter.editReply("🗑️ Chave apagada. O botão 🎧 some dos áudios novos.");
+  }
+  if (endpoint && !/^https:\/\/[^\s/]+/i.test(endpoint)) {
+    return inter.editReply("O endpoint precisa começar com https://. **Não gravei nada.**");
+  }
+  if (endpoint) await porAjuste("fala_endpoint", endpoint);
+  if (chave) await porAjuste("fala_chave", cifrar(chave));
+  await recarregarAjustes();
+  if (!falaDoDono) {
+    return inter.editReply("Gravei o que veio, mas ainda falta o endpoint ou a chave. O botão só aparece com os dois.");
+  }
+  return inter.editReply((await conferirFala(falaDoDono)).frase);
 }
 
 async function salvarChaves(inter) {
@@ -11019,7 +11315,7 @@ async function cliqueLerImagem(inter) {
   return inter.editReply({
     embeds: [{ color: COR, ...(embed || {
       title: "🤔 Não achei a imagem", description: "Essa mensagem não tem mais imagem." }) }],
-    components: botaoVerNaImagem(inter.message, idioma),
+    components: botaoVerNaImagem(inter.message, idioma, await ehPro(inter.guildId)),
   });
 }
 
@@ -11035,14 +11331,14 @@ const ROTULO_VER_NA_IMAGEM = {
   tr: "Görselde gör", pl: "Pokaż na obrazie", id: "Lihat di gambar", vi: "Xem trên ảnh",
 };
 
-function botaoVerNaImagem(msg, idioma) {
+function botaoVerNaImagem(msg, idioma, pro = true) {
   const img = imagemDaMensagem(msg);
   const leitura = img && textoDasImagens.get(img.id);
   if (!leitura?.linhas?.some((l) => l.caixa) || !desenhaEm(idioma) || !msg?.channelId || !msg?.id) return [];
   const base = String(idioma || "").toLowerCase().split(/[-_]/)[0];
   return [{ type: 1, components: [{
     type: 2, style: 1, custom_id: `img:ver:${msg.channelId}:${msg.id}`,
-    emoji: { name: "🖼️" }, label: ROTULO_VER_NA_IMAGEM[base] || ROTULO_VER_NA_IMAGEM.en,
+    emoji: { name: pro ? "🖼️" : "🔒" }, label: ROTULO_VER_NA_IMAGEM[base] || ROTULO_VER_NA_IMAGEM.en,
   }] }];
 }
 
@@ -11083,6 +11379,7 @@ async function cliqueVerNaImagem(inter, buscar = fetch) {
   const motor = await motorDoGuild(inter.guildId);
   const aviso = async (e) => inter.editReply({ embeds: [{ color: COR, ...(await traduzirEmbed(e, idioma, motor)) }] });
 
+  if (!await ehPro(inter.guildId)) return aviso(avisoDoPro("A imagem traduzida 🖼️"));
   const [, , canalId, msgId] = inter.customId.split(":");
   const canal = await client.channels.fetch(canalId).catch(() => null);
   const msg = canal?.messages ? await canal.messages.fetch(msgId).catch(() => null) : null;
@@ -11198,7 +11495,8 @@ function paginaDoMembro(souAdmin) {
     "**Botões que aparecem nas mensagens:**",
     "🌐 **Menu de línguas** — escolha a sua e leia só você.",
     "📝 **Ler imagem** — o texto de um print ou cartaz, na sua língua.",
-    "🖼️ **Ver na imagem** — a própria imagem com o texto trocado. O que não dá para trocar ganha um número, com a tradução embaixo.",
+    "🖼️ **Ver na imagem** — a própria imagem com o texto trocado. O que não dá para trocar ganha um número, com a tradução embaixo. *(Pro)*",
+    "🎧 **Ouvir traduzido** — o que foi dito num áudio, na sua língua. *(Pro)*",
     "▶️ Link de YouTube, Twitch ou Vimeo toca aqui mesmo, sem sair do Discord.",
     "",
     "**Comandos:**",
@@ -11913,6 +12211,18 @@ async function comandoDeInteracao(inter) {
        avisos, que sao o texto que mais gente precisa ler traduzido. */
     const texto = textoDaMensagem(inter.targetMessage);
     await inter.deferReply({ flags: 64 });
+    if (!texto && audioDaMensagem(inter.targetMessage)) {
+      /* So' audio: o 🎧 pelo menu, para servidor sem sala espelhada. A lingua
+         de quem gravou vem da escolha dele no bot; copia de webhook nao tem
+         pessoa, e ai' a Azure adivinha. */
+      if (!await ehPro(inter.guildId)) {
+        return responder(inter, avisoDoPro("Ouvir áudio traduzido 🎧"), { idioma: await lingua() });
+      }
+      const alvo = inter.targetMessage;
+      const deQuem = alvo.webhookId || !alvo.author?.id ? null : await idiomaEscolhido(alvo.author.id);
+      const doAudio = await explicarAudio(alvo, await lingua(), inter.guildId, localeDaFala(deQuem));
+      return inter.editReply({ embeds: [{ color: COR, ...doAudio }] });
+    }
     if (!texto) {
       /* So' imagem: agora da' pra ler o que esta' escrito nela. A mesma
          funcao do botao 📝, para as duas portas nao envelhecerem separadas. */
@@ -11921,7 +12231,7 @@ async function comandoDeInteracao(inter) {
          esta e' a UNICA porta para a imagem traduzida. */
       if (daImagem) {
         return inter.editReply({ embeds: [{ color: COR, ...daImagem }],
-          components: botaoVerNaImagem(inter.targetMessage, await lingua()) });
+          components: botaoVerNaImagem(inter.targetMessage, await lingua(), await ehPro(inter.guildId)) });
       }
       return responder(inter, { title: "🤔 Mensagem vazia",
         description: "Essa mensagem não tem texto pra traduzir (só imagem ou anexo)." }, { idioma: await lingua() });
@@ -12009,6 +12319,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isButton() && inter.customId.startsWith("img:ver:")) {
       return await cliqueVerNaImagem(inter);
     }
+    if (inter.isButton() && inter.customId.startsWith("aud:ouvir")) {
+      return await cliqueOuvirAudio(inter);
+    }
     if (inter.isModalSubmit()) {
       if (inter.customId === "cyron:motor") return await salvarMotor(inter);
       if (inter.customId === "cyron:palavras") return await salvarPalavras(inter);
@@ -12017,6 +12330,7 @@ client.on("interactionCreate", async (inter) => {
       if (inter.customId === "admin:ajustes") return await salvarAjustes(inter);
       if (inter.customId === "admin:chaves") return await salvarChaves(inter);
       if (inter.customId === "admin:visao") return await salvarVisao(inter);
+      if (inter.customId === "admin:fala") return await salvarFala(inter);
       if (inter.customId === "admin:novocomando") return await salvarComando(inter);
       if (inter.customId === "admin:busca") return await procurarServidor(inter);
       return;

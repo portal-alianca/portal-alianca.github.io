@@ -162,7 +162,7 @@ export const RECURSOS = [
   {
     chave: "imagem-traduzida",
     categoria: "traduzir",
-    plano: "gratis",
+    plano: "pago",
     nome: { pt: "A imagem, já traduzida", en: "The image, already translated" },
     como: { pt: "Botão 🖼️ na resposta do 📝", en: "🖼️ button on the 📝 reply" },
     oque: {
@@ -170,6 +170,18 @@ export const RECURSOS = [
       en: "The same image back with the text swapped in place, in the original's colour and alignment. Whatever can't be swapped without ruining the artwork — slanted lettering, text over the drawing — stays untouched with a number in the corner, and the translation comes underneath.",
     },
     prova: "desenharTraducao",
+  },
+  {
+    chave: "ouvir-audio",
+    categoria: "traduzir",
+    plano: "pago",
+    nome: { pt: "Ouvir um áudio, traduzido", en: "Hear a voice message, translated" },
+    como: { pt: "Botão 🎧, ou segurar o áudio → Apps → Translate", en: "🎧 button, or hold the voice message → Apps → Translate" },
+    oque: {
+      pt: "Mensagem de voz numa língua que você não fala: toque no 🎧 e leia o que foi dito, já na sua língua, só para você. O áudio é transcrito uma vez só, na língua de quem gravou, e só quando alguém pede. Áudios de até 2 minutos.",
+      en: "A voice message in a language you don't speak: tap 🎧 and read what was said, already in your language, just for you. The audio is transcribed once, in the speaker's language, and only when someone asks. Voice messages up to 2 minutes.",
+    },
+    prova: "explicarAudio",
   },
   {
     chave: "espelho",
