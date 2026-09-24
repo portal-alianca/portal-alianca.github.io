@@ -1853,6 +1853,19 @@ const LIMITE_DO_CARTAO = 3800; // o embed aceita 4096; sobra pra assinatura
    Puras de proposito: sao sete condicoes, duas delas com consequencia
    invisivel (sino que nao toca, ordem que mente), e a funcao que as usava
    e' a mais quente do produto -- nao da' pra conferir isso subindo bot. */
+/* Mensagem de voz nao tem texto, e o cartao embaixo da copia saia so' com
+   o nome e a bandeira -- parecia vazio. Tirar o cartao nao serve: e' no
+   rodape dele que mora a soma das reacoes de todas as salas. Entao ele ganha
+   o que um audio tem: "🎤 0:04". Sem palavra nenhuma, vale em qualquer
+   lingua e nao passa por tradutor. */
+function linhaDaVoz(msg) {
+  const anexos = msg?.attachments?.values ? [...msg.attachments.values()] : [];
+  const a = anexos.find((x) => ehAudioAnexo(x));
+  if (!a) return "";
+  const s = Math.round(Number(a.duration));
+  return Number.isFinite(s) && s > 0 ? `🎤 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "🎤";
+}
+
 function emendaNaFalaAnterior(anterior, { autor, agora, respondeAlguem, marcados, arquivos, avisaTodos, video }) {
   return !!anterior
     && anterior.autor === autor
@@ -3329,6 +3342,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
   const { arquivos, links: anexos } = msg.attachments.size
     ? await baixarAnexos(msg)
     : { arquivos: [], links: [] };
+  const voz = linhaDaVoz(msg);
   const respondendo = await aQuemResponde(msg);
   const cor = corDaPessoa(msg.author.id);
 
@@ -3543,7 +3557,7 @@ async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, s
        com frequencia, e o link morre. O rotulo fica bilingue, como os outros
        do produto. */
     const votar = msg.poll && msg.url ? `[📊 Votar / Vote](${msg.url})` : "";
-    const linhaNova = [corpo, ...anexos, votar].filter(Boolean).join("\n");
+    const linhaNova = [corpo, voz, ...anexos, votar].filter(Boolean).join("\n");
     /* Figurinha sozinha nao tem texto nem anexo, e era exatamente por isto que
        ela nao atravessava: caia neste `continue` e a sala do outro lado nao
        recebia nada. */
