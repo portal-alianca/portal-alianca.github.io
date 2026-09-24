@@ -1029,7 +1029,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
-    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1066,6 +1066,7 @@ function conferirCartao(onde, embed, componentes = []) {
   /* Leitura de imagem desligada por padrao: os testes antigos do espelho
      nao sabem que ela existe, e nao podem passar a depender dela. */
   globalThis.visaoDoDono = null;
+  globalThis.falaDoDono = null;
   globalThis.aQuemResponde = async () => null;
   globalThis.corDaPessoa = () => 0x5865f2;
   globalThis.ondeMoraAFala = new Map();
@@ -1228,9 +1229,46 @@ function conferirCartao(onde, embed, componentes = []) {
         verdade("sem o botão, e com o print", !temBotao(en[0]) && en[0].arquivos.length === 1);
         verdade("e a outra sala continua com botão", temBotao(naSala(mundo, "es")[0]));
       }
+
+      /* ---- o 🎧 na cópia de um áudio ---- */
+      const voz = { attachment: Buffer.from("x"), name: "voice-message.ogg", contentType: "audio/ogg" };
+      const temOuvir = (m) => JSON.stringify(m?.components || []).includes('"aud:ouvir:');
+      globalThis.visaoDoDono = { endpoint: "https://x.cognitiveservices.azure.com", chave: "k" };
+      globalThis.falaDoDono = null;
+      globalThis.baixarAnexos = async () => ({ arquivos: [voz], links: [] });
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "", { attachments: { size: 1 } });
+        verdade("áudio sem chave de Fala: nenhum 🎧", !temOuvir(naSala(mundo, "en")[0]));
+      }
+      globalThis.falaDoDono = { endpoint: "https://f.cognitiveservices.azure.com", chave: "k" };
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "", { attachments: { size: 1 } });
+        const en = naSala(mundo, "en")[0], es = naSala(mundo, "es")[0];
+        verdade("áudio com chave: 🎧 na sala em inglês", temOuvir(en));
+        /* O clique chega da cópia, na sala de outra língua: o botão é o único
+           lugar que sabe em que língua o áudio foi GRAVADO. */
+        verdade("e o botão carrega a língua de quem gravou (a sala de origem, pt)",
+          JSON.stringify(en.components).includes('"aud:ouvir:pt"'));
+        verdade("rótulo na língua da sala", JSON.stringify(es.components).includes("Traducir audio"));
+        verdade("áudio não ganha o 📝 de imagem", !temBotao(en));
+      }
+      globalThis.baixarAnexos = async () => ({ arquivos: [print, voz], links: [] });
+      {
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        await falar(mundo, "olha isso", { attachments: { size: 2 } });
+        const en = naSala(mundo, "en")[0];
+        verdade("print e áudio juntos: os dois botões", temBotao(en) && temOuvir(en));
+        ok("na mesma fileira", en.components.length, 1);
+      }
     } finally {
       globalThis.baixarAnexos = antesBaixar;
       globalThis.visaoDoDono = null;
+      globalThis.falaDoDono = null;
     }
   }
 
@@ -5508,7 +5546,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
-    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -6932,7 +6970,7 @@ function conferirCartao(onde, embed, componentes = []) {
     verdade("o clique do 🖼️ é tratado no ramo dos BOTÕES",
       /inter\.isButton\(\) && inter\.customId\.startsWith\("img:ver:"\)\)[^]{0,30}cliqueVerNaImagem\(inter\)/.test(codigo));
     verdade("a resposta do 📝 oferece o 🖼️",
-      /components: botaoVerNaImagem\(inter\.message, idioma\)/.test(codigo));
+      /components: botaoVerNaImagem\(inter\.message, idioma, await ehPro\(inter\.guildId\)\)/.test(codigo));
     /* Um recurso opcional não pode impedir o bot de ligar: se o binário do
        processador falhar nesta máquina, só o botão deve sentir. */
     verdade("o processador de imagem NÃO é importado na partida do bot",
@@ -8034,6 +8072,187 @@ function conferirCartao(onde, embed, componentes = []) {
      esquecida deixa de fora, que é o lado seguro de errar. */
   verdade("a lista de tabelas é branca, escrita no arquivo", /TABELAS = \[/.test(codigo));
   verdade("e não existe um 'pega tudo' escondido", !/information_schema|pg_tables/.test(codigo));
+}
+
+/* ============ 🎧 ouvir o áudio, traduzido ============
+ *
+ * A mensagem de voz vira texto (Azure Speech, uma vez só) e o texto vai para
+ * a língua de quem tocou. Recurso do plano Pro: a cota grátis é de 5 horas
+ * por mês para TODOS os servidores juntos. */
+{
+  const salvo = {};
+  for (const n of ["decifrar", "traduzirLongo", "motorDoGuild", "traduzirEmbed", "nomeDoIdioma",
+    "idiomaDoJogador", "planoDe", "servidorDoGuild", "COR", "falaDoDono"]) salvo[n] = globalThis[n];
+  const envAntes = { e: process.env.FALA_ENDPOINT, c: process.env.FALA_CHAVE };
+  delete process.env.FALA_ENDPOINT; delete process.env.FALA_CHAVE;
+  try {
+    globalThis.decifrar = (x) => `claro:${x}`;
+    globalThis.traduzirLongo = async (t, idioma) => `[${idioma}] ${t}`;
+    globalThis.motorDoGuild = async () => ({ tipo: "auto" });
+    globalThis.traduzirEmbed = async (e, idioma) => JSON.parse(JSON.stringify(e).replace(/"(title|description|text)":"/g, `"$1":"<${idioma}>`));
+    globalThis.nomeDoIdioma = (c) => ({ en: "Inglês", pt: "Português" }[c] || c);
+    globalThis.idiomaDoJogador = async () => "en";
+    globalThis.COR = 1;
+    let pro = true;
+    globalThis.servidorDoGuild = async () => ({ id: "s" });
+    globalThis.planoDe = () => (pro ? "pago" : "gratis");
+
+    const A = carregar(["lerFalaDoDono", "MAX_SEGUNDOS_AUDIO", "MAX_BYTES_AUDIO", "ehAudioAnexo", "audioDaMensagem",
+      "LOCALE_DA_FALA", "localeDaFala", "transcrever", "falasOuvidas", "MAX_AUDIOS_LEMBRADOS", "ouvirAudio",
+      "falhaDeAudio", "explicarAudio", "ROTULO_OUVIR", "botaoDeOuvir", "ehPro", "avisoDoPro", "cliqueOuvirAudio",
+      "conferirFala"]);
+
+    /* ---- a chave ---- */
+    ok("sem chave, desligado", A.lerFalaDoDono({}), null);
+    ok("do painel, cifrada e sem a barra do fim",
+      A.lerFalaDoDono({ fala_endpoint: "https://f.cognitiveservices.azure.com/", fala_chave: "c" }),
+      { endpoint: "https://f.cognitiveservices.azure.com", chave: "claro:c" });
+    ok("endpoint sem https é recusado", A.lerFalaDoDono({ fala_endpoint: "http://f.x", fala_chave: "c" }), null);
+
+    /* ---- achar o áudio e a língua ---- */
+    const vozDoDiscord = { attachments: new Map([["5", { id: "5", name: "voice-message.ogg", contentType: "audio/ogg",
+      url: "https://cdn/v.ogg?ex=1", size: 40000, duration: 12.4 }]]) };
+    ok("a mensagem de voz é achada, com duração e tamanho", A.audioDaMensagem(vozDoDiscord),
+      { url: "https://cdn/v.ogg?ex=1", id: "5", nome: "voice-message.ogg", bytes: 40000, segundos: 12.4 });
+    ok("print não é áudio", A.audioDaMensagem({ attachments: new Map([["1", { id: "1", name: "a.png", contentType: "image/png", url: "u" }]]) }), null);
+    ok("russo vai como ru-RU (o modelo que adivinha não conhece russo)", A.localeDaFala("ru"), "ru-RU");
+    ok("sem língua conhecida, a Azure adivinha", A.localeDaFala(""), null);
+
+    /* ---- a Azure de mentira ---- */
+    const azure = (status, corpo) => {
+      const pedidos = [];
+      const f = async (url, o) => {
+        pedidos.push({ url, o });
+        if (!/speechtotext/.test(url)) return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) };
+        return { ok: status < 300, status, json: async () => corpo, text: async () => JSON.stringify(corpo) };
+      };
+      f.pedidos = pedidos;
+      f.transcricoes = () => pedidos.filter((p) => /speechtotext/.test(p.url));
+      return f;
+    };
+    const dito = { durationMilliseconds: 12400, combinedPhrases: [{ text: "Rally às oito no castelo" }] };
+    globalThis.falaDoDono = { endpoint: "https://f.cognitiveservices.azure.com", chave: "k" };
+    {
+      const f = azure(200, dito);
+      const r = await A.transcrever(Buffer.from("x"), "v.ogg", globalThis.falaDoDono, "pt-BR", f);
+      ok("transcreve o que foi dito", r, { texto: "Rally às oito no castelo", segundos: 12 });
+      const p = f.pedidos[0];
+      verdade("no endereço da transcrição rápida", /\/speechtotext\/transcriptions:transcribe\?api-version=2024-11-15$/.test(p.url));
+      verdade("com a chave no cabeçalho", p.o.headers["Ocp-Apim-Subscription-Key"] === "k");
+      ok("e a língua de quem gravou", JSON.parse(p.o.body.get("definition")), { locales: ["pt-BR"] });
+      const f2 = azure(200, dito);
+      await A.transcrever(Buffer.from("x"), "v.ogg", globalThis.falaDoDono, null, f2);
+      ok("sem língua, lista vazia: a Azure adivinha", JSON.parse(f2.pedidos[0].o.body.get("definition")), { locales: [] });
+    }
+    {
+      const erro = async (f) => { try { await A.transcrever(Buffer.from("x"), "v", globalThis.falaDoDono, null, f); return null; } catch (e) { return e; } };
+      ok("cota do mês acabou", (await erro(azure(429, { error: { message: "Out of call volume quota" } })))?.motivo, "cota");
+      ok("gente demais no mesmo minuto", (await erro(azure(429, { error: { message: "Rate limit" } })))?.motivo, "pressa");
+    }
+
+    /* ---- uma transcrição por áudio, e áudio longo nem baixa ---- */
+    {
+      A.falasOuvidas.clear();
+      const f = azure(200, dito);
+      await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", f);
+      await A.explicarAudio(vozDoDiscord, "es", "g", "pt-BR", f);
+      await A.explicarAudio(vozDoDiscord, "ar", "g", "pt-BR", f);
+      ok("três pessoas no mesmo áudio: uma transcrição só", f.transcricoes().length, 1);
+      const r = await A.explicarAudio(vozDoDiscord, "en", "g", "pt-BR", f);
+      verdade("a resposta traz o que foi dito, traduzido", r.description === "[en] Rally às oito no castelo");
+      verdade("com o título na língua de quem tocou", r.title === "🎧 Inglês");
+
+      const longo = { attachments: new Map([["6", { id: "6", name: "v.ogg", contentType: "audio/ogg", url: "u", size: 900000, duration: 300 }]]) };
+      const f2 = azure(200, dito);
+      const r2 = await A.explicarAudio(longo, "en", "g", null, f2);
+      verdade("áudio de 5 minutos é recusado com explicação", /longo demais/.test(r2.title));
+      ok("e nem é baixado", f2.pedidos.length, 0);
+      const grande = { attachments: new Map([["7", { id: "7", name: "a.mp3", contentType: "audio/mpeg", url: "u", size: 8e6 }]]) };
+      const r3 = await A.explicarAudio(grande, "en", "g", null, azure(200, dito));
+      verdade("arquivo sem duração, mas grande demais, também", /longo demais/.test(r3.title));
+      A.falasOuvidas.clear();
+      const r4 = await A.explicarAudio(vozDoDiscord, "en", "g", null, azure(200, { combinedPhrases: [] }));
+      verdade("áudio sem fala: diz que não ouviu nada", /Não ouvi fala/.test(r4.title));
+      globalThis.falaDoDono = null;
+      const r5 = await A.explicarAudio(vozDoDiscord, "en", "g", null, azure(200, dito));
+      verdade("sem chave: diz que está desligado", /desligada/.test(r5.title));
+      globalThis.falaDoDono = { endpoint: "https://f.cognitiveservices.azure.com", chave: "k" };
+    }
+
+    /* ---- o botão e a trava do Pro ---- */
+    {
+      ok("o botão leva a língua da origem", A.botaoDeOuvir("es", "ru")[0].components[0].custom_id, "aud:ouvir:ru");
+      ok("rótulo na língua da sala", A.botaoDeOuvir("es", "ru")[0].components[0].label, "Traducir audio");
+      verdade("custom_id não vira porta de injeção", A.botaoDeOuvir("en", "pt:x:y")[0].components[0].custom_id === "aud:ouvir:ptxy");
+
+      const clique = (customId) => {
+        const i = { customId, guildId: "g", user: { id: "u" }, locale: "en-US", message: vozDoDiscord,
+          deferReply: async () => {}, editReply: async (o) => { i.resposta = o; } };
+        return i;
+      };
+      A.falasOuvidas.clear();
+      pro = false;
+      const f = azure(200, dito);
+      const semPro = clique("aud:ouvir:pt");
+      await A.cliqueOuvirAudio(semPro, f);
+      verdade("servidor grátis: 🔒 e a explicação do Pro", /🔒/.test(semPro.resposta.embeds[0].title));
+      ok("e NADA foi transcrito (a cota é de todos)", f.transcricoes().length, 0);
+      pro = true;
+      const comPro = clique("aud:ouvir:pt");
+      await A.cliqueOuvirAudio(comPro, f);
+      verdade("servidor Pro: o que foi dito, traduzido", /Rally às oito/.test(comPro.resposta.embeds[0].description));
+      ok("transcrito em português (a língua do botão)", JSON.parse(f.transcricoes()[0].o.body.get("definition")), { locales: ["pt-BR"] });
+    }
+
+    /* ---- o teste da chave no /admin ---- */
+    {
+      const resp = (status) => async () => ({ status });
+      const f = globalThis.falaDoDono;
+      verdade("400 = chave e endereço certos", (await A.conferirFala(f, resp(400))).ok);
+      verdade("401 = chave recusada", /recusou a chave/.test((await A.conferirFala(f, resp(401))).frase));
+      verdade("404 = endereço errado", /Endpoint errado/.test((await A.conferirFala(f, resp(404))).frase));
+      verdade("endereço que nem existe", /Não achei/.test((await A.conferirFala(f, async () => { throw new Error("x"); })).frase));
+    }
+
+    /* ---- o #erros sabe explicar ---- */
+    {
+      const { explicarErro } = carregar(["EXPLICA_ERRO", "explicarErro"]);
+      const cota = explicarErro("audio", "a cota gratuita de transcricao de audio do mes acabou");
+      verdade("cota de áudio tem explicação própria", /transcrição grátis de áudio/.test(String(cota?.titulo)));
+      verdade("e diz que ninguém é cobrado", /Ninguém é cobrado/.test(String(cota?.oque)));
+      const falha = explicarErro("audio", "nao consegui ouvir o audio: fetch failed");
+      verdade("falha de transcrição não é confundida com o banco", /transcrever um áudio/.test(String(falha?.titulo)));
+    }
+
+    /* ---- a fiação ---- */
+    {
+      const codigo = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+      verdade("o clique do 🎧 é roteado no ramo dos BOTÕES",
+        /inter\.isButton\(\) && inter\.customId\.startsWith\("aud:ouvir"\)\)[^]{0,30}cliqueOuvirAudio\(inter\)/.test(codigo));
+      verdade("o menu Translate ouve áudio, com trava do Pro",
+        /if \(!texto && audioDaMensagem\(inter\.targetMessage\)\) \{\s*if \(!await ehPro\(inter\.guildId\)\)/.test(codigo));
+      verdade("o 🖼️ também é Pro", /async function cliqueVerNaImagem[^]{0,1200}if \(!await ehPro\(inter\.guildId\)\) return aviso\(avisoDoPro/.test(codigo));
+      verdade("o painel do dono tem o 🎧", /custom_id: "admin:fala"/.test(codigo) &&
+        /if \(inter\.customId === "admin:fala"\) return await salvarFala\(inter\)/.test(codigo));
+      verdade("a chave de áudio é guardada cifrada", /porAjuste\("fala_chave", cifrar\(chave\)\)/.test(codigo));
+      verdade("e o bot a recarrega sem publicar", /falaDoDono = lerFalaDoDono\(a\)/.test(codigo));
+    }
+  } finally {
+    for (const [n, v] of Object.entries(salvo)) globalThis[n] = v;
+    if (envAntes.e !== undefined) process.env.FALA_ENDPOINT = envAntes.e;
+    if (envAntes.c !== undefined) process.env.FALA_CHAVE = envAntes.c;
+  }
+}
+
+/* E o 🖼️ com cadeado: no servidor grátis o botão aparece, mas com 🔒. */
+{
+  const { botaoVerNaImagem } = carregar(["ROTULO_VER_NA_IMAGEM", "desenhaEm", "DESENHA_EM", "imagemDaMensagem", "ehImagemAnexo", "botaoVerNaImagem"]);
+  const antes = globalThis.textoDasImagens;
+  globalThis.textoDasImagens = new Map([["9", { texto: "oi", linhas: [{ texto: "oi", caixa: [0, 0, 10, 10] }] }]]);
+  const msg = { id: "m", channelId: "c", attachments: new Map([["9", { id: "9", name: "a.png", contentType: "image/png", url: "u" }]]) };
+  ok("Pro: 🖼️", botaoVerNaImagem(msg, "en", true)[0].components[0].emoji.name, "🖼️");
+  ok("grátis: 🔒 no mesmo lugar", botaoVerNaImagem(msg, "en", false)[0].components[0].emoji.name, "🔒");
+  globalThis.textoDasImagens = antes;
 }
 
 /* ============ a aliança [TOP] mora separada, no alianca.js ============
