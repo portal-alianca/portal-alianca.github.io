@@ -1029,7 +1029,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
-    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir", "linhaDaVoz",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   /* Um Discord de brinquedo: salas que lembram qual foi a última mensagem,
@@ -1255,6 +1255,19 @@ function conferirCartao(onde, embed, componentes = []) {
           JSON.stringify(en.components).includes('"aud:ouvir:pt"'));
         verdade("rótulo na língua da sala", JSON.stringify(es.components).includes("Traducir audio"));
         verdade("áudio não ganha o 📝 de imagem", !temBotao(en));
+      }
+      {
+        /* O cartão embaixo do áudio saía só com nome e bandeira: parecia
+           vazio. Ele fica (as reações somadas moram no rodapé dele), e ganha
+           o que o áudio tem: a duração. */
+        ultimaFalaDaSala.clear();
+        const mundo = montarMundo();
+        const anexoDeVoz = new Map([["v", { id: "v", name: "voice-message.ogg", contentType: "audio/ogg", duration: 4.3 }]]);
+        await falar(mundo, "", { attachments: anexoDeVoz });
+        const en = naSala(mundo, "en")[0];
+        verdade(`o cartão do áudio mostra 🎤 e a duração (${JSON.stringify(en.embed?.description || "").slice(0, 60)})`,
+          /^🎤 0:04\n/.test(en.embed?.description || ""));
+        verdade("e continua sendo cartão (é nele que as reações somam)", !!en.embed);
       }
       globalThis.baixarAnexos = async () => ({ arquivos: [print, voz], links: [] });
       {
@@ -5546,7 +5559,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "falasNoCartao", "MAX_CARTOES_LEMBRADOS", "guardarFalas",
     "figurinhaDe", "textoDaEnquete", "midiaDeLink",
     "VIDEO_QUE_TOCA_AQUI", "videoQueODiscordToca",
-    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir",
+    "ehImagemAnexo", "ROTULO_LER_IMAGEM", "botaoDeLerImagem", "ehAudioAnexo", "ROTULO_OUVIR", "botaoDeOuvir", "linhaDaVoz",
     "ultimaFalaDaSala", "emendaNaFalaAnterior", "emendaNestaSala", "espelharMensagem"]);
 
   const salas = new Map([["en", { lastMessageId: null }]]);
@@ -8100,7 +8113,11 @@ function conferirCartao(onde, embed, componentes = []) {
     const A = carregar(["lerFalaDoDono", "MAX_SEGUNDOS_AUDIO", "MAX_BYTES_AUDIO", "ehAudioAnexo", "audioDaMensagem",
       "LOCALE_DA_FALA", "localeDaFala", "transcrever", "falasOuvidas", "MAX_AUDIOS_LEMBRADOS", "ouvirAudio",
       "falhaDeAudio", "explicarAudio", "ROTULO_OUVIR", "botaoDeOuvir", "ehPro", "avisoDoPro", "cliqueOuvirAudio",
-      "conferirFala"]);
+      "conferirFala", "linhaDaVoz"]);
+    const comVoz = (d) => ({ attachments: new Map([["v", { name: "voice-message.ogg", contentType: "audio/ogg", duration: d }]]) });
+    ok("áudio de 65 s no cartão", A.linhaDaVoz(comVoz(65.4)), "🎤 1:05");
+    ok("arquivo de áudio sem duração: só o 🎤", A.linhaDaVoz(comVoz(undefined)), "🎤");
+    ok("mensagem sem áudio: nada", A.linhaDaVoz({ attachments: new Map() }), "");
 
     /* ---- a chave ---- */
     ok("sem chave, desligado", A.lerFalaDoDono({}), null);
