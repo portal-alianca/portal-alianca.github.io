@@ -4640,6 +4640,14 @@ const SO_LEITURA = {
    entao o lider que fala ingles e' barrado no leaders-pt pelo cargo de
    ingles, mesmo tendo o de lider. Sem essa regra, ou ele veria as oito salas,
    ou eu teria que inventar e manter um cargo "lider-pt" por idioma. */
+/* Replica e' sala de LER, em todo plano. Conversa e' no chat do idioma.
+
+   A replica chegou a abrir a escrita no plano pago, seguindo a origem -- e
+   a pessoa escrevia numa sala de avisos, embaixo das regras, onde a fala se
+   perdia entre copias. O lugar de conversar ja' existe e traduz para todo
+   mundo: o chat do idioma. As salas de aviso so' se leem. */
+const REPLICA_FALA = false;
+
 function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
   const V = PermissionFlagsBits.ViewChannel;
   const R = PermissionFlagsBits.ReadMessageHistory;
@@ -4815,6 +4823,13 @@ async function garantirCategoria(guild, sala, pistaCanal) {
   return categoria;
 }
 
+/* O topico diz onde conversar -- no pago, o chat do idioma existe; no
+   gratis, nao ha' chat, e prometer um seria mentira. */
+function topicoDaReplica(tipo, idioma, pago) {
+  return `${tipo} — ${nomeDeIdiomaNoDiscord(idioma)}. Cópia traduzida do canal original.` +
+    (pago ? " Para conversar, use o chat do seu idioma." : "");
+}
+
 async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome,
   fonte, outrosCargos, podeConversar) {
   /* Ja existe um canal com este nome nesta categoria? Adota.
@@ -4844,7 +4859,9 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    topic: `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
+    /* Sem a dica do chat: aqui eu nao sei o plano. A varredura seguinte
+       acerta o topico pelo plano (ver topicoDaReplica). */
+    topic: topicoDaReplica(def.tipo, sala.idioma, false),
     /* Quem entra e quem fala vem do canal de origem -- ver portasDaReplica.
 
        Tudo de um cargo numa entrada so: dois overwrites com o mesmo id fazem
@@ -5039,7 +5056,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
         if (!jaExiste) {
           if (!podeCriarCanal(orcamento, guild, limite)) continue;
           await garantirReplica(guild, servidorId, sala, categoria, def, i, nome,
-            fonte, outrosCargos, pago);
+            fonte, outrosCargos, REPLICA_FALA);
           continue;
         }
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
@@ -5065,15 +5082,13 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            e prometer conversa num canal onde a pessoa nao consegue escrever
            e' pior do que nao dizer nada -- ela tenta, nao vai, e o recado do
            bot diz o contrario do topico logo acima. */
-        const assunto = `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. ` + (pago
-          ? "O que se escreve aqui aparece traduzido nos outros idiomas."
-          : "Cópia traduzida do canal original.");
+        const assunto = topicoDaReplica(def.tipo, sala.idioma, pago);
         if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
-          await canal.setTopic(assunto, "réplica deixou de ser só leitura")
+          await canal.setTopic(assunto, "tópico da réplica segue o plano")
             .catch(() => { /* assunto e' capricho */ });
         }
 
-        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, pago);
+        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, REPLICA_FALA);
         if (sala.role_id && !mesmasPortas(canal, querem)) {
           await canal.permissionOverwrites.set(querem, "portas da réplica seguem o canal de origem");
           console.log(`idioma: #${canal.name} teve as portas refeitas pelo canal de origem`);

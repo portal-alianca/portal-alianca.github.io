@@ -673,6 +673,18 @@ function conferirCartao(onde, embed, componentes = []) {
     verdade("origem sem escrita: réplica fica só de leitura", (doIdioma.deny || []).length > 0);
   }
 
+  /* Réplica é sala de ler em TODO plano: conversa é no chat do idioma. */
+  {
+    const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+    verdade("réplica não abre escrita, nem no pago", /const REPLICA_FALA = false;/.test(idx));
+    const chamadas = [...idx.matchAll(/portasDaReplica\(guild, sala\.role_id, fonte, outrosCargos, ([^)]+)\)/g)].map((m) => m[1]);
+    ok("as portas refeitas pela varredura seguem a regra", chamadas, ["podeConversar", "REPLICA_FALA"]);
+    verdade("e a réplica nasce seguindo a regra",
+      /await garantirReplica\(guild, servidorId, sala, categoria, def, i, nome,\s*fonte, outrosCargos, REPLICA_FALA\)/.test(idx));
+    const p = portasDaReplica(guild(["pt"]), "pt", fonte(["todos"], ["todos"], []), [], false);
+    verdade("origem aberta a todos: a réplica continua só leitura", (p.find((x) => x.id === "pt").deny || []).length > 0);
+  }
+
   /* No plano grátis ninguém fala, nem quem fala na origem. */
   {
     const p = portasDaReplica(guild(["pt"]), "pt", fonte(["todos"], ["todos"], []), [], false);
