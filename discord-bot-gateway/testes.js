@@ -2630,7 +2630,7 @@ function conferirCartao(onde, embed, componentes = []) {
 
 /* ---- os botões dizem o que fazem ---- */
 {
-  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  const { componentesDoPainel } = carregar(["podeTestar", "componentesDoPainel"]);
   /* Vive num `let` que só o carregamento dos ajustes preenche; aqui ele nunca
      roda, então o botão de assinar entra pelo mesmo caminho de um servidor
      sem link configurado. */
@@ -2656,7 +2656,7 @@ function conferirCartao(onde, embed, componentes = []) {
 
 /* ---- os dois degraus de assinatura ---- */
 {
-  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+  const { componentesDoPainel } = carregar(["podeTestar", "componentesDoPainel"]);
   globalThis.LINK_PAGAMENTO_VIVO = "https://pague.exemplo/alianca";
   globalThis.LINK_PRO_VIVO = "https://pague.exemplo/pro";
   const assinar = (servidor) => componentesDoPainel(servidor, [], { fontes: 10, idiomas: 20 }, [], [])
@@ -2760,8 +2760,8 @@ function conferirCartao(onde, embed, componentes = []) {
   const checagem = painel.indexOf("PermissionFlagsBits.ManageGuild");
   verdade("o clique chega (depois da checagem de Gerenciar Servidor)",
     checagem > 0 && painel.indexOf('if (acao === "pix")') > checagem &&
-    /if \(acao\.startsWith\("pix:"\)\) return await cobrarPix\(inter, servidor, acao\.slice\("pix:"\.length\)\)/.test(idx));
-  const { componentesDoPainel } = carregar(["componentesDoPainel"]);
+    /if \(acao\.startsWith\("pix:"\)\) \{[^}]*return await cobrarPix\(inter, servidor, acao\.slice\("pix:"\.length\)\)/.test(idx));
+  const { componentesDoPainel } = carregar(["podeTestar", "componentesDoPainel"]);
   const temPix = (s) => componentesDoPainel(s, [], { fontes: 10, idiomas: 20 }, [], [])
     .flatMap((l) => l.components).some((c) => c.custom_id === "cyron:pix");
   verdade("o painel oferece Pix a quem não é pago", temPix({ id: "s1", plano: "gratis" }));
@@ -8606,6 +8606,175 @@ function conferirCartao(onde, embed, componentes = []) {
     /ligarAlianca\(\{ sb, rpc, responder, menuIdioma, SB_URL, SB_KEY, COR_OK \}\)/.test(idx));
   verdade("e nada da aliança sobrou no index.js",
     !/\b(aliancaDoGuild|gifRosas|comandoSettings|embedJogador|rankingDoJogo|PORTAL)\b/.test(idx));
+}
+
+/* ---- o servidor de suporte (suporte.js) ----
+
+   O gratis e' de todos; teste, Pix e codigo pedem o servidor de suporte. O
+   erro que mais custaria aqui e' barrar quem quer pagar por um defeito MEU --
+   entao os testes cobrem o "na duvida, deixa passar" tanto quanto o "barra". */
+{
+  const S = await import("./suporte.js");
+  const { ChannelType } = await import("discord.js");
+  let membros = new Set(["dentro"]);
+  let erroEstranho = false;
+  let temGuild = true;
+  const respostas = [];
+  const canais = new Map();
+  let criados = 0, enviados = 0, editados = 0, sistema = null;
+  const fazCanal = (o) => {
+    const c = { id: `c${canais.size + 1}`, name: o.name, type: o.type, parent: o.parent, topic: o.topic, over: o.permissionOverwrites,
+      msgs: [],
+      messages: { fetch: async () => ({ find: (f) => c.msgs.find(f) }) },
+      send: async (corpo) => { enviados++; c.msgs.push({ author: { id: "bot" }, corpo,
+        components: corpo.components.map((l) => ({ components: l.components.map((b) => ({ customId: b.custom_id })) })),
+        edit: async () => { editados++; } }); } };
+    canais.set(c.id, c); criados++; return c;
+  };
+  const guild = {
+    id: "g-sup", name: "CYRON SUPPORT", systemChannelId: null,
+    roles: { everyone: { id: "everyone" } },
+    channels: { fetch: async () => {}, get cache() { return [...canais.values()]; }, create: async (o) => fazCanal(o) },
+    setSystemChannel: async (c) => { sistema = c.id; guild.systemChannelId = c.id; },
+    members: { fetch: async ({ user }) => {
+      if (erroEstranho) throw Object.assign(new Error("gateway caiu"), { code: 0 });
+      if (membros.has(user)) return { id: user };
+      throw Object.assign(new Error("Unknown Member"), { code: 10007 });
+    } },
+  };
+  const ligacao = { link: "https://discord.gg/suporte" };
+  S.ligarSuporte({
+    client: { user: { id: "bot" }, fetchInvite: async () => (temGuild ? { guild: { id: "g-sup" } } : null),
+      guilds: { cache: new Map([["g-sup", guild]]) } },
+    SUPORTE: ligacao, COR: 1,
+    traduzirEmbed: async (e, idioma) => (!idioma || idioma === "pt" ? e : { ...e, title: `[${idioma}] ${e.title}` }),
+    idiomaEscolhido: async () => "", idiomaDoAplicativo: (l) => String(l || "").split("-")[0],
+    ChannelType, PermissionFlagsBits,
+  });
+  const clique = (id, locale = "pt-BR") => {
+    const i = { user: { id }, locale, customId: "", deferred: false, replied: false,
+      reply: async (x) => { i.replied = true; respostas.push(x); }, deferReply: async () => { i.deferred = true; },
+      editReply: async (x) => { respostas.push(x); } };
+    return i;
+  };
+
+  verdade("quem está no suporte passa", await S.exigirSuporte(clique("dentro"), "pagar"));
+  verdade("quem não está é barrado", !await S.exigirSuporte(clique("fora", "ja"), "pagar"));
+  const r = respostas.at(-1);
+  verdade("e recebe o botão para entrar, só para ele", r.flags === 64 &&
+    r.components[0].components[0].url === "https://discord.gg/suporte" && r.components[0].components[0].style === 5);
+  verdade("na língua de quem clicou", r.embeds[0].title.startsWith("[ja]"));
+  membros.add("fora");
+  verdade("entrou no servidor: o clique seguinte já passa", await S.estaNoSuporte("fora"));
+  erroEstranho = true;
+  verdade("Discord com erro estranho: deixa passar (defeito meu não barra cliente)", await S.estaNoSuporte("outro"));
+  erroEstranho = false;
+  verdade("quem confirmei há pouco nem é perguntado de novo", await S.estaNoSuporte("dentro"));
+
+  /* ---- montar o servidor ---- */
+  const feito = await S.montarSuporte(guild);
+  const total = S.ESTRUTURA.reduce((n, b) => n + 1 + b.canais.length, 0);
+  ok("a primeira montagem cria todas as categorias e salas", criados, total);
+  ok("e posta um texto em cada sala", enviados, S.ESTRUTURA.reduce((n, b) => n + b.canais.length, 0));
+  verdade("as entradas são anunciadas na sala de boas-vindas",
+    canais.get(sistema)?.name === S.ESTRUTURA[0].canais.find((c) => c.sistema).nome);
+  const regras = [...canais.values()].find((c) => c.name.endsWith("rules"));
+  verdade("sala de leitura: ninguém escreve, eu escrevo",
+    regras.over.some((o) => o.id === "everyone" && o.deny.includes(PermissionFlagsBits.SendMessages)) &&
+    regras.over.some((o) => o.id === "bot" && o.allow.includes(PermissionFlagsBits.SendMessages)));
+  const ajuda = [...canais.values()].find((c) => c.name.endsWith("help"));
+  verdade("sala de ajuda: todo mundo escreve", !ajuda.over?.length);
+  verdade("a lista do que foi feito vem de volta", feito.length >= total);
+  verdade("cada sala fica dentro da categoria dela",
+    [...canais.values()].filter((c) => c.type === ChannelType.GuildText).every((c) => c.parent));
+
+  const [c0, e0] = [criados, enviados];
+  await S.montarSuporte(guild);
+  ok("montar de novo não cria sala nenhuma", criados, c0);
+  ok("nem posta texto repetido", enviados, e0);
+  ok("edita os textos que já estavam lá", editados, e0);
+
+  temGuild = false; ligacao.link = "https://discord.gg/outro";
+  verdade("sem servidor de suporte achável: ninguém é barrado", await S.estaNoSuporte("ninguem"));
+  temGuild = true; ligacao.link = "https://discord.gg/suporte";
+
+  /* ---- os textos ---- */
+  for (const b of S.ESTRUTURA) for (const c of b.canais) {
+    const t = S.TEXTOS[c.texto];
+    verdade(`#${c.nome} tem texto em português e inglês`, !!t?.pt?.title && !!t?.en?.title);
+    verdade(`#${c.nome}: o nome cabe no Discord`, c.nome.length <= 100);
+    for (const l of ["pt", "en"]) {
+      verdade(`#${c.nome} (${l}): a descrição cabe`, t[l].description.length <= 4096);
+    }
+  }
+  const armadilhas = Object.values(S.TEXTOS).flatMap((t) => t.pt.description.split(/\n+/))
+    .map((l) => l.replace(/^[_*\s\d.]+/, "").trim()).filter((l) => /^(Nada|Ninguém|Nenhum|Tudo|Todos)\b/i.test(l));
+  ok("nenhuma frase do suporte começa por pronome que o tradutor confunde", armadilhas, []);
+  verdade("as regras avisam do golpe no privado", /nunca/i.test(S.TEXTOS.regras.pt.description) &&
+    /privado/.test(S.TEXTOS.regras.pt.description));
+
+  /* ---- o 🌐 de cada texto ---- */
+  const lerEn = clique("x", "en-US"); lerEn.customId = `${S.PREFIXO_LER}regras`;
+  await S.cliqueSuporte(lerEn);
+  ok("em inglês: o texto em inglês", respostas.at(-1).embeds[0].title, S.TEXTOS.regras.en.title);
+  const lerJa = clique("x", "ja"); lerJa.customId = `${S.PREFIXO_LER}regras`;
+  await S.cliqueSuporte(lerJa);
+  ok("em japonês: o português traduzido", respostas.at(-1).embeds[0].title, `[ja] ${S.TEXTOS.regras.pt.title}`);
+
+  /* ---- no index.js ---- */
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  const painel = idx.slice(idx.indexOf("async function cliquePainel"));
+  /* Cada ramo por si: a porta tem que estar DENTRO do bloco da acao, antes
+     do que ela faz. Procurar a primeira porta do arquivo aprovava um ramo sem
+     porta so' porque o vizinho tinha uma. */
+  const ramo = (cond) => {
+    const i = painel.indexOf(cond);
+    return i < 0 ? "" : painel.slice(i, painel.indexOf("\n  }", i));
+  };
+  const guardado = (cond, porta, acao) => {
+    const r = ramo(cond);
+    return r.includes(porta) && r.indexOf(porta) < r.indexOf(acao) && r.includes(acao);
+  };
+  verdade("Pix: a porta do suporte vem antes da tela",
+    guardado('if (acao === "pix") {', 'exigirSuporte(inter, "pagar com Pix")', "telaDoPix()"));
+  verdade("Pix: e antes de cobrar",
+    guardado('if (acao.startsWith("pix:")) {', 'exigirSuporte(inter, "pagar com Pix")', "cobrarPix("));
+  verdade("código: a porta vem antes da janela",
+    guardado('if (acao === "codigo") {', 'exigirSuporte(inter, "ativar um código")', "janelaDoCodigo()"));
+  verdade("teste: a porta vem antes de ligar",
+    guardado('if (acao === "teste") {', 'exigirSuporte(inter, "liberar o teste grátis")', "comecarTeste(inter, servidor)"));
+  const importados = (idx.match(/import \{([^}]*)\} from "\.\/suporte\.js"/) || [, ""])[1]
+    .split(",").map((n) => n.trim()).filter(Boolean);
+  for (const n of importados) verdade(`o suporte.js exporta ${n}`, n in S);
+  verdade("o módulo é ligado depois que SUPORTE existe",
+    idx.indexOf("ligarSuporte({") > idx.indexOf("const SUPORTE = {"));
+  verdade("o roteador leva o 🌐 do suporte ao suporte.js",
+    /customId\.startsWith\(PREFIXO_LER\)\) \{\s*return await cliqueSuporte\(inter\)/.test(idx));
+
+  /* ---- o teste de 7 dias ---- */
+  const salvo = { u: globalThis.SB_URL, k: globalThis.SB_KEY, b: globalThis.BETA, a: globalThis.BETA_ATE };
+  globalThis.SB_URL = "https://sb.test"; globalThis.SB_KEY = "k"; globalThis.BETA = false; globalThis.BETA_ATE = "";
+  globalThis.cacheServidor = new Map();
+  const T = carregar(["venceEm", "planoDe", "DIAS_DE_TESTE", "podeTestar", "comecarTeste"]);
+  verdade("servidor grátis que nunca testou pode testar", T.podeTestar({ plano: "gratis" }));
+  verdade("quem já testou (mesmo vencido) não testa de novo", !T.podeTestar({ plano: "gratis", teste_ate: "2020-01-01T00:00:00Z" }));
+  verdade("quem já pagou um dia não testa", !T.podeTestar({ plano: "gratis", pago_ate: "2020-01-01T00:00:00Z" }));
+  verdade("quem é pago não vê o teste", !T.podeTestar({ plano: "pago" }));
+  let pedido = null;
+  const banco = (linhas) => async (url, o) => { pedido = { url, o }; return { ok: true, json: async () => linhas }; };
+  let i = clique("dono");
+  await T.comecarTeste(i, { id: "s1", guild_id: "g1", plano: "gratis" }, banco([{ id: "s1" }]));
+  verdade("grava só se o teste ainda estiver vazio no banco (dois cliques não viram dois testes)",
+    pedido.url.includes("teste_ate=is.null") && pedido.o.method === "PATCH");
+  const corpo = JSON.parse(pedido.o.body);
+  const dias = Math.round((Date.parse(corpo.teste_ate) - Date.now()) / 864e5);
+  ok("são 7 dias", dias, 7);
+  ok("de Pro", corpo.nivel, "pro");
+  verdade("e avisa quando acaba", /Teste do Pro ligado até/.test(respostas.at(-1)));
+  i = clique("dono");
+  await T.comecarTeste(i, { id: "s1", guild_id: "g1", plano: "gratis" }, banco([]));
+  verdade("o banco disse que já tinha teste: avisa, não liga", /já usou o teste/.test(respostas.at(-1)));
+  Object.assign(globalThis, { SB_URL: salvo.u, SB_KEY: salvo.k, BETA: salvo.b, BETA_ATE: salvo.a });
 }
 
 let resumiu = false;

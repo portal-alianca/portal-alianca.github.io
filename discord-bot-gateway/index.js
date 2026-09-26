@@ -21,6 +21,7 @@ import { CATEGORIAS, doCliente } from "./catalogo.js";
    produto. Ver o comentario no topo do alianca.js. */
 import { ligarAlianca, COMANDOS_DA_ALIANCA, comandoDaAlianca, boasVindasDaAlianca,
   seletorNasBoasVindas, rosasDaAlianca } from "./alianca.js";
+import { ligarSuporte, exigirSuporte, montarSuporte, guildDoSuporte, cliqueSuporte, PREFIXO_LER } from "./suporte.js";
 import { fileURLToPath } from "node:url";
 
 /* A fonte da imagem traduzida vai JUNTO com o bot, e nao e' a da maquina: a
@@ -6350,6 +6351,9 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
       { type: 2, custom_id: "cyron:idioma", style: 2, emoji: { name: "🌐" },
         label: "Na minha língua · My language" },
       botaoDeSuporte(),
+      ...(podeTestar(servidor)
+        ? [{ type: 2, custom_id: "cyron:teste", style: 3, emoji: { name: "🎁" }, label: "Testar 7 dias grátis" }]
+        : []),
     ],
   });
 
@@ -8819,6 +8823,38 @@ async function definirFontes(guild, servidor, ids) {
 
    O PRECO NAO SAI DAQUI: a funcao e' que sabe quanto custa cada plano. Um
    bot adulterado nao consegue cobrar menos. */
+/* O teste de 7 dias, pelo proprio cliente.
+
+   Uma vez por servidor, para sempre: teste_ate preenchido -- mesmo vencido --
+   e' teste ja' usado. Quem ja' pagou um dia tambem nao testa de novo. E a
+   gravacao so' acontece se teste_ate ainda estiver vazio NO BANCO: dois
+   cliques ao mesmo tempo nao viram dois testes. */
+const DIAS_DE_TESTE = 7;
+
+function podeTestar(servidor) {
+  return !!servidor && planoDe(servidor) === "gratis" && !servidor.teste_ate && !servidor.pago_ate &&
+    servidor.plano !== "pago";
+}
+
+async function comecarTeste(inter, servidor, buscar = fetch) {
+  if (!podeTestar(servidor)) {
+    return inter.reply({ flags: 64, content: "🎁 Este servidor já usou o teste grátis, ou já tem um plano." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const ate = new Date(Date.now() + DIAS_DE_TESTE * 864e5).toISOString();
+  const r = await buscar(`${SB_URL}/rest/v1/cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}&teste_ate=is.null`, {
+    method: "PATCH",
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify({ teste_ate: ate, nivel: "pro" }),
+  }).catch(() => null);
+  const linhas = r?.ok ? await r.json().catch(() => []) : null;
+  if (!linhas) return inter.editReply("Não consegui ligar o teste agora. Tente de novo em um minuto.");
+  if (!linhas.length) return inter.editReply("🎁 Este servidor já usou o teste grátis.");
+  cacheServidor.delete(String(servidor.guild_id));
+  return inter.editReply(`🎁 **Teste do Pro ligado até ${new Date(ate).toLocaleDateString("pt-BR")}.** ` +
+    "O painel se atualiza em até um minuto. Para continuar depois disso, é só pagar pelo 💠 Pix.");
+}
+
 const FUNCAO_DO_PIX = `${SB_URL}/functions/v1/cyron-mercadopago`;
 const NIVEIS_DO_PIX = { pro: "Pro · R$ 29,90/mês", alianca: "Aliança · R$ 79/mês", teste: "Teste · R$ 1" };
 
@@ -8925,10 +8961,20 @@ async function cliquePainel(inter) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
   }
 
+  /* O gratis e' de todos; teste, Pix e codigo pedem o servidor de suporte.
+     Quem paga precisa ter onde reclamar se algo der errado -- e e' la'. */
   if (acao === "pix") {
+    if (!await exigirSuporte(inter, "pagar com Pix")) return;
     return inter.reply({ flags: 64, embeds: [telaDoPix()], components: botoesDoPix(await ehDono(inter.user.id)) });
   }
-  if (acao.startsWith("pix:")) return await cobrarPix(inter, servidor, acao.slice("pix:".length));
+  if (acao.startsWith("pix:")) {
+    if (!await exigirSuporte(inter, "pagar com Pix")) return;
+    return await cobrarPix(inter, servidor, acao.slice("pix:".length));
+  }
+  if (acao === "teste") {
+    if (!await exigirSuporte(inter, "liberar o teste grátis")) return;
+    return await comecarTeste(inter, servidor);
+  }
 
   /* Publicar o recibo para o servidor.
 
@@ -9008,7 +9054,10 @@ async function cliquePainel(inter) {
      antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
   if (acao === "motor") return inter.showModal(janelaValida(janelaDoMotor(servidor)));
   if (acao === "palavras") return inter.showModal(janelaValida(janelaDasPalavras(servidor)));
-  if (acao === "codigo") return inter.showModal(janelaValida(janelaDoCodigo()));
+  if (acao === "codigo") {
+    if (!await exigirSuporte(inter, "ativar um código")) return;
+    return inter.showModal(janelaValida(janelaDoCodigo()));
+  }
 
   await inter.deferUpdate();
 
@@ -10290,6 +10339,7 @@ function linhasDoAdmin() {
     { type: 2, custom_id: "admin:busca", style: 2, emoji: { name: "🔎" }, label: "Procurar" },
     { type: 2, custom_id: "admin:ajustes", style: 1, emoji: { name: "⚙️" }, label: "Ajustes" },
     { type: 2, style: 5, emoji: { name: "➕" }, label: "Link para instalar o CYRON", url: linkDeConvite() },
+    { type: 2, custom_id: "admin:suporte", style: 2, emoji: { name: "🏗️" }, label: "Montar suporte" },
   /* Fileira propria porque cinco e' o teto do Discord por fileira, e a de
      cima ja' estava cheia. Estourar isso nao avisa bonito: a mensagem
      inteira e' recusada, e o painel some. */
@@ -10390,6 +10440,24 @@ async function cliqueAdmin(inter) {
   if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
   if (acao === "visao" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaVisao()));
   if (acao === "fala" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaFala()));
+  /* Cria ou arruma o servidor de suporte. Rodar de novo nao duplica nada:
+     sala que existe fica, texto que eu postei e' editado. */
+  if (acao === "suporte" && inter.isButton()) {
+    await inter.deferReply({ flags: 64 });
+    const guild = await guildDoSuporte();
+    if (!guild) {
+      return inter.editReply(`Não estou no servidor do convite de suporte (${SUPORTE.link}). ` +
+        "Coloque o CYRON lá pelo link de instalação e aperte de novo.");
+    }
+    try {
+      const feito = await montarSuporte(guild);
+      return inter.editReply(`🏗️ **${guild.name}** arrumado.\n` +
+        (feito.length ? feito.map((f) => `• ${f}`).join("\n").slice(0, 1800) : "_Já estava tudo no lugar; textos atualizados._"));
+    } catch (e) {
+      return inter.editReply(`Parei no meio: ${String(e?.message || e).slice(0, 300)}\n` +
+        "_Confira se o CYRON tem **Gerenciar Canais** e **Gerenciar Servidor** lá. O que já foi feito fica._");
+    }
+  }
   if (acao === "novocomando" && inter.isButton()) {
     return inter.showModal(janelaValida(await janelaDeComando(null)));
   }
@@ -11805,6 +11873,10 @@ function botaoDeSuporte() {
   return { type: 2, style: 5, emoji: { name: "💬" }, label: "Suporte · Support", url: SUPORTE.link };
 }
 
+/* Aqui, e nao junto do ligarAlianca: SUPORTE so' existe a partir daqui, e
+   entregar antes dava erro de variavel ainda nao criada na partida. */
+ligarSuporte({ client, SUPORTE, COR, traduzirEmbed, idiomaEscolhido, idiomaDoAplicativo, ChannelType, PermissionFlagsBits });
+
 /* O estado da conversa mora no custom_id, e nao numa tabela.
 
    Cada tela pendura no proprio botao o passo seguinte, entao o clique chega
@@ -12561,6 +12633,9 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("admin:")) {
       return await cliqueAdmin(inter);
+    }
+    if (inter.isButton() && inter.customId.startsWith(PREFIXO_LER)) {
+      return await cliqueSuporte(inter);
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("cli:")) {
       return await cliqueDaFicha(inter);
