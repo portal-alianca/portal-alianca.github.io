@@ -4640,6 +4640,14 @@ const SO_LEITURA = {
    entao o lider que fala ingles e' barrado no leaders-pt pelo cargo de
    ingles, mesmo tendo o de lider. Sem essa regra, ou ele veria as oito salas,
    ou eu teria que inventar e manter um cargo "lider-pt" por idioma. */
+/* Replica e' sala de LER, em todo plano. Conversa e' no chat do idioma.
+
+   A replica chegou a abrir a escrita no plano pago, seguindo a origem -- e
+   a pessoa escrevia numa sala de avisos, embaixo das regras, onde a fala se
+   perdia entre copias. O lugar de conversar ja' existe e traduz para todo
+   mundo: o chat do idioma. As salas de aviso so' se leem. */
+const REPLICA_FALA = false;
+
 function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
   const V = PermissionFlagsBits.ViewChannel;
   const R = PermissionFlagsBits.ReadMessageHistory;
@@ -4815,6 +4823,13 @@ async function garantirCategoria(guild, sala, pistaCanal) {
   return categoria;
 }
 
+/* O topico diz onde conversar -- no pago, o chat do idioma existe; no
+   gratis, nao ha' chat, e prometer um seria mentira. */
+function topicoDaReplica(tipo, idioma, pago) {
+  return `${tipo} — ${nomeDeIdiomaNoDiscord(idioma)}. Cópia traduzida do canal original.` +
+    (pago ? " Para conversar, use o chat do seu idioma." : "");
+}
+
 async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome,
   fonte, outrosCargos, podeConversar) {
   /* Ja existe um canal com este nome nesta categoria? Adota.
@@ -4844,7 +4859,9 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    topic: `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
+    /* Sem a dica do chat: aqui eu nao sei o plano. A varredura seguinte
+       acerta o topico pelo plano (ver topicoDaReplica). */
+    topic: topicoDaReplica(def.tipo, sala.idioma, false),
     /* Quem entra e quem fala vem do canal de origem -- ver portasDaReplica.
 
        Tudo de um cargo numa entrada so: dois overwrites com o mesmo id fazem
@@ -4876,6 +4893,14 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     throw new Error(`replica ${def.tipo}/${sala.idioma} desfeita: ${e?.message || e}`);
   }
   console.log(`idioma: #${canal.name} criado`);
+
+  /* Em segundo plano: a varredura segue criando as outras salas enquanto
+     esta se enche. Canal ADOTADO (la' em cima) nao passa por aqui -- ele ja'
+     tem historico, e preencher de novo duplicaria tudo. */
+  const servidor = await servidorDoGuild(guild.id).catch(() => null);
+  preencherReplica(fonte, webhook.url, sala.idioma, servidor ? motorDe(servidor) : MOTOR_AUTO)
+    .then((n) => n && console.log(`idioma: #${canal.name} nasceu com ${n} mensagens traduzidas`))
+    .catch(() => {});
 }
 
 /* Arrumar posicao e nome sao as duas coisas aqui que podem virar briga sem
@@ -5031,7 +5056,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
         if (!jaExiste) {
           if (!podeCriarCanal(orcamento, guild, limite)) continue;
           await garantirReplica(guild, servidorId, sala, categoria, def, i, nome,
-            fonte, outrosCargos, pago);
+            fonte, outrosCargos, REPLICA_FALA);
           continue;
         }
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
@@ -5057,15 +5082,13 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            e prometer conversa num canal onde a pessoa nao consegue escrever
            e' pior do que nao dizer nada -- ela tenta, nao vai, e o recado do
            bot diz o contrario do topico logo acima. */
-        const assunto = `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. ` + (pago
-          ? "O que se escreve aqui aparece traduzido nos outros idiomas."
-          : "Cópia traduzida do canal original.");
+        const assunto = topicoDaReplica(def.tipo, sala.idioma, pago);
         if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
-          await canal.setTopic(assunto, "réplica deixou de ser só leitura")
+          await canal.setTopic(assunto, "tópico da réplica segue o plano")
             .catch(() => { /* assunto e' capricho */ });
         }
 
-        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, pago);
+        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, REPLICA_FALA);
         if (sala.role_id && !mesmasPortas(canal, querem)) {
           await canal.permissionOverwrites.set(querem, "portas da réplica seguem o canal de origem");
           console.log(`idioma: #${canal.name} teve as portas refeitas pelo canal de origem`);
@@ -5127,58 +5150,126 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
    mensagem: se veio embed, sai embed com titulo e texto traduzidos e a imagem
    intacta. Traduzir so o texto e jogar fora a moldura faria o aviso do urso
    chegar sem o urso. */
-async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
-  const destinos = (await replicasDoIdioma(servidorId)).filter((r) => r.tipo === tipo);
-  if (!destinos.length) return;
-
+/* A mensagem, traduzida para UM idioma, pronta para o webhook da replica.
+   Nula quando nao ha o que mandar. Serve a replica ao vivo e ao preenchimento
+   da sala que acabou de nascer -- as duas tem que chegar iguais. */
+async function cargaTraduzida(msg, idioma, motor, arquivos = [], links = []) {
   const emb = msg.embeds?.[0];
   const titulo = String(emb?.title || "").trim();
   const corpo = String(emb?.description || msg.content || "").trim();
-  if (!titulo && !corpo && !msg.attachments.size) return;
+  if (!titulo && !corpo && !arquivos.length && !links.length) return null;
 
   /* Apelido do servidor antes do nome global: e' assim que a pessoa aparece
      pros outros aqui dentro. Pra aviso automatico (webhook) nao ha membro, e
      o username ja e' o nome do heroi que assinou. */
   const nome = (msg.member?.displayName || msg.author?.username || "CYRON").slice(0, 80);
-  const foto = msg.author?.displayAvatarURL({ extension: "png", size: 128 });
+  const foto = msg.author?.displayAvatarURL?.({ extension: "png", size: 128 });
+
+  /* Teto alto de proposito: aqui o texto longo e' o que MAIS precisa de
+     traducao. O vantajosoTraduzir continua servindo pra nao pagar por
+     emoji, link solto e "ok". */
+  const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO, 2)
+    ? (await traduzirLongo(titulo, idioma, motor)) || titulo : titulo;
+  const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO, 2)
+    ? (await traduzirLongo(corpo, idioma, motor)) || corpo : corpo;
+
+  const carga = { username: nome, avatarURL: foto, files: arquivos, allowedMentions: { parse: [] } };
+  if (emb) {
+    const cru = typeof emb.toJSON === "function" ? emb.toJSON() : { ...emb };
+    /* Campo tambem e' texto que alguem vai ler. Deixar de fora faria o
+       aviso chegar meio traduzido, que e' pior que nao traduzir: da a
+       impressao de que aquela parte nao valia a pena. */
+    const campos = [];
+    for (const campo of cru.fields || []) {
+      campos.push({
+        ...campo,
+        name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO, 2)
+          ? (await traduzirLongo(campo.name, idioma, motor)) || campo.name : campo.name,
+        value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO, 2)
+          ? (await traduzirLongo(campo.value, idioma, motor)) || campo.value : campo.value,
+      });
+    }
+    carga.embeds = [{
+      ...cru,
+      title: t || undefined,
+      description: [c, ...links].filter(Boolean).join("\n") || undefined,
+      fields: campos.length ? campos : undefined,
+    }];
+  } else {
+    carga.content = [c, ...links].filter(Boolean).join("\n").slice(0, 1900) || undefined;
+  }
+  if (!carga.content && !carga.embeds && !arquivos.length) return null;
+  return carga;
+}
+
+/* Que mensagem do canal de origem vai para a replica.
+
+   Gente sempre; aviso de webhook sempre (e' o que o canal publico anuncia);
+   bot nao -- a nao ser os cartoes do servidor de suporte, que sao o conteudo
+   daquelas salas. As outras mensagens minhas num canal-fonte sao coisa de
+   servico (seletor de traducao), e copiar isso para outro idioma so' faria
+   barulho. */
+function vaiParaAReplica(msg) {
+  if (msg.system) return false;
+  if (!msg.author?.bot || msg.webhookId) return true;
+  return msg.author.id === client.user?.id && ehCartaoDoSuporte(msg);
+}
+
+function ehCartaoDoSuporte(msg) {
+  return (msg.components || []).some((l) =>
+    (l.components || []).some((c) => String(c.customId || c.custom_id || "").startsWith(PREFIXO_LER)));
+}
+
+/* A sala de um idioma nasce com o historico da origem, traduzido.
+
+   Sem isto a sala nascia vazia: quem escolhia o idioma via as regras e o
+   modo de usar so' em ingles, na sala original, e a sala dele so' comecava a
+   encher na proxima mensagem -- que numa sala de regras pode nunca vir. O
+   idioma novo parecia enfeite.
+
+   Dez mensagens, da mais velha para a mais nova: e' o que cabe numa sala de
+   aviso e nao vira uma conta de traducao no dia em que vinte idiomas nascem
+   juntos. */
+const PREENCHER_ATE = 10;
+
+async function preencherReplica(fonte, webhookUrl, idioma, motor = MOTOR_AUTO) {
+  if (typeof fonte?.messages?.fetch !== "function") return 0;
+  const recentes = await fonte.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recentes) return 0;
+  const escolhidas = [...recentes.values()].filter(vaiParaAReplica)
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .slice(-PREENCHER_ATE);
+  let enviadas = 0;
+  for (const msg of escolhidas) {
+    try {
+      /* Anexo nao vai no preenchimento: baixar dez de uma vez por idioma e'
+         o que derruba uma maquina de 256 MB. O link do anexo vai no lugar. */
+      const links = [...(msg.attachments?.values?.() || [])].map((a) => a.url);
+      const carga = await cargaTraduzida(msg, idioma, motor, [], links);
+      if (!carga) continue;
+      await clienteDoWebhook(webhookUrl).send(carga);
+      enviadas++;
+    } catch (e) {
+      console.error(`idioma: nao consegui preencher ${idioma} com uma mensagem antiga:`, e?.message || e);
+    }
+  }
+  return enviadas;
+}
+
+async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
+  const destinos = (await replicasDoIdioma(servidorId)).filter((r) => r.tipo === tipo);
+  if (!destinos.length) return;
+
+  const emb = msg.embeds?.[0];
+  if (!String(emb?.title || "").trim() && !String(emb?.description || msg.content || "").trim() &&
+    !msg.attachments.size) return;
   const { arquivos, links } = msg.attachments.size ? await baixarAnexos(msg) : { arquivos: [], links: [] };
 
   for (const destino of destinos) {
+    let carga;
     try {
-      /* Teto alto de proposito: aqui o texto longo e' o que MAIS precisa de
-         traducao. O vantajosoTraduzir continua servindo pra nao pagar por
-         emoji, link solto e "ok". */
-      const t = titulo && vantajosoTraduzir(titulo, TEXTO_MAXIMO, 2)
-        ? (await traduzirLongo(titulo, destino.idioma, motor)) || titulo : titulo;
-      const c = corpo && vantajosoTraduzir(corpo, TEXTO_MAXIMO, 2)
-        ? (await traduzirLongo(corpo, destino.idioma, motor)) || corpo : corpo;
-
-      const carga = { username: nome, avatarURL: foto, files: arquivos, allowedMentions: { parse: [] } };
-      if (emb) {
-        const cru = emb.toJSON();
-        /* Campo tambem e' texto que alguem vai ler. Deixar de fora faria o
-           aviso chegar meio traduzido, que e' pior que nao traduzir: da a
-           impressao de que aquela parte nao valia a pena. */
-        const campos = [];
-        for (const campo of cru.fields || []) {
-          campos.push({
-            ...campo,
-            name: vantajosoTraduzir(campo.name, TEXTO_MAXIMO, 2)
-              ? (await traduzirLongo(campo.name, destino.idioma, motor)) || campo.name : campo.name,
-            value: vantajosoTraduzir(campo.value, TEXTO_MAXIMO, 2)
-              ? (await traduzirLongo(campo.value, destino.idioma, motor)) || campo.value : campo.value,
-          });
-        }
-        carga.embeds = [{
-          ...cru,
-          title: t || undefined,
-          description: [c, ...links].filter(Boolean).join("\n") || undefined,
-          fields: campos.length ? campos : undefined,
-        }];
-      } else {
-        carga.content = [c, ...links].filter(Boolean).join("\n").slice(0, 1900) || undefined;
-      }
-      if (!carga.content && !carga.embeds && !arquivos.length) continue;
+      carga = await cargaTraduzida(msg, destino.idioma, motor, arquivos, links);
+      if (!carga) continue;
 
       await clienteDoWebhook(destino.webhook).send(carga);
     } catch (e) {
@@ -8793,6 +8884,26 @@ async function refrescarPainel(inter, servidor) {
   }
 }
 
+/* Soma canais as fontes sem tirar nenhum -- para quem monta salas pelo
+   bot (o servidor de suporte), e nao pelo menu. */
+async function somarFontes(guild, ids) {
+  const servidor = await servidorDoGuild(guild.id);
+  if (!servidor) return 0;
+  const ja = new Set(((await sb(
+    `discord_fonte_replica?servidor_id=eq.${servidor.id}&select=canal_id`)) || []).map((f) => f.canal_id));
+  let somadas = 0;
+  for (const id of ids) {
+    if (ja.has(id)) continue;
+    const canal = guild.channels.cache.get(id);
+    await sbPost("discord_fonte_replica", {
+      servidor_id: servidor.id, canal_id: id, tipo: rotuloDoCanal(canal?.name || "canal"),
+    });
+    somadas++;
+  }
+  cacheFontes.delete(servidor.id);
+  return somadas;
+}
+
 /* O menu manda o conjunto inteiro, entao a gravacao e' a diferenca. */
 async function definirFontes(guild, servidor, ids) {
   const antigas = await sb(
@@ -11902,7 +12013,8 @@ function botaoDeSuporte() {
 
 /* Aqui, e nao junto do ligarAlianca: SUPORTE so' existe a partir daqui, e
    entregar antes dava erro de variavel ainda nao criada na partida. */
-ligarSuporte({ client, SUPORTE, COR, traduzirEmbed, idiomaEscolhido, idiomaDoAplicativo, ChannelType, PermissionFlagsBits });
+ligarSuporte({ client, SUPORTE, COR, traduzirEmbed, idiomaEscolhido, idiomaDoAplicativo, ChannelType, PermissionFlagsBits,
+  somarFontes });
 
 /* O estado da conversa mora no custom_id, e nao numa tabela.
 
@@ -12818,6 +12930,14 @@ client.on("messageCreate", async (msg) => {
 
       const texto = textoDaMensagem(msg);
       if (podeTraduzirAgora(msg.webhookId)) await traduzirEResponder(msg, texto);
+      return;
+    }
+    /* Os cartoes do servidor de suporte sao meus, e mesmo assim sao o
+       conteudo da sala: se a sala e' fonte, eles vao para os idiomas. */
+    if (msg.author.id === client.user?.id && ehCartaoDoSuporte(msg)) {
+      const servidor = await servidorDoGuild(msg.guild.id);
+      const tipo = servidor && (await fontesReplica(servidor.id)).get(msg.channel.id);
+      if (tipo) await replicarPorIdioma(msg, servidor.id, tipo, motorDe(servidor));
       return;
     }
     if (msg.author.bot) return;
