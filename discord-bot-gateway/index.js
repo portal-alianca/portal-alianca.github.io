@@ -10300,6 +10300,26 @@ async function limparTopicosOrfaos(sala, servidores) {
    que exigem olhar todos de uma vez -- quem usa mais, quantos existem, o que
    quebrou. E' de proposito que sejam duas coisas: tentar fazer a lista de
    canais responder isso e' o que ia frustrar em duas semanas. */
+/* O painel do dono tambem no privado do bot: escrever "admin" (ou "painel")
+   na DM abre o mesmo painel do /admin.
+
+   O /admin de barra mora num servidor so', e o dono atende de outra conta,
+   de outro lugar -- ir ate' o servidor certo so' para apertar um botao
+   custava tempo toda vez. A DM e' o unico lugar onde o bot esta' sempre.
+
+   A palavra e' conferida ANTES do ehDono: qualquer pessoa pode mandar
+   "admin" no privado, e perguntar ao Discord quem e' dono a cada "oi" seria
+   trabalho a toa. Quem nao e' dono cai na conversa de sempre, sem saber que
+   existia outra porta. */
+const PALAVRA_DO_PAINEL = /^\s*\/?(admin|painel)\s*$/i;
+
+async function painelNoPrivado(msg) {
+  if (!PALAVRA_DO_PAINEL.test(msg.content || "")) return false;
+  if (!await ehDono(msg.author.id)) return false;
+  await msg.channel.send({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
+  return true;
+}
+
 async function comandoAdmin(inter) {
   /* O defer vem antes da checagem porque a checagem vai à rede: `ehDono`
      pergunta ao Discord de quem é o aplicativo, e com o cache frio isso é uma
@@ -10434,6 +10454,13 @@ async function cliqueAdmin(inter) {
     return inter.reply({ flags: 64, content: "Não conheço esse comando." });
   }
   const acao = inter.customId.slice("admin:".length);
+
+  /* Pelo privado, o painel e' o mesmo -- mas estes botoes falam do
+     servidor onde foram apertados (os comandos dele, virar o painel dele),
+     e numa DM nao ha' servidor. Melhor dizer isso que falhar calado. */
+  if (!inter.guildId && ["comandos", "novocomando", "abrircomando", "aqui"].includes(acao)) {
+    return inter.reply({ flags: 64, content: "Esse botão é de servidor: abra pelo **/admin** dentro do servidor que você quer mexer." });
+  }
 
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
@@ -12745,7 +12772,9 @@ client.on("messageCreate", async (msg) => {
        Bot nenhum entra: o meu proprio cartao voltaria como mensagem, e eu
        responderia a mim mesmo para sempre. */
     if (!msg.guild) {
-      if (!msg.author?.bot) await atenderNoPrivado(msg);
+      if (msg.author?.bot) return;
+      if (await painelNoPrivado(msg)) return;
+      await atenderNoPrivado(msg);
       return;
     }
 

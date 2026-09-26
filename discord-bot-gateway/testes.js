@@ -8777,6 +8777,29 @@ function conferirCartao(onde, embed, componentes = []) {
   Object.assign(globalThis, { SB_URL: salvo.u, SB_KEY: salvo.k, BETA: salvo.b, BETA_ATE: salvo.a });
 }
 
+/* ---- o painel do dono pelo privado ---- */
+{
+  let donos = new Set(["dono"]);
+  let perguntas = 0;
+  globalThis.ehDono = async (id) => { perguntas++; return donos.has(id); };
+  globalThis.embedDoResumo = async () => ({ title: "resumo" });
+  globalThis.linhasDoAdmin = () => [{ type: 1, components: [] }];
+  const { painelNoPrivado } = carregar(["PALAVRA_DO_PAINEL", "painelNoPrivado"]);
+  const enviados = [];
+  const dm = (autor, content) => ({ author: { id: autor }, content, channel: { send: async (x) => { enviados.push(x); } } });
+  verdade("o dono escreve admin: recebe o painel", await painelNoPrivado(dm("dono", "admin")) && enviados.at(-1).embeds[0].title === "resumo");
+  verdade("painel e /admin também servem", await painelNoPrivado(dm("dono", " Painel ")) && await painelNoPrivado(dm("dono", "/admin")));
+  verdade("quem não é dono cai na conversa de sempre", !await painelNoPrivado(dm("cliente", "admin")));
+  const antes = perguntas;
+  verdade("frase qualquer nem pergunta quem é o dono", !await painelNoPrivado(dm("cliente", "oi, quero traduzir")) && perguntas === antes);
+  verdade("admin no meio da frase não abre", !await painelNoPrivado(dm("dono", "o admin do meu servidor")));
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  verdade("no privado, o painel é tentado antes da conversa",
+    /if \(await painelNoPrivado\(msg\)\) return;\s*await atenderNoPrivado\(msg\)/.test(idx));
+  verdade("botões de servidor avisam no privado em vez de falhar calados",
+    /if \(!inter\.guildId && \["comandos", "novocomando", "abrircomando", "aqui"\]\.includes\(acao\)\)/.test(idx));
+}
+
 /* ---- o /admin no servidor de suporte: só administradores o veem ---- */
 {
   const criados = [];
