@@ -8777,6 +8777,32 @@ function conferirCartao(onde, embed, componentes = []) {
   Object.assign(globalThis, { SB_URL: salvo.u, SB_KEY: salvo.k, BETA: salvo.b, BETA_ATE: salvo.a });
 }
 
+/* ---- o /admin no servidor de suporte: só administradores o veem ---- */
+{
+  const criados = [];
+  let existentes = [];
+  const sup = { id: "g-sup", name: "CYRON SUPPORT",
+    commands: { fetch: async () => new Map(existentes.map((n, i) => [String(i), { name: n }])),
+      create: async (d) => { criados.push(d); } } };
+  globalThis.guildDoSuporte = async () => sup;
+  globalThis.PermissionFlagsBits = PermissionFlagsBits;
+  const { adminNoSuporte } = carregar(["adminNoSuporte"]);
+  const def = { name: "admin", description: "Painel do dono do CYRON", dmPermission: false };
+  await adminNoSuporte(def, "g-painel");
+  ok("o /admin nasce no servidor de suporte", criados.length, 1);
+  verdade("só para quem é Administrador de lá", criados[0].defaultMemberPermissions === PermissionFlagsBits.Administrator);
+  existentes = ["admin"];
+  await adminNoSuporte(def, "g-painel");
+  ok("já existe: não cria de novo", criados.length, 1);
+  existentes = [];
+  await adminNoSuporte(def, "g-sup");
+  ok("se o suporte já é o painel, não duplica", criados.length, 1);
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  verdade("o clique no /admin continua passando pelo ehDono",
+    /async function comandoAdmin[\s\S]{0,400}if \(!await ehDono\(inter\.user\.id\)\)/.test(idx));
+  verdade("e arrumar o /admin chama o do suporte", /await adminNoSuporte\(def, gid\)/.test(idx));
+}
+
 let resumiu = false;
 process.on("exit", () => {
   if (resumiu) return;

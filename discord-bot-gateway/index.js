@@ -14154,9 +14154,26 @@ async function arrumarOndeMoraOAdmin() {
       await noGlobal.delete();
       console.log("comandos: /admin saiu da lista global");
     }
+    await adminNoSuporte(def, gid);
   } catch (e) {
     console.error("comandos: não consegui arrumar o /admin:", e?.message || e);
   }
+}
+
+/* O /admin tambem no servidor de suporte.
+
+   O dono atende o suporte com a conta de suporte, e trocar de conta so'
+   para apertar um botao do painel custa tempo toda vez. La' o comando so'
+   aparece para quem e' Administrador DAQUELE servidor -- membro que veio
+   tirar duvida nem ve. E quem ve ainda passa pelo ehDono no clique: cargo
+   de servidor nao e' ser dono do CYRON. */
+async function adminNoSuporte(def, gidDoPainel) {
+  const guild = await guildDoSuporte().catch(() => null);
+  if (!guild || guild.id === gidDoPainel) return;
+  const doGuild = await guild.commands.fetch();
+  if ([...doGuild.values()].some((c) => c.name === "admin")) return;
+  await guild.commands.create({ ...def, defaultMemberPermissions: PermissionFlagsBits.Administrator });
+  console.log(`comandos: /admin também em ${guild.name} (só administradores o veem)`);
 }
 
 async function garantirComandosGlobais() {
