@@ -46,7 +46,7 @@ if [ "$SUJO" -gt 0 ]; then
   echo "  Se nao for isso que voce quer, pare agora (Ctrl-C)."
 fi
 
-node --check index.js && node --check alianca.js || { echo "RECUSADO: index.js ou alianca.js nao compila."; exit 1; }
+node --check index.js && node --check alianca.js && node --check suporte.js || { echo "RECUSADO: index.js, alianca.js ou suporte.js nao compila."; exit 1; }
 
 # Os testes rodam AQUI, sem rede e sem Discord -- nenhuma frase deles chega em
 # servidor nenhum. Levam menos de um segundo, e sao a unica coisa neste script

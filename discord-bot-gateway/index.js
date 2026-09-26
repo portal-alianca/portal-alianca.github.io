@@ -21,6 +21,7 @@ import { CATEGORIAS, doCliente } from "./catalogo.js";
    produto. Ver o comentario no topo do alianca.js. */
 import { ligarAlianca, COMANDOS_DA_ALIANCA, comandoDaAlianca, boasVindasDaAlianca,
   seletorNasBoasVindas, rosasDaAlianca } from "./alianca.js";
+import { ligarSuporte, exigirSuporte, montarSuporte, guildDoSuporte, cliqueSuporte, PREFIXO_LER } from "./suporte.js";
 import { fileURLToPath } from "node:url";
 
 /* A fonte da imagem traduzida vai JUNTO com o bot, e nao e' a da maquina: a
@@ -4044,6 +4045,7 @@ async function recarregarAjustes() {
   const links = linksDePagamento(a.stripe_link);
   LINK_PAGAMENTO_VIVO = links.alianca || LINK_PAGAMENTO;
   LINK_PRO_VIVO = links.pro;
+  SUPORTE.link = linkDeSuporte(a.suporte_link);
 
   /* Os tradutores de reserva sao lidos aqui, e nao a cada mensagem: enderecos
      mudam de mes em mes, nao de fala em fala. A cada minuto os ajustes voltam
@@ -6348,6 +6350,10 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
          possível numa mensagem só. */
       { type: 2, custom_id: "cyron:idioma", style: 2, emoji: { name: "🌐" },
         label: "Na minha língua · My language" },
+      botaoDeSuporte(),
+      ...(podeTestar(servidor)
+        ? [{ type: 2, custom_id: "cyron:teste", style: 3, emoji: { name: "🎁" }, label: "Testar 7 dias grátis" }]
+        : []),
     ],
   });
 
@@ -8817,6 +8823,38 @@ async function definirFontes(guild, servidor, ids) {
 
    O PRECO NAO SAI DAQUI: a funcao e' que sabe quanto custa cada plano. Um
    bot adulterado nao consegue cobrar menos. */
+/* O teste de 7 dias, pelo proprio cliente.
+
+   Uma vez por servidor, para sempre: teste_ate preenchido -- mesmo vencido --
+   e' teste ja' usado. Quem ja' pagou um dia tambem nao testa de novo. E a
+   gravacao so' acontece se teste_ate ainda estiver vazio NO BANCO: dois
+   cliques ao mesmo tempo nao viram dois testes. */
+const DIAS_DE_TESTE = 7;
+
+function podeTestar(servidor) {
+  return !!servidor && planoDe(servidor) === "gratis" && !servidor.teste_ate && !servidor.pago_ate &&
+    servidor.plano !== "pago";
+}
+
+async function comecarTeste(inter, servidor, buscar = fetch) {
+  if (!podeTestar(servidor)) {
+    return inter.reply({ flags: 64, content: "🎁 Este servidor já usou o teste grátis, ou já tem um plano." });
+  }
+  await inter.deferReply({ flags: 64 });
+  const ate = new Date(Date.now() + DIAS_DE_TESTE * 864e5).toISOString();
+  const r = await buscar(`${SB_URL}/rest/v1/cyron_servidor?id=eq.${encodeURIComponent(servidor.id)}&teste_ate=is.null`, {
+    method: "PATCH",
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify({ teste_ate: ate, nivel: "pro" }),
+  }).catch(() => null);
+  const linhas = r?.ok ? await r.json().catch(() => []) : null;
+  if (!linhas) return inter.editReply("Não consegui ligar o teste agora. Tente de novo em um minuto.");
+  if (!linhas.length) return inter.editReply("🎁 Este servidor já usou o teste grátis.");
+  cacheServidor.delete(String(servidor.guild_id));
+  return inter.editReply(`🎁 **Teste do Pro ligado até ${new Date(ate).toLocaleDateString("pt-BR")}.** ` +
+    "O painel se atualiza em até um minuto. Para continuar depois disso, é só pagar pelo 💠 Pix.");
+}
+
 const FUNCAO_DO_PIX = `${SB_URL}/functions/v1/cyron-mercadopago`;
 const NIVEIS_DO_PIX = { pro: "Pro · R$ 29,90/mês", alianca: "Aliança · R$ 79/mês", teste: "Teste · R$ 1" };
 
@@ -8827,7 +8865,9 @@ function telaDoPix() {
     description: "Escolha o plano. Cada Pix vale **31 dias**; para renovar, é só pagar de novo " +
       "antes de vencer — os dias se somam.\n\n" +
       "⭐ **Pro** — até 5 idiomas, 3 canais copiados, 🖼️ imagem e 🎧 áudio.\n" +
-      "🏆 **Aliança** — até 20 idiomas, 10 canais, e o triplo de tradução e de áudio.",
+      "🏆 **Aliança** — até 20 idiomas, 10 canais, e o triplo de tradução e de áudio.\n\n" +
+      "🌍 **Fora do Brasil?** O Pix só aceita conta brasileira. Fale com a gente no suporte " +
+      "para pagar de outro jeito.",
   };
 }
 
@@ -8838,7 +8878,7 @@ function botoesDoPix(dono = false) {
     /* O Pix de R$ 1 existe para o dono ver o caminho inteiro funcionando:
        nao liga plano nenhum, so' avisa no canal de pagamentos. */
     ...(dono ? [{ type: 2, style: 2, custom_id: "cyron:pix:teste", emoji: { name: "🧪" }, label: "Teste · R$ 1 (só o dono)" }] : []),
-  ] }];
+  ] }, { type: 1, components: [botaoDeSuporte()] }];
 }
 
 async function pedirPix(servidorId, nivel, buscar = fetch) {
@@ -8921,10 +8961,20 @@ async function cliquePainel(inter) {
     return inter.reply({ flags: 64, content: "🔒 Só quem tem **Gerenciar Servidor** pode mexer aqui." });
   }
 
+  /* O gratis e' de todos; teste, Pix e codigo pedem o servidor de suporte.
+     Quem paga precisa ter onde reclamar se algo der errado -- e e' la'. */
   if (acao === "pix") {
+    if (!await exigirSuporte(inter, "pagar com Pix")) return;
     return inter.reply({ flags: 64, embeds: [telaDoPix()], components: botoesDoPix(await ehDono(inter.user.id)) });
   }
-  if (acao.startsWith("pix:")) return await cobrarPix(inter, servidor, acao.slice("pix:".length));
+  if (acao.startsWith("pix:")) {
+    if (!await exigirSuporte(inter, "pagar com Pix")) return;
+    return await cobrarPix(inter, servidor, acao.slice("pix:".length));
+  }
+  if (acao === "teste") {
+    if (!await exigirSuporte(inter, "liberar o teste grátis")) return;
+    return await comecarTeste(inter, servidor);
+  }
 
   /* Publicar o recibo para o servidor.
 
@@ -9004,7 +9054,10 @@ async function cliquePainel(inter) {
      antes do deferUpdate, e nao junto das outras acoes la' embaixo. */
   if (acao === "motor") return inter.showModal(janelaValida(janelaDoMotor(servidor)));
   if (acao === "palavras") return inter.showModal(janelaValida(janelaDasPalavras(servidor)));
-  if (acao === "codigo") return inter.showModal(janelaValida(janelaDoCodigo()));
+  if (acao === "codigo") {
+    if (!await exigirSuporte(inter, "ativar um código")) return;
+    return inter.showModal(janelaValida(janelaDoCodigo()));
+  }
 
   await inter.deferUpdate();
 
@@ -10247,6 +10300,26 @@ async function limparTopicosOrfaos(sala, servidores) {
    que exigem olhar todos de uma vez -- quem usa mais, quantos existem, o que
    quebrou. E' de proposito que sejam duas coisas: tentar fazer a lista de
    canais responder isso e' o que ia frustrar em duas semanas. */
+/* O painel do dono tambem no privado do bot: escrever "admin" (ou "painel")
+   na DM abre o mesmo painel do /admin.
+
+   O /admin de barra mora num servidor so', e o dono atende de outra conta,
+   de outro lugar -- ir ate' o servidor certo so' para apertar um botao
+   custava tempo toda vez. A DM e' o unico lugar onde o bot esta' sempre.
+
+   A palavra e' conferida ANTES do ehDono: qualquer pessoa pode mandar
+   "admin" no privado, e perguntar ao Discord quem e' dono a cada "oi" seria
+   trabalho a toa. Quem nao e' dono cai na conversa de sempre, sem saber que
+   existia outra porta. */
+const PALAVRA_DO_PAINEL = /^\s*\/?(admin|painel)\s*$/i;
+
+async function painelNoPrivado(msg) {
+  if (!PALAVRA_DO_PAINEL.test(msg.content || "")) return false;
+  if (!await ehDono(msg.author.id)) return false;
+  await msg.channel.send({ embeds: [await embedDoResumo()], components: linhasDoAdmin() });
+  return true;
+}
+
 async function comandoAdmin(inter) {
   /* O defer vem antes da checagem porque a checagem vai à rede: `ehDono`
      pergunta ao Discord de quem é o aplicativo, e com o cache frio isso é uma
@@ -10286,6 +10359,7 @@ function linhasDoAdmin() {
     { type: 2, custom_id: "admin:busca", style: 2, emoji: { name: "🔎" }, label: "Procurar" },
     { type: 2, custom_id: "admin:ajustes", style: 1, emoji: { name: "⚙️" }, label: "Ajustes" },
     { type: 2, style: 5, emoji: { name: "➕" }, label: "Link para instalar o CYRON", url: linkDeConvite() },
+    { type: 2, custom_id: "admin:suporte", style: 2, emoji: { name: "🏗️" }, label: "Montar suporte" },
   /* Fileira propria porque cinco e' o teto do Discord por fileira, e a de
      cima ja' estava cheia. Estourar isso nao avisa bonito: a mensagem
      inteira e' recusada, e o painel some. */
@@ -10381,11 +10455,36 @@ async function cliqueAdmin(inter) {
   }
   const acao = inter.customId.slice("admin:".length);
 
+  /* Pelo privado, o painel e' o mesmo -- mas estes botoes falam do
+     servidor onde foram apertados (os comandos dele, virar o painel dele),
+     e numa DM nao ha' servidor. Melhor dizer isso que falhar calado. */
+  if (!inter.guildId && ["comandos", "novocomando", "abrircomando", "aqui"].includes(acao)) {
+    return inter.reply({ flags: 64, content: "Esse botão é de servidor: abra pelo **/admin** dentro do servidor que você quer mexer." });
+  }
+
   if (acao === "codigos" && inter.isButton()) return inter.showModal(janelaValida(janelaDeCodigos()));
   if (acao === "ajustes" && inter.isButton()) return inter.showModal(janelaValida(await janelaDeAjustes()));
   if (acao === "chaves" && inter.isButton()) return inter.showModal(janelaValida(await janelaDasChaves()));
   if (acao === "visao" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaVisao()));
   if (acao === "fala" && inter.isButton()) return inter.showModal(janelaValida(await janelaDaFala()));
+  /* Cria ou arruma o servidor de suporte. Rodar de novo nao duplica nada:
+     sala que existe fica, texto que eu postei e' editado. */
+  if (acao === "suporte" && inter.isButton()) {
+    await inter.deferReply({ flags: 64 });
+    const guild = await guildDoSuporte();
+    if (!guild) {
+      return inter.editReply(`Não estou no servidor do convite de suporte (${SUPORTE.link}). ` +
+        "Coloque o CYRON lá pelo link de instalação e aperte de novo.");
+    }
+    try {
+      const feito = await montarSuporte(guild);
+      return inter.editReply(`🏗️ **${guild.name}** arrumado.\n` +
+        (feito.length ? feito.map((f) => `• ${f}`).join("\n").slice(0, 1800) : "_Já estava tudo no lugar; textos atualizados._"));
+    } catch (e) {
+      return inter.editReply(`Parei no meio: ${String(e?.message || e).slice(0, 300)}\n` +
+        "_Confira se o CYRON tem **Gerenciar Canais** e **Gerenciar Servidor** lá. O que já foi feito fica._");
+    }
+  }
   if (acao === "novocomando" && inter.isButton()) {
     return inter.showModal(janelaValida(await janelaDeComando(null)));
   }
@@ -11782,6 +11881,29 @@ function paginaDoMembro(souAdmin) {
    antes de qualquer instrucao. */
 const SITE_DO_CYRON = "https://portal-alianca.github.io/cyron/";
 
+/* O servidor de suporte: onde um cliente fala com o dono sem expor o perfil
+   pessoal dele. No Discord, mensagem direta so' chega entre quem divide um
+   servidor -- por isso um servidor, e nao o perfil da conta de suporte.
+
+   O convite pode mudar (convite de Discord expira, ou e' refeito), entao o
+   ajuste `suporte_link` no banco vale mais que o do codigo: trocar e' gravar
+   uma linha, nao publicar o bot. */
+const SUPORTE_PADRAO = "https://discord.gg/tcCdqeAdR";
+const SUPORTE = { link: SUPORTE_PADRAO };
+
+function linkDeSuporte(valor) {
+  const v = String(valor || "").trim();
+  return /^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(v) ? v : SUPORTE_PADRAO;
+}
+
+function botaoDeSuporte() {
+  return { type: 2, style: 5, emoji: { name: "💬" }, label: "Suporte · Support", url: SUPORTE.link };
+}
+
+/* Aqui, e nao junto do ligarAlianca: SUPORTE so' existe a partir daqui, e
+   entregar antes dava erro de variavel ainda nao criada na partida. */
+ligarSuporte({ client, SUPORTE, COR, traduzirEmbed, idiomaEscolhido, idiomaDoAplicativo, ChannelType, PermissionFlagsBits });
+
 /* O estado da conversa mora no custom_id, e nao numa tabela.
 
    Cada tela pendura no proprio botao o passo seguinte, entao o clique chega
@@ -11838,6 +11960,7 @@ function botoesDeConvite() {
     components: [
       { type: 2, style: 5, emoji: { name: "➕" }, label: "Adicionar ao meu servidor", url: linkDeConvite() },
       { type: 2, style: 5, emoji: { name: "🌐" }, label: "Ver o site", url: SITE_DO_CYRON },
+      botaoDeSuporte(),
     ],
   };
 }
@@ -11964,7 +12087,8 @@ function paginaDosPlanos(idioma) {
           "e o triplo de tradução e de áudio por mês.",
       },
     ],
-    footer: { text: "Você começa no plano grátis. Eu não peço cartão." },
+    footer: { text: "Você começa no plano grátis. Eu não peço cartão. " +
+      "Para pagar de fora do Brasil, fale com o suporte pelo botão 💬." },
   };
 }
 
@@ -12537,6 +12661,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("admin:")) {
       return await cliqueAdmin(inter);
     }
+    if (inter.isButton() && inter.customId.startsWith(PREFIXO_LER)) {
+      return await cliqueSuporte(inter);
+    }
     if (inter.isMessageComponent() && inter.customId.startsWith("cli:")) {
       return await cliqueDaFicha(inter);
     }
@@ -12645,7 +12772,9 @@ client.on("messageCreate", async (msg) => {
        Bot nenhum entra: o meu proprio cartao voltaria como mensagem, e eu
        responderia a mim mesmo para sempre. */
     if (!msg.guild) {
-      if (!msg.author?.bot) await atenderNoPrivado(msg);
+      if (msg.author?.bot) return;
+      if (await painelNoPrivado(msg)) return;
+      await atenderNoPrivado(msg);
       return;
     }
 
@@ -14054,9 +14183,26 @@ async function arrumarOndeMoraOAdmin() {
       await noGlobal.delete();
       console.log("comandos: /admin saiu da lista global");
     }
+    await adminNoSuporte(def, gid);
   } catch (e) {
     console.error("comandos: não consegui arrumar o /admin:", e?.message || e);
   }
+}
+
+/* O /admin tambem no servidor de suporte.
+
+   O dono atende o suporte com a conta de suporte, e trocar de conta so'
+   para apertar um botao do painel custa tempo toda vez. La' o comando so'
+   aparece para quem e' Administrador DAQUELE servidor -- membro que veio
+   tirar duvida nem ve. E quem ve ainda passa pelo ehDono no clique: cargo
+   de servidor nao e' ser dono do CYRON. */
+async function adminNoSuporte(def, gidDoPainel) {
+  const guild = await guildDoSuporte().catch(() => null);
+  if (!guild || guild.id === gidDoPainel) return;
+  const doGuild = await guild.commands.fetch();
+  if ([...doGuild.values()].some((c) => c.name === "admin")) return;
+  await guild.commands.create({ ...def, defaultMemberPermissions: PermissionFlagsBits.Administrator });
+  console.log(`comandos: /admin também em ${guild.name} (só administradores o veem)`);
 }
 
 async function garantirComandosGlobais() {
