@@ -673,16 +673,28 @@ function conferirCartao(onde, embed, componentes = []) {
     verdade("origem sem escrita: réplica fica só de leitura", (doIdioma.deny || []).length > 0);
   }
 
-  /* Réplica é sala de ler em TODO plano: conversa é no chat do idioma. */
+  /* Só no servidor de suporte a réplica é de ler e nasce preenchida.
+     Nos clientes, nada muda: segue a origem e o plano. */
   {
+    const { replicaFala } = carregar(["replicaFala"]);
+    ok("cliente pago: a réplica fala como a origem", replicaFala(true, false), true);
+    ok("cliente grátis: só leitura, como sempre", replicaFala(false, false), false);
+    ok("servidor de suporte: só leitura mesmo pago", replicaFala(true, true), false);
     const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
-    verdade("réplica não abre escrita, nem no pago", /const REPLICA_FALA = false;/.test(idx));
-    const chamadas = [...idx.matchAll(/portasDaReplica\(guild, sala\.role_id, fonte, outrosCargos, ([^)]+)\)/g)].map((m) => m[1]);
-    ok("as portas refeitas pela varredura seguem a regra", chamadas, ["podeConversar", "REPLICA_FALA"]);
+    const chamadas = [...idx.matchAll(/portasDaReplica\(guild, sala\.role_id, fonte, outrosCargos, ([^)]+\)?)\)/g)].map((m) => m[1]);
+    ok("as portas refeitas pela varredura seguem a regra", chamadas, ["podeConversar", "replicaFala(pago, doSuporte)"]);
     verdade("e a réplica nasce seguindo a regra",
-      /await garantirReplica\(guild, servidorId, sala, categoria, def, i, nome,\s*fonte, outrosCargos, REPLICA_FALA\)/.test(idx));
-    const p = portasDaReplica(guild(["pt"]), "pt", fonte(["todos"], ["todos"], []), [], false);
-    verdade("origem aberta a todos: a réplica continua só leitura", (p.find((x) => x.id === "pt").deny || []).length > 0);
+      /await garantirReplica\(guild, servidorId, sala, categoria, def, i, nome,\s*fonte, outrosCargos, replicaFala\(pago, doSuporte\)\)/.test(idx));
+    const garantir = idx.slice(idx.indexOf("async function garantirReplica"), idx.indexOf("const jaTentado"));
+    verdade("o histórico traduzido só é posto no servidor de suporte",
+      garantir.indexOf("if (!await ehServidorDoSuporte(guild.id)) return;") > 0 &&
+      garantir.indexOf("if (!await ehServidorDoSuporte(guild.id)) return;") < garantir.indexOf("preencherReplica("));
+    const { topicoDaReplica } = carregar(["topicoDaReplica"]);
+    globalThis.nomeDeIdiomaNoDiscord = globalThis.nomeDeIdiomaNoDiscord || ((i) => i);
+    verdade("tópico do cliente pago: o de sempre",
+      topicoDaReplica("avisos", "pt", true).includes("aparece traduzido nos outros idiomas"));
+    verdade("tópico do suporte: aponta o chat",
+      topicoDaReplica("rules", "pt", true, true).includes("use o chat do seu idioma"));
   }
 
   /* No plano grátis ninguém fala, nem quem fala na origem. */

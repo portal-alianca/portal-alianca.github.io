@@ -4640,13 +4640,20 @@ const SO_LEITURA = {
    entao o lider que fala ingles e' barrado no leaders-pt pelo cargo de
    ingles, mesmo tendo o de lider. Sem essa regra, ou ele veria as oito salas,
    ou eu teria que inventar e manter um cargo "lider-pt" por idioma. */
-/* Replica e' sala de LER, em todo plano. Conversa e' no chat do idioma.
+/* O servidor de suporte do CYRON tem regras proprias para as replicas, e
+   SO' ele: la' as salas copiadas sao de ler (conversa e' no chat do idioma) e
+   nascem com o historico traduzido. Nos servidores dos clientes nada disso
+   muda -- a replica segue a origem e o plano, como sempre seguiu. */
+async function ehServidorDoSuporte(guildId) {
+  const g = await guildDoSuporte().catch(() => null);
+  return !!g && g.id === guildId;
+}
 
-   A replica chegou a abrir a escrita no plano pago, seguindo a origem -- e
-   a pessoa escrevia numa sala de avisos, embaixo das regras, onde a fala se
-   perdia entre copias. O lugar de conversar ja' existe e traduz para todo
-   mundo: o chat do idioma. As salas de aviso so' se leem. */
-const REPLICA_FALA = false;
+/* No suporte, ninguem escreve na replica. Nos outros, quem decide e' o
+   plano (e a origem, dentro de portasDaReplica). */
+function replicaFala(pago, doSuporte) {
+  return doSuporte ? false : pago;
+}
 
 function portasDaReplica(guild, cargoId, fonte, outrosCargos, podeConversar) {
   const V = PermissionFlagsBits.ViewChannel;
@@ -4823,11 +4830,12 @@ async function garantirCategoria(guild, sala, pistaCanal) {
   return categoria;
 }
 
-/* O topico diz onde conversar -- no pago, o chat do idioma existe; no
-   gratis, nao ha' chat, e prometer um seria mentira. */
-function topicoDaReplica(tipo, idioma, pago) {
-  return `${tipo} — ${nomeDeIdiomaNoDiscord(idioma)}. Cópia traduzida do canal original.` +
-    (pago ? " Para conversar, use o chat do seu idioma." : "");
+/* O topico diz o que a sala e'. Nos clientes, o de sempre. No suporte, a
+   sala e' de ler, e o topico aponta o chat. */
+function topicoDaReplica(tipo, idioma, pago, doSuporte = false) {
+  const base = `${tipo} — ${nomeDeIdiomaNoDiscord(idioma)}. `;
+  if (doSuporte) return `${base}Cópia traduzida do canal original. Para conversar, use o chat do seu idioma.`;
+  return base + (pago ? "O que se escreve aqui aparece traduzido nos outros idiomas." : "Cópia traduzida do canal original.");
 }
 
 async function garantirReplica(guild, servidorId, sala, categoria, def, posicao, nome,
@@ -4859,9 +4867,9 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
     type: ChannelType.GuildText,
     parent: categoria.id,
     position: posicao,
-    /* Sem a dica do chat: aqui eu nao sei o plano. A varredura seguinte
-       acerta o topico pelo plano (ver topicoDaReplica). */
-    topic: topicoDaReplica(def.tipo, sala.idioma, false),
+    /* O de sempre; a varredura seguinte acerta pelo plano e pelo servidor
+       (ver topicoDaReplica). */
+    topic: `${def.tipo} — ${nomeDeIdiomaNoDiscord(sala.idioma)}. O que se escreve aqui aparece traduzido nos outros idiomas.`,
     /* Quem entra e quem fala vem do canal de origem -- ver portasDaReplica.
 
        Tudo de um cargo numa entrada so: dois overwrites com o mesmo id fazem
@@ -4896,7 +4904,9 @@ async function garantirReplica(guild, servidorId, sala, categoria, def, posicao,
 
   /* Em segundo plano: a varredura segue criando as outras salas enquanto
      esta se enche. Canal ADOTADO (la' em cima) nao passa por aqui -- ele ja'
-     tem historico, e preencher de novo duplicaria tudo. */
+     tem historico, e preencher de novo duplicaria tudo. So' no servidor de
+     suporte: nos clientes a sala nasce vazia, como sempre nasceu. */
+  if (!await ehServidorDoSuporte(guild.id)) return;
   const servidor = await servidorDoGuild(guild.id).catch(() => null);
   preencherReplica(fonte, webhook.url, sala.idioma, servidor ? motorDe(servidor) : MOTOR_AUTO)
     .then((n) => n && console.log(`idioma: #${canal.name} nasceu com ${n} mensagens traduzidas`))
@@ -4986,6 +4996,7 @@ async function esconderOriginais(guild, servidorId, cargosComReplica) {
 /* Monta a categoria e o que falta dentro dela, pra cada idioma que ja tem
    sala. Roda junto da sincronia das salas. */
 async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, limite, vivos) {
+  const doSuporte = await ehServidorDoSuporte(guild.id);
   const existentes = (await sb(
     `discord_canal_idioma?servidor_id=eq.${servidorId}&select=idioma,tipo,canal_id`)) || [];
 
@@ -5056,7 +5067,7 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
         if (!jaExiste) {
           if (!podeCriarCanal(orcamento, guild, limite)) continue;
           await garantirReplica(guild, servidorId, sala, categoria, def, i, nome,
-            fonte, outrosCargos, REPLICA_FALA);
+            fonte, outrosCargos, replicaFala(pago, doSuporte));
           continue;
         }
         /* Ja existe: so acerta o nome se o original mudou de nome (ou se a
@@ -5082,13 +5093,13 @@ async function montarCategorias(guild, servidorId, porIdioma, pago, orcamento, l
            e prometer conversa num canal onde a pessoa nao consegue escrever
            e' pior do que nao dizer nada -- ela tenta, nao vai, e o recado do
            bot diz o contrario do topico logo acima. */
-        const assunto = topicoDaReplica(def.tipo, sala.idioma, pago);
+        const assunto = topicoDaReplica(def.tipo, sala.idioma, pago, doSuporte);
         if (canal.topic !== assunto && umaVezPorProcesso(`topico:${canal.id}`)) {
           await canal.setTopic(assunto, "tópico da réplica segue o plano")
             .catch(() => { /* assunto e' capricho */ });
         }
 
-        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, REPLICA_FALA);
+        const querem = portasDaReplica(guild, sala.role_id, fonte, outrosCargos, replicaFala(pago, doSuporte));
         if (sala.role_id && !mesmasPortas(canal, querem)) {
           await canal.permissionOverwrites.set(querem, "portas da réplica seguem o canal de origem");
           console.log(`idioma: #${canal.name} teve as portas refeitas pelo canal de origem`);
