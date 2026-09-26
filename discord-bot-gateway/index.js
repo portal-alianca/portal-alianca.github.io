@@ -4044,6 +4044,7 @@ async function recarregarAjustes() {
   const links = linksDePagamento(a.stripe_link);
   LINK_PAGAMENTO_VIVO = links.alianca || LINK_PAGAMENTO;
   LINK_PRO_VIVO = links.pro;
+  SUPORTE.link = linkDeSuporte(a.suporte_link);
 
   /* Os tradutores de reserva sao lidos aqui, e nao a cada mensagem: enderecos
      mudam de mes em mes, nao de fala em fala. A cada minuto os ajustes voltam
@@ -6348,6 +6349,7 @@ function componentesDoPainel(servidor, fontes, limite, orfas, opcoes) {
          possível numa mensagem só. */
       { type: 2, custom_id: "cyron:idioma", style: 2, emoji: { name: "🌐" },
         label: "Na minha língua · My language" },
+      botaoDeSuporte(),
     ],
   });
 
@@ -8827,7 +8829,9 @@ function telaDoPix() {
     description: "Escolha o plano. Cada Pix vale **31 dias**; para renovar, é só pagar de novo " +
       "antes de vencer — os dias se somam.\n\n" +
       "⭐ **Pro** — até 5 idiomas, 3 canais copiados, 🖼️ imagem e 🎧 áudio.\n" +
-      "🏆 **Aliança** — até 20 idiomas, 10 canais, e o triplo de tradução e de áudio.",
+      "🏆 **Aliança** — até 20 idiomas, 10 canais, e o triplo de tradução e de áudio.\n\n" +
+      "🌍 **Fora do Brasil?** O Pix só aceita conta brasileira. Fale com a gente no suporte " +
+      "para pagar de outro jeito.",
   };
 }
 
@@ -8838,7 +8842,7 @@ function botoesDoPix(dono = false) {
     /* O Pix de R$ 1 existe para o dono ver o caminho inteiro funcionando:
        nao liga plano nenhum, so' avisa no canal de pagamentos. */
     ...(dono ? [{ type: 2, style: 2, custom_id: "cyron:pix:teste", emoji: { name: "🧪" }, label: "Teste · R$ 1 (só o dono)" }] : []),
-  ] }];
+  ] }, { type: 1, components: [botaoDeSuporte()] }];
 }
 
 async function pedirPix(servidorId, nivel, buscar = fetch) {
@@ -11782,6 +11786,25 @@ function paginaDoMembro(souAdmin) {
    antes de qualquer instrucao. */
 const SITE_DO_CYRON = "https://portal-alianca.github.io/cyron/";
 
+/* O servidor de suporte: onde um cliente fala com o dono sem expor o perfil
+   pessoal dele. No Discord, mensagem direta so' chega entre quem divide um
+   servidor -- por isso um servidor, e nao o perfil da conta de suporte.
+
+   O convite pode mudar (convite de Discord expira, ou e' refeito), entao o
+   ajuste `suporte_link` no banco vale mais que o do codigo: trocar e' gravar
+   uma linha, nao publicar o bot. */
+const SUPORTE_PADRAO = "https://discord.gg/tcCdqeAdR";
+const SUPORTE = { link: SUPORTE_PADRAO };
+
+function linkDeSuporte(valor) {
+  const v = String(valor || "").trim();
+  return /^https:\/\/(discord\.gg|discord\.com\/invite)\/[\w-]+$/.test(v) ? v : SUPORTE_PADRAO;
+}
+
+function botaoDeSuporte() {
+  return { type: 2, style: 5, emoji: { name: "💬" }, label: "Suporte · Support", url: SUPORTE.link };
+}
+
 /* O estado da conversa mora no custom_id, e nao numa tabela.
 
    Cada tela pendura no proprio botao o passo seguinte, entao o clique chega
@@ -11838,6 +11861,7 @@ function botoesDeConvite() {
     components: [
       { type: 2, style: 5, emoji: { name: "➕" }, label: "Adicionar ao meu servidor", url: linkDeConvite() },
       { type: 2, style: 5, emoji: { name: "🌐" }, label: "Ver o site", url: SITE_DO_CYRON },
+      botaoDeSuporte(),
     ],
   };
 }
@@ -11964,7 +11988,8 @@ function paginaDosPlanos(idioma) {
           "e o triplo de tradução e de áudio por mês.",
       },
     ],
-    footer: { text: "Você começa no plano grátis. Eu não peço cartão." },
+    footer: { text: "Você começa no plano grátis. Eu não peço cartão. " +
+      "Para pagar de fora do Brasil, fale com o suporte pelo botão 💬." },
   };
 }
 

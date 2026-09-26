@@ -139,6 +139,10 @@ function pedaco(nome) {
   throw new Error(`não achei "${nome}" no index.js — foi renomeada?`);
 }
 
+/* O botao de suporte le o link de um objeto que o index enche na volta do
+   relogio; aqui ele ja' nasce preenchido, como se o ajuste tivesse vindo. */
+globalThis.SUPORTE = { link: "https://discord.gg/suporte" };
+
 function carregar(nomes) {
   const codigo = nomes.map(pedaco).join("\n\n");
   const devolve = `;({${nomes.join(",")}})`;
@@ -1972,7 +1976,7 @@ function conferirCartao(onde, embed, componentes = []) {
     paginaDeApresentacao, paginaDosPlanos, telaDoIdioma, traduzirLinha,
     podeApresentar, marcarApresentado, APRESENTEI,
   } = carregar([
-    "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
+    "COR", "COR_OK", "PERMISSOES_DO_CONVITE", "SITE_DO_CYRON", "botaoDeSuporte", "linkDeConvite", "LINGUAS_MENU", "menuIdioma",
     "PASSO", "TEMAS", "menuDeTemas", "botoesDaPergunta", "botoesDeConvite", "botoesDosPlanos",
     "paginaDeApresentacao", "PRECOS", "precoDoPlano", "paginaDosPlanos", "telaDoIdioma", "traduzirLinha",
     "APRESENTEI", "ESPERA_APRESENTACAO", "podeApresentar", "marcarApresentado",
@@ -2698,7 +2702,7 @@ function conferirCartao(onde, embed, componentes = []) {
   globalThis.COR = 1; globalThis.SB_URL = "https://sb.test"; globalThis.SB_KEY = "chave-do-bot";
   let dono = false;
   globalThis.ehDono = async () => dono;
-  const P = carregar(["FUNCAO_DO_PIX", "NIVEIS_DO_PIX", "telaDoPix", "botoesDoPix", "pedirPix", "cobrarPix"]);
+  const P = carregar(["botaoDeSuporte", "FUNCAO_DO_PIX", "NIVEIS_DO_PIX", "telaDoPix", "botoesDoPix", "pedirPix", "cobrarPix"]);
   const pedidos = [];
   const mp = (status, corpo) => async (url, o) => {
     pedidos.push({ url, o });
@@ -2738,6 +2742,18 @@ function conferirCartao(onde, embed, componentes = []) {
   const rotulos = (d) => P.botoesDoPix(d)[0].components.map((b) => b.custom_id);
   ok("clientes veem Pro e Aliança", rotulos(false), ["cyron:pix:pro", "cyron:pix:alianca"]);
   ok("o dono vê também o teste de R$ 1", rotulos(true), ["cyron:pix:pro", "cyron:pix:alianca", "cyron:pix:teste"]);
+  verdade("quem está fora do Brasil é mandado ao suporte",
+    P.telaDoPix().description.includes("Fora do Brasil") &&
+    P.botoesDoPix(false)[1].components[0].url === globalThis.SUPORTE.link);
+
+  const S = carregar(["SUPORTE_PADRAO", "linkDeSuporte", "botaoDeSuporte"]);
+  ok("link de suporte do banco vale quando é convite do Discord",
+    S.linkDeSuporte("https://discord.gg/NovoConvite"), "https://discord.gg/NovoConvite");
+  ok("link estranho no banco não vira botão: volta o padrão",
+    S.linkDeSuporte("https://golpe.exemplo/?https://discord.gg/x"), S.SUPORTE_PADRAO);
+  ok("banco vazio: vale o padrão", S.linkDeSuporte(null), S.SUPORTE_PADRAO);
+  verdade("o botão de suporte é um link, sem custom_id",
+    S.botaoDeSuporte().style === 5 && !S.botaoDeSuporte().custom_id && S.botaoDeSuporte().url === globalThis.SUPORTE.link);
 
   const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
   const painel = idx.slice(idx.indexOf("async function cliquePainel"));
