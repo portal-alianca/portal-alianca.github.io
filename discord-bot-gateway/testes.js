@@ -8643,6 +8643,7 @@ function conferirCartao(onde, embed, componentes = []) {
     } },
   };
   const ligacao = { link: "https://discord.gg/suporte" };
+  const fontesSomadas = [];
   S.ligarSuporte({
     client: { user: { id: "bot" }, fetchInvite: async () => (temGuild ? { guild: { id: "g-sup" } } : null),
       guilds: { cache: new Map([["g-sup", guild]]) } },
@@ -8650,6 +8651,7 @@ function conferirCartao(onde, embed, componentes = []) {
     traduzirEmbed: async (e, idioma) => (!idioma || idioma === "pt" ? e : { ...e, title: `[${idioma}] ${e.title}` }),
     idiomaEscolhido: async () => "", idiomaDoAplicativo: (l) => String(l || "").split("-")[0],
     ChannelType, PermissionFlagsBits,
+    somarFontes: async (g, ids) => { fontesSomadas.push(...ids); return ids.length; },
   });
   const clique = (id, locale = "pt-BR") => {
     const i = { user: { id }, locale, customId: "", deferred: false, replied: false,
@@ -8685,6 +8687,11 @@ function conferirCartao(onde, embed, componentes = []) {
   const ajuda = [...canais.values()].find((c) => c.name.endsWith("help"));
   verdade("sala de ajuda: todo mundo escreve", !ajuda.over?.length);
   verdade("a lista do que foi feito vem de volta", feito.length >= total);
+  const deLeitura = S.ESTRUTURA.flatMap((b) => b.canais).filter((c) => c.leitura).map((c) => c.nome);
+  ok("as salas de leitura viram fonte (ganham cópia em cada idioma)",
+    fontesSomadas.map((id) => canais.get(id).name).sort(), [...deLeitura].sort());
+  verdade("e a sala de ajuda não (é conversa, não aviso)",
+    !fontesSomadas.some((id) => canais.get(id).name.endsWith("help")));
   verdade("cada sala fica dentro da categoria dela",
     [...canais.values()].filter((c) => c.type === ChannelType.GuildText).every((c) => c.parent));
 
@@ -8775,6 +8782,75 @@ function conferirCartao(onde, embed, componentes = []) {
   await T.comecarTeste(i, { id: "s1", guild_id: "g1", plano: "gratis" }, banco([]));
   verdade("o banco disse que já tinha teste: avisa, não liga", /já usou o teste/.test(respostas.at(-1)));
   Object.assign(globalThis, { SB_URL: salvo.u, SB_KEY: salvo.k, BETA: salvo.b, BETA_ATE: salvo.a });
+}
+
+/* ---- salas de um idioma nascem com o histórico, traduzido ---- */
+{
+  const salvo = { c: globalThis.client, w: globalThis.clienteDoWebhook, t: globalThis.traduzirLongo,
+    v: globalThis.vantajosoTraduzir };
+  globalThis.client = { user: { id: "bot" } };
+  globalThis.PREFIXO_LER = "sup:ler:";
+  globalThis.TEXTO_MAXIMO = globalThis.TEXTO_MAXIMO ?? 4000;
+  globalThis.MOTOR_AUTO = globalThis.MOTOR_AUTO ?? "auto";
+  globalThis.vantajosoTraduzir = () => true;
+  globalThis.traduzirLongo = async (t, idioma) => `[${idioma}] ${t}`;
+  const envios = [];
+  let quebra = "";
+  globalThis.clienteDoWebhook = (url) => ({ send: async (c) => {
+    if (quebra && String(c.content || c.embeds?.[0]?.description || "").includes(quebra)) throw new Error("webhook caiu");
+    envios.push({ url, c });
+  } });
+  const R = carregar(["ehCartaoDoSuporte", "vaiParaAReplica", "cargaTraduzida", "PREENCHER_ATE", "preencherReplica"]);
+
+  const gente = (n, t) => ({ id: `m${n}`, createdTimestamp: n, content: t, embeds: [], author: { id: `u${n}`, username: `u${n}` },
+    attachments: new Map() });
+  const cartao = (n) => ({ ...gente(n, ""), author: { id: "bot", bot: true, username: "CYRON" },
+    embeds: [{ title: "Rules", description: "Be kind" }],
+    components: [{ components: [{ customId: "sup:ler:regras" }] }] });
+  verdade("mensagem de gente vai para a réplica", R.vaiParaAReplica(gente(1, "oi")));
+  verdade("aviso de sistema (fulano entrou) não vai", !R.vaiParaAReplica({ ...gente(1, ""), system: true }));
+  verdade("aviso de webhook vai", R.vaiParaAReplica({ ...gente(1, "x"), author: { bot: true }, webhookId: "w" }));
+  verdade("outro bot não vai", !R.vaiParaAReplica({ ...gente(1, "x"), author: { id: "outro", bot: true } }));
+  verdade("cartão do suporte, que é meu, vai", R.vaiParaAReplica(cartao(1)));
+  verdade("outra mensagem minha (serviço) não vai",
+    !R.vaiParaAReplica({ ...gente(1, "Tradução"), author: { id: "bot", bot: true }, components: [] }));
+
+  const msgs = [];
+  for (let n = 15; n >= 1; n--) msgs.push(gente(n, `mensagem ${n}`));
+  msgs.push({ ...gente(99, "de outro bot"), author: { id: "outro", bot: true } });
+  msgs.push(cartao(100));
+  const fonte = { messages: { fetch: async () => new Map(msgs.map((m) => [m.id, m])) } };
+  const n = await R.preencherReplica(fonte, "https://hook/ja", "ja", "auto");
+  ok("a sala nova recebe as últimas dez", n, 10);
+  ok("da mais velha para a mais nova", envios.map((e) => e.c.content || e.c.embeds[0].title),
+    [...Array.from({ length: 9 }, (_, i) => `[ja] mensagem ${i + 7}`), "[ja] Rules"]);
+  verdade("pelo webhook da sala nova", envios.every((e) => e.url === "https://hook/ja"));
+  verdade("o cartão chega traduzido, com o texto também",
+    envios.at(-1).c.embeds[0].description === "[ja] Be kind");
+  verdade("sem menção nenhuma", envios.every((e) => e.c.allowedMentions?.parse?.length === 0));
+
+  envios.length = 0;
+  const comAnexo = { ...gente(1, "olha"), attachments: new Map([["a", { url: "https://cdn/foto.png" }]]) };
+  await R.preencherReplica({ messages: { fetch: async () => new Map([["m1", comAnexo]]) } }, "h", "ja");
+  verdade("anexo antigo vira link (não baixa dez arquivos de uma vez)",
+    envios[0].c.content.includes("https://cdn/foto.png") && !envios[0].c.files.length);
+
+  envios.length = 0; quebra = "mensagem 12";
+  const m2 = await R.preencherReplica(fonte, "h", "ja");
+  ok("uma que falha não derruba as outras", m2, 9);
+  quebra = "";
+  ok("canal que sumiu: nada a fazer, sem erro", await R.preencherReplica(null, "h", "ja"), 0);
+
+  const idx = semComentarios(readFileSync(`${aqui}/index.js`, "utf8"));
+  const garantir = idx.slice(idx.indexOf("async function garantirReplica"), idx.indexOf("const jaTentado"));
+  const adotado = garantir.slice(0, garantir.indexOf("const canal = await guild.channels.create"));
+  verdade("só a sala CRIADA é preenchida", garantir.includes("preencherReplica(fonte, webhook.url, sala.idioma"));
+  verdade("a sala adotada não (já tem histórico; duplicaria)", !adotado.includes("preencherReplica"));
+  verdade("o preenchimento vem depois de a sala estar gravada",
+    garantir.indexOf("preencherReplica(") > garantir.indexOf('await sbPost("discord_canal_idioma"', garantir.indexOf("const canal = await")));
+  verdade("cartão do suporte que eu posto numa fonte vai para os idiomas, antes do filtro de bot",
+    /ehCartaoDoSuporte\(msg\)\) \{[\s\S]{0,300}replicarPorIdioma\(msg, servidor\.id, tipo[\s\S]{0,80}if \(msg\.author\.bot\) return;/.test(idx));
+  Object.assign(globalThis, { client: salvo.c, clienteDoWebhook: salvo.w, traduzirLongo: salvo.t, vantajosoTraduzir: salvo.v });
 }
 
 /* ---- o painel do dono pelo privado ---- */

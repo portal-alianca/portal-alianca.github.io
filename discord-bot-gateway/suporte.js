@@ -270,6 +270,7 @@ async function postarOuEditar(canal, chave) {
 export async function montarSuporte(guild) {
   const { ChannelType, PermissionFlagsBits: P } = d;
   const feito = [];
+  const leitura = [];
   await guild.channels.fetch();
   const eu = d.client.user.id;
 
@@ -298,7 +299,17 @@ export async function montarSuporte(guild) {
       if (c.sistema && guild.systemChannelId !== canal.id) {
         await guild.setSystemChannel(canal).then(() => feito.push(`👋 entradas anunciadas em #${c.nome}`)).catch(() => {});
       }
+      if (c.leitura) leitura.push(canal.id);
     }
+  }
+
+  /* As salas de leitura viram FONTE: cada idioma escolhido ganha a copia
+     delas, traduzida, e a sala nova ja' nasce com os textos. Quem chega do
+     Japao le as regras em japones na sala dele -- e ve o bot funcionando
+     antes de instalar. */
+  if (d.somarFontes && leitura.length) {
+    const n = await d.somarFontes(guild, leitura).catch(() => 0);
+    if (n) feito.push(`🌐 ${n} ${n === 1 ? "sala passa" : "salas passam"} a ganhar cópia traduzida em cada idioma`);
   }
   return feito;
 }
