@@ -12092,6 +12092,331 @@ async function ligarChamada(inter, ligar) {
       { type: 2, custom_id: "duelo:chamada-on:chat", style: 2, emoji: { name: "🔔" }, label: "Religar" }] }] });
 }
 
+/* ---------------- 🃏 HERÓIS NO CHAT ----------------
+
+   O que os bots mais vivos do Discord tem em comum (Mudae, Pokétwo): algo
+   aparece no meio da conversa, e o primeiro a tocar leva. Volta-se para o
+   servidor para nao perder a proxima -- e e' isso que um servidor procura
+   num bot, muito antes de precisar de traducao.
+
+   Aqui quem aparece sao os herois do Duelo, como CARTAS em tres raridades.
+   A carta vai para a /colecao, da' XP para o heroi (o mesmo do Duelo e do
+   /codex) e, com os niveis ligados, para o nivel da pessoa no servidor. O
+   /diario da' uma por dia, com sequencia; o /presentear passa uma adiante.
+
+   Nada aqui passa por tradutor: todo texto e' bilingue de nascenca (PT ·
+   EN), e o resto e' nome proprio, bandeira e numero. Um servidor inteiro
+   brincando nao gasta uma letra da cota. */
+const APARICAO_MENSAGENS = 6;                 // na janela da conversa (CHAMADA_JANELA)
+const APARICAO_PESSOAS = 2;
+const APARICAO_INTERVALO = 30 * 60 * 1000;    // entre um heroi e outro, por servidor
+const APARICOES_POR_DIA = 12;                 // por servidor
+const APARICAO_VALE = 3 * 60 * 1000;          // quanto tempo o heroi espera alguem
+const PEGAS_POR_DIA = 8;                      // por pessoa: os outros tambem querem
+const RARIDADES = [
+  { n: 1, estrelas: "⭐", pt: "Comum", en: "Common", chance: 0.70, xp: 15, cor: 0x9AA4B2 },
+  { n: 2, estrelas: "⭐⭐", pt: "Raro", en: "Rare", chance: 0.25, xp: 30, cor: 0x4A90E2 },
+  { n: 3, estrelas: "⭐⭐⭐", pt: "Lendário", en: "Legendary", chance: 0.05, xp: 60, cor: 0xF5C542 },
+];
+const aparicoes = new Map();        // id -> { heroi, raridade, ate, pego, msg }
+const ultimaAparicao = new Map();   // servidorId -> quando apareceu o ultimo
+const aparicoesNoDia = new Map();   // `${servidorId}|${dia}` -> quantos hoje
+const pegasNoDia = new Map();       // `${userId}|${dia}` -> quantos hoje
+
+function raridadeDe(n) {
+  return RARIDADES.find((r) => r.n === Number(n)) || RARIDADES[0];
+}
+
+/* A raridade pela sorte (0 a 1). As chances do /diario em sequencia sao
+   outras, e vem de fora. Pura. */
+function sortearRaridade(sorte, chances = RARIDADES.map((r) => r.chance)) {
+  let soma = 0;
+  for (let i = 0; i < RARIDADES.length; i++) {
+    soma += chances[i];
+    if (sorte < soma) return RARIDADES[i];
+  }
+  return RARIDADES[RARIDADES.length - 1];
+}
+
+function sortearHeroi(sorte) {
+  return PERSONAGENS[Math.min(PERSONAGENS.length - 1, Math.floor(sorte * PERSONAGENS.length))];
+}
+
+function contarNoDia(mapa, chave, dia) {
+  for (const k of mapa.keys()) if (!k.endsWith(`|${dia}`)) mapa.delete(k);
+  mapa.set(chave, (mapa.get(chave) || 0) + 1);
+}
+
+/* Conversa de verdade (ao menos duas pessoas), intervalo e teto do dia. So'
+   le os dois mapas: quem marca e' talvezAparecerHeroi. */
+function podeAparecer(lista, servidorId, agora, dia) {
+  const recentes = lista.filter((m) => agora - m.t < CHAMADA_JANELA);
+  if (recentes.length < APARICAO_MENSAGENS || new Set(recentes.map((m) => m.autor)).size < APARICAO_PESSOAS) return false;
+  const ultima = ultimaAparicao.get(servidorId);
+  if (ultima != null && agora - ultima < APARICAO_INTERVALO) return false;
+  return (aparicoesNoDia.get(`${servidorId}|${dia}`) || 0) < APARICOES_POR_DIA;
+}
+
+/* O retrato vai como anexo: o arquivo ja' esta' no bot, e nada e' desenhado
+   (o processador de imagem fica para o cartaz do Duelo). */
+function retratoDoHeroi(p) {
+  return { attachment: `${RETRATOS_DO_DUELO}${p.id}.jpg`, name: `${p.id}.jpg` };
+}
+
+function cartaoDaAparicao(id, p, r) {
+  return {
+    content: "✨ **Um herói apareceu no chat!** Quem tocar em Pegar primeiro leva a carta.\n" +
+      "_✨ **A hero appeared in the chat!** The first to tap Claim gets the card._",
+    embeds: [{ color: r.cor, title: `${p.bandeira} ${p.nome}`.slice(0, 256),
+      description: `${r.estrelas} **${r.pt}** · ${r.en}`,
+      image: { url: `attachment://${p.id}.jpg` },
+      footer: { text: `+${r.xp} XP · Vai embora em 3 min · Leaves in 3 min` } }],
+    files: [retratoDoHeroi(p)],
+    components: [{ type: 1, components: [
+      { type: 2, custom_id: `heroi:pegar:${id}`, style: 3, emoji: { name: "✋" }, label: "Pegar · Claim" },
+      { type: 2, custom_id: "heroi:off:x", style: 2, emoji: { name: "🔕" }, label: "Desligar (ADM)" },
+    ] }],
+    allowedMentions: { parse: [] },
+  };
+}
+
+function cartaoPego(p, r, userId) {
+  return {
+    content: `✅ <@${userId}> pegou **${p.nome}** ${r.estrelas}! +${r.xp} XP\n` +
+      `_✅ <@${userId}> claimed **${p.nome}** ${r.estrelas}! +${r.xp} XP_\n-# 🃏 /colecao · /diario`,
+    embeds: [{ color: r.cor, title: `${p.bandeira} ${p.nome}`.slice(0, 256),
+      description: `${r.estrelas} **${r.pt}** · ${r.en}`, image: { url: `attachment://${p.id}.jpg` } }],
+    components: [],
+    allowedMentions: { parse: [] },
+  };
+}
+
+/* Chamada logo DEPOIS de talvezChamarParaDuelo, que e' quem anota a
+   mensagem na conversa do canal: aqui eu so' leio a mesma lista. */
+async function talvezAparecerHeroi(msg, servidor, agora = Date.now(), sorte = Math.random) {
+  const lista = conversaNoCanal.get(msg.channel.id) || [];
+  const dia = hojeISO();
+  if (!podeAparecer(lista, servidor.id, agora, dia)) return false;
+  /* Marca ANTES de qualquer espera: duas mensagens juntas nao viram dois herois. */
+  ultimaAparicao.set(servidor.id, agora);
+  contarNoDia(aparicoesNoDia, `${servidor.id}|${dia}`, dia);
+  if ((await ajustes())[`aparicao-off:${servidor.id}`] === "1") return false;
+  if (await ehOPainel(msg.guild.id)) return false;
+  /* Replica so' recebe traducao: ninguem conversa nela. */
+  if ((await replicasDoIdioma(servidor.id)).some((c) => c.canal_id === msg.channel.id)) return false;
+  const pode = msg.guild.members?.me ? msg.channel.permissionsFor?.(msg.guild.members.me) : null;
+  if (pode && ![PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles]
+    .every((f) => pode.has(f))) return false;
+  const p = sortearHeroi(sorte());
+  const r = sortearRaridade(sorte());
+  const id = `${agora.toString(36)}${Math.floor(sorte() * 1e6).toString(36)}`;
+  const enviada = await msg.channel.send(cartaoDaAparicao(id, p, r)).catch(() => null);
+  if (!enviada) return false;
+  const a = { heroi: p.id, raridade: r.n, ate: agora + APARICAO_VALE, pego: null, msg: enviada };
+  aparicoes.set(id, a);
+  setTimeout(() => heroiFoiEmbora(id), APARICAO_VALE).unref?.();
+  contarUso("heroi-apareceu", msg.guild.id);
+  return true;
+}
+
+async function heroiFoiEmbora(id) {
+  const a = aparicoes.get(id);
+  aparicoes.delete(id);
+  if (!a || a.pego) return;
+  const p = personagemPorId(a.heroi);
+  await a.msg?.edit({ content: `💨 **${p.nome}** foi embora. Fique de olho no chat!\n` +
+    `_💨 **${p.nome}** left. Keep an eye on the chat!_`, components: [], allowedMentions: { parse: [] } }).catch(() => {});
+}
+
+/* A carta, o XP do heroi e -- com os niveis ligados -- o XP do servidor.
+   O XP do heroi soma no banco (cyron_somar_xp_heroi) sem mexer na data de
+   "ultimo mexido", que e' como heroiAtivo sabe qual e' o heroi da pessoa:
+   pegar uma carta nao troca o heroi de ninguem. */
+async function guardarCarta(userId, p, r, guildId = null, canal = null) {
+  await rpc("cyron_ganhar_carta", { p_user: userId, p_personagem: p.id, p_raridade: r.n });
+  await rpc("cyron_somar_xp_heroi", { p_user: userId, p_personagem: p.id, p_xp: r.xp });
+  const guild = guildId ? client.guilds.cache.get(String(guildId)) : null;
+  if (!guild) return;
+  const servidor = await servidorDoGuild(guild.id);
+  if (servidor?.niveis_ligado) await somarXp(guild, userId, r.xp, servidor, canal);
+}
+
+async function pegarHeroi(inter, id, agora = Date.now()) {
+  const a = aparicoes.get(id);
+  if (!a || agora > a.ate) {
+    /* Bot reiniciado no meio: o cartao ficou com o botao, e ninguem mais o
+       vigia. Quem tocar fica sabendo, e o botao sai. */
+    if (!a) inter.message?.edit({ components: [] }).catch(() => {});
+    return inter.reply({ flags: 64, content: "💨 Esse herói já foi embora. · _This hero already left._" });
+  }
+  if (a.pego) {
+    return inter.reply({ flags: 64, content: `✋ <@${a.pego}> pegou primeiro. · _Someone got it first._`, allowedMentions: { parse: [] } });
+  }
+  const dia = hojeISO();
+  const chave = `${inter.user.id}|${dia}`;
+  if ((pegasNoDia.get(chave) || 0) >= PEGAS_POR_DIA) {
+    return inter.reply({ flags: 64, content: `🃏 Você já pegou ${PEGAS_POR_DIA} heróis hoje: deixe este para os outros!\n` +
+      `_You already claimed ${PEGAS_POR_DIA} heroes today: leave this one for the others!_` });
+  }
+  /* Antes de qualquer espera: o segundo clique, um instante depois, ja' ve
+     que alguem pegou. */
+  a.pego = inter.user.id;
+  contarNoDia(pegasNoDia, chave, dia);
+  const p = personagemPorId(a.heroi);
+  const r = raridadeDe(a.raridade);
+  await inter.update(cartaoPego(p, r, inter.user.id)).catch(() => {});
+  contarUso("heroi-pego", inter.guildId);
+  await guardarCarta(inter.user.id, p, r, inter.guildId, inter.channel).catch((e) =>
+    console.error("herois: nao guardei a carta:", e?.message || e));
+}
+
+/* O 🔕 do cartao: so' quem administra, para o servidor inteiro. A resposta
+   (so' para quem desligou) traz o botao de religar. */
+async function ligarAparicoes(inter, ligar) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🔕 Só quem administra o servidor pode desligar os heróis.\n" +
+      "_Only server admins can turn heroes off._" });
+  }
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.deferUpdate();
+  await porAjuste(`aparicao-off:${servidor.id}`, ligar ? null : "1");
+  return inter.reply({ flags: 64,
+    content: ligar
+      ? "🔔 Pronto: os heróis voltam a aparecer quando o chat estiver animado.\n_Done: heroes will show up again when the chat is lively._"
+      : "🔕 Pronto: os heróis não aparecem mais neste servidor. /colecao e /diario continuam funcionando.\n" +
+        "_Done: heroes won't show up in this server anymore. /colecao and /diario still work._",
+    components: ligar ? [] : [{ type: 1, components: [
+      { type: 2, custom_id: "heroi:on:x", style: 2, emoji: { name: "🔔" }, label: "Religar · Turn back on" }] }] });
+}
+
+async function cliqueHeroi(inter) {
+  const [, acao, id] = inter.customId.split(":");
+  if (acao === "pegar") return pegarHeroi(inter, id);
+  if (acao === "off") return ligarAparicoes(inter, false);
+  if (acao === "on") return ligarAparicoes(inter, true);
+  return inter.deferUpdate();
+}
+
+/* ---- /diario ---- */
+
+/* Sequencia de 3 dias melhora a sorte; todo setimo dia seguido e' lendario
+   garantido -- o motivo para nao quebrar a sequencia. Pura. */
+function chancesDoDiario(seq) {
+  if (seq > 0 && seq % 7 === 0) return [0, 0, 1];
+  if (seq >= 3) return [0.55, 0.35, 0.10];
+  return RARIDADES.map((r) => r.chance);
+}
+
+/* A meia-noite UTC seguinte, que e' quando o /diario volta. Pura. */
+function proximoDiario(agora) {
+  const d = new Date(agora);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+async function comandoDiario(inter, agora = Date.now(), sorte = Math.random) {
+  await inter.deferReply();
+  const [d] = await rpc("cyron_pegar_diario", { p_user: inter.user.id, p_dia: hojeISO() }) || [];
+  if (!d) throw new Error("o /diario nao respondeu");
+  /* <t:...:R> o Discord escreve na lingua de cada um ("em 5 horas"). */
+  const volta = `<t:${Math.floor(proximoDiario(agora) / 1000)}:R>`;
+  if (d.ja_pegou) {
+    return inter.editReply({ content: `⏳ Você já pegou a carta de hoje. A próxima chega ${volta}.\n` +
+      `_⏳ You already got today's card. The next one arrives ${volta}._` });
+  }
+  const seq = Number(d.seq) || 1;
+  const r = sortearRaridade(sorte(), chancesDoDiario(seq));
+  const p = sortearHeroi(sorte());
+  await guardarCarta(inter.user.id, p, r, inter.guildId, inter.channel);
+  contarUso("diario", inter.guildId);
+  const garantido = 7 - (seq % 7);
+  return inter.editReply({
+    embeds: [{ color: r.cor, title: "🎁 Diário · Daily",
+      description: `${p.bandeira} **${p.nome}** · ${r.estrelas} ${r.pt} · ${r.en}\n+${r.xp} XP\n\n` +
+        `🔥 **${seq}** ${seq === 1 ? "dia · day" : "dias seguidos · days in a row"}` +
+        (garantido === 7 ? "" : `\n-# ⭐⭐⭐ garantido em ${garantido} ${garantido === 1 ? "dia" : "dias"} · guaranteed in ${garantido} ${garantido === 1 ? "day" : "days"}`) +
+        `\n-# A próxima carta chega ${volta} · Next card ${volta}`,
+      thumbnail: { url: `attachment://${p.id}.jpg` } }],
+    files: [retratoDoHeroi(p)],
+    allowedMentions: { parse: [] },
+  });
+}
+
+/* ---- /colecao ---- */
+
+function diaAnterior(dia) {
+  return new Date(Date.parse(`${dia}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+}
+
+/* O album: os doze herois, quantas cartas de cada raridade, 👑 em quem tem
+   as tres. A sequencia so' conta se o ultimo /diario foi hoje ou ontem. Pura. */
+function albumDaColecao(nome, cartas, diario, dia) {
+  const tem = (id, n) => Number(cartas.find((c) => c.personagem === id && Number(c.raridade) === n)?.quantidade) || 0;
+  let distintas = 0;
+  const linhas = PERSONAGENS.map((p) => {
+    const q = RARIDADES.map((r) => tem(p.id, r.n));
+    distintas += q.filter((x) => x > 0).length;
+    if (!q.some((x) => x > 0)) return `${p.bandeira} ${p.curto} · ❔`;
+    const partes = RARIDADES.map((r, i) => (q[i] ? `${r.estrelas}×${q[i]}` : "")).filter(Boolean).join("  ");
+    return `${p.bandeira} **${p.curto}** · ${partes}${q.every((x) => x > 0) ? " 👑" : ""}`;
+  });
+  const viva = diario && (diario.ultimo_dia === dia || diario.ultimo_dia === diaAnterior(dia));
+  return {
+    embeds: [{ color: 0xF5C542, title: `🃏 ${nome} · Coleção · Collection`.slice(0, 256),
+      description: linhas.join("\n"),
+      fields: [
+        { name: "Cartas · Cards", value: `${distintas}/${PERSONAGENS.length * RARIDADES.length}`, inline: true },
+        { name: "🔥 Sequência · Streak", value: `${viva ? Number(diario.sequencia) || 0 : 0} · máx/best ${Number(diario?.melhor) || 0}`, inline: true },
+      ],
+      footer: { text: "Heróis no chat e /diario dão cartas · /presentear dá uma a alguém\n" +
+        "Heroes in the chat and /diario give cards · /presentear gifts one" } }],
+    allowedMentions: { parse: [] },
+  };
+}
+
+async function comandoColecao(inter) {
+  await inter.deferReply();
+  const pediu = inter.options.get("membro")?.value;
+  const alvo = pediu ? await membroDaOpcao(inter) : null;
+  if (pediu && !alvo) {
+    return inter.editReply({ content: "🤷 Não achei essa pessoa neste servidor. · _I couldn't find that person in this server._" });
+  }
+  const user = alvo?.user || inter.user;
+  const nome = alvo?.displayName || inter.member?.displayName || inter.user.globalName || inter.user.username;
+  const [cartas, diario] = await Promise.all([
+    sb(`cyron_colecao?user_id=eq.${user.id}&select=personagem,raridade,quantidade`).catch(() => null),
+    sb(`cyron_diario?user_id=eq.${user.id}&select=sequencia,melhor,ultimo_dia`).catch(() => null),
+  ]);
+  return inter.editReply(albumDaColecao(nome, cartas || [], diario?.[0] || null, hojeISO()));
+}
+
+/* ---- /presentear ---- */
+
+async function comandoPresentear(inter) {
+  await inter.deferReply();
+  const para = await membroDaOpcao(inter);
+  const p = personagemPorId(inter.options.getString("personagem"));
+  const r = raridadeDe(inter.options.getInteger("raridade") || 1);
+  /* Recusa e' so' para quem pediu: a resposta publica some e o aviso vem a parte. */
+  const recusar = async (texto) => {
+    await inter.deleteReply().catch(() => {});
+    return inter.followUp({ flags: 64, content: texto });
+  };
+  if (!para || para.user?.bot) return recusar("🤷 Não achei essa pessoa neste servidor. · _I couldn't find that person in this server._");
+  if (para.id === inter.user.id) return recusar("🎁 Presente é para outra pessoa. · _Gifts are for someone else._");
+  if (!p) return recusar("🤷 Não conheço esse herói. · _I don't know that hero._");
+  const deu = await rpc("cyron_presentear", { p_de: inter.user.id, p_para: para.id, p_personagem: p.id, p_raridade: r.n });
+  if (deu !== true) {
+    return recusar(`🃏 Você não tem **${p.nome}** ${r.estrelas} para dar. Veja as suas em /colecao.\n` +
+      `_You don't have **${p.nome}** ${r.estrelas} to give. See yours in /colecao._`);
+  }
+  contarUso("heroi-presente", inter.guildId);
+  return inter.editReply({
+    content: `🎁 <@${inter.user.id}> deu **${p.nome}** ${r.estrelas} para <@${para.id}>!\n` +
+      `_🎁 <@${inter.user.id}> gave **${p.nome}** ${r.estrelas} to <@${para.id}>!_`,
+    allowedMentions: { users: [para.id] },
+  });
+}
+
 async function cliqueDuelo(inter) {
   const [, acao, id, extra] = inter.customId.split(":");
   if (acao === "revanche") return cliqueRevanche(inter, id);
@@ -17389,6 +17714,10 @@ const NOMES_DAS_FUNCOES = {
   "duelo-chamada": "⚔️ A CYRON chamou o chat para duelar",
   "duelo-chamada-aceita": "⚔️ Alguém aceitou a chamada da CYRON",
   "traduzir-na-conta": "📲 Traduzir pela conta (fora dos servidores da CYRON)",
+  "heroi-apareceu": "🃏 Um herói apareceu no chat",
+  "heroi-pego": "✋ Alguém pegou um herói",
+  "heroi-presente": "🎁 Carta dada de presente",
+  diario: "🎁 /diario pego",
 };
 
 function nomeDaFuncao(recurso) {
@@ -20667,7 +20996,10 @@ function roteiroDaIA({ convite = "", conta = "", suporte = "", beta = "" } = {})
       `${ESPACOS.especial.nivelAlternativa} (especial) e ${ESPACOS.suprema.nivelAlternativa} (suprema): diferente, nunca mais forte. ` +
       "Troca no painel do /duelo (aba Habilidades) ou com /equipar. Cada nível abre uma página do /codex, com curiosidades reais do herói.",
     `Patente, pelas vitórias somadas de todos os heróis, mostrada no /perfil: ${PATENTES.map((p) => `${p.nome} (${p.min})`).join(", ")}. Perder não rebaixa.`,
-    `Heróis: ${PERSONAGENS.map((p) => `${p.nome} (${p.titulo})`).join("; ")}.`,
+    /* So' os nomes: o titulo de cada um (O Conquistador...) custava ~50 tokens
+       em TODA pergunta, e quando a conversa cita um heroi, golpesCitados ja'
+       manda a ficha dele inteira. */
+    `Heróis: ${PERSONAGENS.map((p) => p.nome).join("; ")}.`,
   ];
   return [
     QUEM_SOU,
@@ -21223,6 +21555,10 @@ async function comandoDeInteracao(inter) {
     if (!inter.guildId && nome === "duelo") return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     return nome === "duelo" ? comandoDuelo(inter) : nome === "equipar" ? comandoEquipar(inter) : comandoCodex(inter);
   }
+  if (nome === "colecao" || nome === "diario" || nome === "presentear") {
+    if (!inter.guildId && nome === "presentear") return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
+    return nome === "colecao" ? comandoColecao(inter) : nome === "diario" ? comandoDiario(inter) : comandoPresentear(inter);
+  }
   if (nome === "sorteio" || INTERACOES[nome]) {
     if (!inter.guildId) return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     return nome === "sorteio" ? comandoSorteio(inter) : comandoInteracao(inter, nome);
@@ -21371,6 +21707,9 @@ client.on("interactionCreate", async (inter) => {
     if (inter.isMessageComponent() && inter.customId.startsWith("duelo:")) {
       return await cliqueDuelo(inter);
     }
+    if (inter.isButton() && inter.customId.startsWith("heroi:")) {
+      return await cliqueHeroi(inter);
+    }
     if (inter.isMessageComponent() && inter.customId.startsWith("equipar:")) {
       return await cliqueEquipar(inter);
     }
@@ -21471,7 +21810,7 @@ client.on("interactionCreate", async (inter) => {
       /* "membro" do /abraco, /beijo, /tapa, /cafune e /perfil, e o
          "oponente" do /duelo: o servidor inteiro, e nao so' quem enxerga a
          sala. */
-      if (INTERACOES[inter.commandName] || inter.commandName === "perfil" || inter.commandName === "duelo") return sugerirMembros(inter);
+      if (INTERACOES[inter.commandName] || ["perfil", "duelo", "colecao", "presentear"].includes(inter.commandName)) return sugerirMembros(inter);
       /* O autocompletar precisa saber DE QUAL comando ele veio.
 
          Havia um só, do jogo, e a lista de eventos do Kingshot respondia a
@@ -21598,6 +21937,7 @@ client.on("messageCreate", async (msg) => {
        participar da conversa. */
     ganharXp(msg, servidor).catch((e) => console.error("niveis: falhou:", e?.message || e));
     talvezChamarParaDuelo(msg, servidor).catch((e) => console.error("duelo: chamada falhou:", e?.message || e));
+    talvezAparecerHeroi(msg, servidor).catch((e) => console.error("herois: aparicao falhou:", e?.message || e));
 
     const texto = String(msg.content || "").trim();
 
@@ -21964,7 +22304,7 @@ client.on("messageReactionAdd", async (reacao, quem) => {
    separarComandos leria /admin como comando do jogo e o empurraria pros
    servidores com alianca -- exatamente o contrario do que ele e'. */
 const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help", "admin", "arena", "evento", "Criar evento", "hora", "boas-vindas", "perfil", "top", "niveis", "xp",
-  "sorteio", "abraco", "beijo", "tapa", "cafune", "duelo", "equipar", "codex", "suporte"]);
+  "sorteio", "abraco", "beijo", "tapa", "cafune", "duelo", "equipar", "codex", "suporte", "colecao", "diario", "presentear"]);
 
 async function separarComandos() {
   try {
@@ -22401,6 +22741,7 @@ const NOMES_MEUS = new Set([
   "hora", "time", "boas-vindas", "welcome-card", "perfil", "profile", "top", "niveis", "levels", "xp",
   "sorteio", "giveaway", "abraco", "hug", "beijo", "kiss", "tapa", "slap", "cafune", "pat",
   "duelo", "duel", "equipar", "equip", "codex", "suporte", "support",
+  "colecao", "collection", "coleccion", "diario", "daily", "presentear", "gift", "regalar",
 ]);
 
 /* Uma linha do formulario que carrega duas respostas: "todos 60".
@@ -23196,6 +23537,33 @@ const GLOBAIS_DO_CYRON = soNoServidor(comLinguas([
     dmPermission: true,
     options: [{ type: 3, name: "personagem", required: false, description: "Ver as páginas de um personagem / See a character's pages",
       choices: PERSONAGENS.map((p) => ({ name: `${p.bandeira} ${p.nome}`.slice(0, 100), value: p.id })) }],
+  },
+  {
+    /* 🃏 Heróis no chat: o album, a carta do dia e o presente. */
+    name: "colecao",
+    nameLocalizations: { "en-US": "collection", "en-GB": "collection", "es-ES": "coleccion" },
+    description: "Sua coleção de cartas de heróis / Your hero card collection",
+    dmPermission: true,
+    options: [{ ...OPCAO_DE_MEMBRO, required: false, description: "Ver a coleção de outra pessoa / See someone else's collection" }],
+  },
+  {
+    name: "diario",
+    nameLocalizations: { "en-US": "daily", "en-GB": "daily", "es-ES": "diario" },
+    description: "Sua carta de herói do dia / Your daily hero card",
+    dmPermission: true,
+  },
+  {
+    name: "presentear",
+    nameLocalizations: { "en-US": "gift", "en-GB": "gift", "es-ES": "regalar" },
+    description: "Dar uma carta de herói a alguém / Gift someone a hero card",
+    dmPermission: false,
+    options: [
+      { ...OPCAO_DE_MEMBRO, description: "Para quem / Who to" },
+      { type: 3, name: "personagem", required: true, description: "Qual herói / Which hero",
+        choices: PERSONAGENS.map((p) => ({ name: `${p.bandeira} ${p.nome}`.slice(0, 100), value: p.id })) },
+      { type: 4, name: "raridade", required: false, description: "Qual raridade (padrão: comum) / Which rarity",
+        choices: RARIDADES.map((r) => ({ name: `${r.estrelas} ${r.pt} · ${r.en}`, value: r.n })) },
+    ],
   },
   {
     /* De quem administra: sorteio e' do servidor, nao de qualquer um. */

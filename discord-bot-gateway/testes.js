@@ -11560,7 +11560,7 @@ function conferirCartao(onde, embed, componentes = []) {
   globalThis.LEMBRETES = carregar(["LEMBRETES"]).LEMBRETES;
   globalThis.TRADUCOES_DO_EVENTO = (0, eval)(pedaco("TRADUCOES_DO_EVENTO").replace(/^var TRADUCOES_DO_EVENTO = /, "") + "()");
   Object.assign(globalThis, carregar(["SUPORTE_HORAS", "TRADUCOES_DAS_BOAS_VINDAS",
-    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "locaisDoDiscord", "comLinguas", "soNoServidor", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
+    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "locaisDoDiscord", "comLinguas", "soNoServidor", "RARIDADES", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
     "DUELO_ENERGIA_INICIAL", "DUELO_ENERGIA_TURNO", "DUELO_ENERGIA_MAX", "DUELO_TEMPO", "DUELO_AUSENCIAS",
     "DUELO_MORTE_SUBITA", "DUELO_XP", "DUELO_TREINOS_DIA", "DUELO_DUELOS_DIA", "PATENTES", "descricaoDaHabilidade",
     "venceEm", "hojeISO", "botaoDeSuporte"]));
@@ -11845,7 +11845,7 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("/perfil também", /name: "perfil",[^]{0,500}options: \[\{ \.\.\.OPCAO_DE_MEMBRO, required: false/.test(fonteM));
   ok("a opção é texto com autocompletar", [OPCAO_DE_MEMBRO.type, OPCAO_DE_MEMBRO.autocomplete], [3, true]);
   verdade("o autocompletar desses comandos vem do servidor inteiro",
-    /if \(INTERACOES\[inter\.commandName\] \|\| inter\.commandName === "perfil" \|\| inter\.commandName === "duelo"\) return sugerirMembros\(inter\);/.test(fonteM));
+    /if \(INTERACOES\[inter\.commandName\] \|\| \["perfil", "duelo", "colecao", "presentear"\]\.includes\(inter\.commandName\)\) return sugerirMembros\(inter\);/.test(fonteM));
   verdade("o /perfil acha a pessoa pela opção nova", /const alvo = pediu \? await membroDaOpcao\(inter\) : inter\.member;/.test(fonteM));
 }
 
@@ -12494,6 +12494,205 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("a privacidade conta o que chega quando o Translate é usado pela conta", /A única exceção é a que você escolhe/.test(priv) && /The only exception is the one you choose/.test(priv));
   const termos = readFileSync(`${aqui}/../cyron/termos.html`, "utf8");
   verdade("os termos dizem que na conta qualquer pessoa instala", /Na sua conta, qualquer pessoa instala/.test(termos));
+}
+
+/* ====== 🃏 HERÓIS NO CHAT ======
+ *
+ * Com o chat animado, um herói aparece e o primeiro a tocar leva a carta. A
+ * carta vai para a /colecao e dá XP ao herói e ao nível do servidor; o
+ * /diario dá uma por dia, com sequência; o /presentear passa uma adiante.
+ * Tudo bilíngue de nascença: nada passa pelo tradutor. */
+{
+  const antes = { client: globalThis.client, ajustes: globalThis.ajustes, porAjuste: globalThis.porAjuste,
+    ehOPainel: globalThis.ehOPainel, replicasDoIdioma: globalThis.replicasDoIdioma, hojeISO: globalThis.hojeISO,
+    rpc: globalThis.rpc, sb: globalThis.sb, servidorDoGuild: globalThis.servidorDoGuild, somarXp: globalThis.somarXp,
+    membroDaOpcao: globalThis.membroDaOpcao, RETRATOS_DO_DUELO: globalThis.RETRATOS_DO_DUELO,
+    CHAMADA_JANELA: globalThis.CHAMADA_JANELA, conversaNoCanal: globalThis.conversaNoCanal };
+  try {
+    globalThis.RETRATOS_DO_DUELO = `${aqui}/img/duelo/`;
+    globalThis.CHAMADA_JANELA = 10 * 60 * 1000;
+    globalThis.conversaNoCanal = new Map();
+    const H = carregar(["APARICAO_MENSAGENS", "APARICAO_PESSOAS", "APARICAO_INTERVALO", "APARICOES_POR_DIA", "APARICAO_VALE",
+      "PEGAS_POR_DIA", "aparicoes", "ultimaAparicao", "aparicoesNoDia", "pegasNoDia", "raridadeDe", "sortearRaridade",
+      "sortearHeroi", "contarNoDia", "podeAparecer", "retratoDoHeroi", "cartaoDaAparicao", "cartaoPego", "talvezAparecerHeroi",
+      "heroiFoiEmbora", "guardarCarta", "pegarHeroi", "ligarAparicoes", "cliqueHeroi", "chancesDoDiario", "proximoDiario",
+      "comandoDiario", "diaAnterior", "albumDaColecao", "comandoColecao", "comandoPresentear"]);
+
+    /* ---- a sorte ---- */
+    ok("sorte baixa: comum", H.sortearRaridade(0).pt, "Comum");
+    ok("70% para cima: rara", H.sortearRaridade(0.70).pt, "Raro");
+    ok("os 5% do topo: lendária", H.sortearRaridade(0.96).pt, "Lendário");
+    ok("as chances somam 100%", Math.round(RARIDADES.reduce((a, r) => a + r.chance, 0) * 100), 100);
+    verdade("quanto mais rara, mais XP", RARIDADES[0].xp < RARIDADES[1].xp && RARIDADES[1].xp < RARIDADES[2].xp);
+    ok("o primeiro e o último herói podem sair", [H.sortearHeroi(0).id, H.sortearHeroi(0.99999).id],
+      [PERSONAGENS[0].id, PERSONAGENS[PERSONAGENS.length - 1].id]);
+    ok("todo sétimo dia seguido: lendária garantida", H.sortearRaridade(0.01, H.chancesDoDiario(14)).pt, "Lendário");
+    verdade("três dias seguidos já melhoram a sorte", H.chancesDoDiario(3)[2] > RARIDADES[2].chance && H.chancesDoDiario(1)[2] === RARIDADES[2].chance);
+    ok("o /diario volta à meia-noite UTC", H.proximoDiario(Date.UTC(2026, 9, 11, 18, 30)), Date.UTC(2026, 9, 12));
+
+    /* ---- quando aparece ---- */
+    const t0 = Date.UTC(2026, 9, 11, 20);
+    const fala = (n, pessoas) => Array.from({ length: n }, (_, i) => ({ t: t0 + i * 1000, autor: `p${i % pessoas}` }));
+    verdade("5 mensagens ainda não", !H.podeAparecer(fala(5, 2), "s", t0 + 6000, "2026-10-11"));
+    verdade("alguém falando sozinho não chama herói", !H.podeAparecer(fala(10, 1), "s", t0 + 11000, "2026-10-11"));
+    verdade("6 mensagens de 2 pessoas: aparece", H.podeAparecer(fala(6, 2), "s", t0 + 7000, "2026-10-11"));
+
+    /* ---- os cartões: bilíngues, com retrato, sem marcar ninguém ---- */
+    const c = H.cartaoDaAparicao("abc", PERSONAGENS[0], RARIDADES[2]);
+    verdade("o cartão fala as duas línguas", c.content.includes("Um herói apareceu") && c.content.includes("A hero appeared"));
+    ok("botões: pegar e desligar (ADM)", c.components[0].components.map((b) => b.custom_id), ["heroi:pegar:abc", "heroi:off:x"]);
+    ok("não marca ninguém", c.allowedMentions, { parse: [] });
+    verdade("a raridade aparece nas duas línguas", c.embeds[0].description.includes("Lendário") && c.embeds[0].description.includes("Legendary"));
+    for (const p of PERSONAGENS) verdade(`o retrato de ${p.curto} existe`, existsSync(H.retratoDoHeroi(p).attachment));
+    verdade("o retrato do cartão é o anexo", c.embeds[0].image.url === `attachment://${PERSONAGENS[0].id}.jpg` && c.files[0].name === `${PERSONAGENS[0].id}.jpg`);
+
+    /* ---- aparecer de verdade ---- */
+    const marcas = {};
+    const enviadas = [];
+    globalThis.ajustes = async () => marcas;
+    globalThis.porAjuste = async (k, v) => { marcas[k] = v; };
+    globalThis.ehOPainel = async () => false;
+    globalThis.replicasDoIdioma = async () => [{ canal_id: "replica" }];
+    globalThis.hojeISO = () => "2026-10-11";
+    const canal = (id) => ({ id, permissionsFor: () => ({ has: () => true }),
+      send: async (m) => { enviadas.push([id, m]); return { id: `m${enviadas.length}`, edit: async () => {} }; } });
+    const msg = (canalId) => ({ channel: canal(canalId), guild: { id: "g1", members: { me: {} } } });
+    const sorte = (() => { const seq = [0.1, 0.99, 0.5]; let i = 0; return () => seq[i++ % seq.length]; })();
+    globalThis.conversaNoCanal.set("geral", fala(6, 2));
+    ok("conversa animada: o herói aparece", await H.talvezAparecerHeroi(msg("geral"), { id: "srv" }, t0 + 7000, sorte), true);
+    const [, cartao] = enviadas[0];
+    verdade("com a raridade sorteada (lendária, pela sorte)", /Lendário/.test(cartao.embeds[0].description));
+    ok("e logo depois não aparece outro (30 min entre um e outro)",
+      await H.talvezAparecerHeroi(msg("geral"), { id: "srv" }, t0 + 60000, sorte), false);
+    H.ultimaAparicao.clear();
+    globalThis.conversaNoCanal.set("replica", fala(6, 2));
+    ok("réplica só recebe tradução: ali não aparece", await H.talvezAparecerHeroi(msg("replica"), { id: "srv" }, t0 + 7000, sorte), false);
+    H.ultimaAparicao.clear();
+    marcas["aparicao-off:srv"] = "1";
+    ok("a administração desligou: não aparece", await H.talvezAparecerHeroi(msg("geral"), { id: "srv" }, t0 + 7000, sorte), false);
+    delete marcas["aparicao-off:srv"];
+    H.ultimaAparicao.clear();
+    H.aparicoesNoDia.set("srv|2026-10-11", H.APARICOES_POR_DIA);
+    ok("teto do dia por servidor", await H.talvezAparecerHeroi(msg("geral"), { id: "srv" }, t0 + 7000, sorte), false);
+    ok("só um cartão saiu em tudo isso", enviadas.length, 1);
+
+    /* ---- pegar ---- */
+    const chamadas = [];
+    const somados = [];
+    globalThis.rpc = async (fn, corpo) => { chamadas.push([fn, corpo]); return fn === "cyron_presentear" ? corpo.p_de === "rico" : 1; };
+    globalThis.client = { guilds: { cache: new Map([["g1", { id: "g1" }]]) } };
+    globalThis.servidorDoGuild = async () => ({ id: "srv", niveis_ligado: true });
+    globalThis.somarXp = async (g, uid, ganho) => { somados.push([g.id, uid, ganho]); };
+    const id = [...H.aparicoes.keys()][0];
+    const clique = (userId) => {
+      const r = { atualizado: null, resposta: null };
+      r.inter = { user: { id: userId }, guildId: "g1", channel: null, message: { edit: async () => {} },
+        update: async (m) => { r.atualizado = m; }, reply: async (m) => { r.resposta = m; } };
+      return r;
+    };
+    const ana = clique("111");
+    const bia = clique("222");
+    await Promise.all([H.pegarHeroi(ana.inter, id, t0 + 8000), H.pegarHeroi(bia.inter, id, t0 + 8000)]);
+    verdade("dois toques juntos: só o primeiro leva", ana.atualizado && /pegou/.test(ana.atualizado.content) && !bia.atualizado);
+    verdade("e o segundo fica sabendo, só para ele", bia.resposta?.flags === 64 && /pegou primeiro/.test(bia.resposta.content));
+    ok("o cartão pego tira os botões", ana.atualizado.components, []);
+    const lend = RARIDADES[2];
+    ok("a carta vai para a coleção e o XP para o herói", chamadas.map(([fn, c]) => [fn, c.p_raridade ?? c.p_xp]),
+      [["cyron_ganhar_carta", 3], ["cyron_somar_xp_heroi", lend.xp]]);
+    ok("e, com os níveis ligados, para o nível no servidor", somados, [["g1", "111", lend.xp]]);
+    const tarde = clique("333");
+    await H.pegarHeroi(tarde.inter, id, t0 + H.APARICAO_VALE + 9000);
+    verdade("depois de 3 minutos: foi embora", /foi embora/.test(tarde.resposta.content));
+    const fantasma = clique("333");
+    await H.pegarHeroi(fantasma.inter, "nao-existe", t0);
+    verdade("cartão de antes de reiniciar: foi embora", /foi embora/.test(fantasma.resposta.content));
+    H.aparicoes.set("novo", { heroi: "napoleao", raridade: 1, ate: t0 + 999999, pego: null, msg: null });
+    H.pegasNoDia.set("444|2026-10-11", H.PEGAS_POR_DIA);
+    const guloso = clique("444");
+    await H.pegarHeroi(guloso.inter, "novo", t0);
+    verdade("quem já pegou o teto do dia deixa para os outros", /deixe este para os outros/.test(guloso.resposta.content) &&
+      H.aparicoes.get("novo").pego === null);
+
+    /* ---- desligar ---- */
+    const respostas = [];
+    const adm = (pode) => ({ guildId: "g1", memberPermissions: { has: () => pode }, reply: async (m) => { respostas.push(m); }, deferUpdate: async () => {} });
+    await H.ligarAparicoes(adm(false), false);
+    verdade("só quem administra desliga", /Só quem administra/.test(respostas[0].content) && marcas["aparicao-off:srv"] === undefined);
+    await H.ligarAparicoes(adm(true), false);
+    verdade("desligado, com o botão de religar", marcas["aparicao-off:srv"] === "1" && respostas[1].components[0].components[0].custom_id === "heroi:on:x");
+    await H.ligarAparicoes(adm(true), true);
+    ok("e religado", marcas["aparicao-off:srv"], null);
+
+    /* ---- /diario ---- */
+    const respostaDe = () => {
+      const r = { saida: null };
+      r.inter = { user: { id: "555" }, guildId: null, channel: null, deferReply: async () => {}, editReply: async (m) => { r.saida = m; } };
+      return r;
+    };
+    chamadas.length = 0;
+    globalThis.rpc = async (fn, corpo) => { chamadas.push([fn, corpo]); return fn === "cyron_pegar_diario" ? [{ ja_pegou: false, seq: 7, recorde: 7 }] : 1; };
+    const d1 = respostaDe();
+    await H.comandoDiario(d1.inter, Date.UTC(2026, 9, 11, 18), () => 0.2);
+    verdade("sétimo dia seguido: lendária", /Lendário/.test(d1.saida.embeds[0].description) && /🔥 \*\*7\*\*/.test(d1.saida.embeds[0].description));
+    ok("o dia vai para o banco, que decide a sequência", chamadas[0], ["cyron_pegar_diario", { p_user: "555", p_dia: "2026-10-11" }]);
+    globalThis.rpc = async () => [{ ja_pegou: true, seq: 7, recorde: 7 }];
+    const d2 = respostaDe();
+    await H.comandoDiario(d2.inter, Date.UTC(2026, 9, 11, 18), () => 0.2);
+    verdade("de novo no mesmo dia: diz quando volta, na hora de cada um", /já pegou/.test(d2.saida.content) &&
+      d2.saida.content.includes(`<t:${Date.UTC(2026, 9, 12) / 1000}:R>`));
+
+    /* ---- o álbum ---- */
+    const cartas = [{ personagem: "alexandre", raridade: 1, quantidade: 2 }, { personagem: "alexandre", raridade: 2, quantidade: 1 },
+      { personagem: "alexandre", raridade: 3, quantidade: 1 }, { personagem: "napoleao", raridade: 1, quantidade: 0 }];
+    const album = H.albumDaColecao("Ana", cartas, { sequencia: 4, melhor: 9, ultimo_dia: "2026-10-10" }, "2026-10-11").embeds[0];
+    verdade("quem tem as três raridades ganha 👑", album.description.split("\n")[0].includes("👑") && album.description.includes("⭐×2"));
+    verdade("carta que já foi dada (0) não conta como tida", album.description.split("\n")[1].includes("❔"));
+    ok("conta as diferentes de 36", album.fields[0].value, `3/${PERSONAGENS.length * 3}`);
+    verdade("sequência viva (pegou ontem) aparece", album.fields[1].value.startsWith("4 "));
+    const parado = H.albumDaColecao("Ana", [], { sequencia: 4, melhor: 9, ultimo_dia: "2026-10-01" }, "2026-10-11").embeds[0];
+    verdade("sequência quebrada mostra 0, mas guarda o recorde", parado.fields[1].value.startsWith("0 ") && parado.fields[1].value.includes("9"));
+    verdade("o álbum cabe (descrição < 4096)", album.description.length < 4096);
+
+    /* ---- /presentear ---- */
+    globalThis.rpc = async (fn, corpo) => corpo.p_de === "rico";
+    const presente = (de, para, raridade = null) => {
+      const r = { saida: null, aviso: null, apagou: false };
+      r.inter = { user: { id: de }, guildId: "g1",
+        options: { getString: () => "napoleao", getInteger: () => raridade },
+        deferReply: async () => {}, deleteReply: async () => { r.apagou = true; },
+        editReply: async (m) => { r.saida = m; }, followUp: async (m) => { r.aviso = m; } };
+      globalThis.membroDaOpcao = async () => para;
+      return r;
+    };
+    const ok1 = presente("rico", { id: "777", user: { bot: false } }, 2);
+    await H.comandoPresentear(ok1.inter);
+    verdade("deu: aparece no canal e marca só quem ganhou", /deu \*\*Napoleão Bonaparte\*\* ⭐⭐/.test(ok1.saida.content) &&
+      JSON.stringify(ok1.saida.allowedMentions) === JSON.stringify({ users: ["777"] }));
+    const sem = presente("pobre", { id: "777", user: { bot: false } });
+    await H.comandoPresentear(sem.inter);
+    verdade("sem a carta: a recusa é só para quem pediu", sem.apagou && sem.aviso.flags === 64 && /não tem/.test(sem.aviso.content));
+    const si = presente("rico", { id: "rico", user: { bot: false } });
+    await H.comandoPresentear(si.inter);
+    verdade("para si mesmo não vale", /outra pessoa/.test(si.aviso.content));
+  } finally {
+    Object.assign(globalThis, antes);
+  }
+
+  /* ---- no bot ---- */
+  const limpo = semComentarios(fonte);
+  verdade("o herói olha a mesma conversa que a chamada do duelo, logo depois dela",
+    /talvezChamarParaDuelo\(msg, servidor\)[^\n]*\n\s*talvezAparecerHeroi\(msg, servidor\)/.test(limpo));
+  verdade("os botões do herói têm rota", /customId\.startsWith\("heroi:"\)\)\s*\{\s*return await cliqueHeroi\(inter\)/.test(limpo));
+  for (const nome of ["colecao", "diario", "presentear"]) {
+    verdade(`/${nome} existe, é de todos os servidores e é nome meu`, GLOBAIS_DO_CYRON.some((c) => c.name === nome) &&
+      new RegExp(`COMANDOS_DE_TODOS = new Set\\([^)]*"${nome}"`).test(limpo) && new RegExp(`NOMES_MEUS = new Set\\([^)]*"${nome}"`).test(limpo));
+  }
+  const secao = limpo.slice(limpo.indexOf("const APARICAO_MENSAGENS"), limpo.indexOf("async function cliqueDuelo"));
+  verdade("nada nos heróis passa pelo tradutor (zero custo)", secao.length > 1000 && !/nalingua\(|traduzir\w*\(|traduzirEmbed\(/.test(secao));
+  const mig = readFileSync(`${aqui}/../supabase/migracoes/022-colecao.sql`, "utf8");
+  verdade("a migração cria as duas tabelas e as quatro funções",
+    ["cyron_colecao", "cyron_diario", "cyron_ganhar_carta", "cyron_presentear", "cyron_somar_xp_heroi", "cyron_pegar_diario"].every((n) => mig.includes(n)));
+  verdade("o XP do herói não troca o herói ativo (não mexe na data)", /do update set xp = d\.xp \+ greatest\(p_xp, 0\)\s*returning/.test(mig));
 }
 
 let resumiu = false;
