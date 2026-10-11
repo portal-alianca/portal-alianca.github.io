@@ -452,6 +452,30 @@ export const RECURSOS = [
     prova: "encerrarSorteio",
   },
   {
+    chave: "cargos",
+    categoria: "ferramentas",
+    plano: "gratis",
+    nome: { pt: "Cargos por botão", en: "Self-roles with buttons" },
+    como: { pt: "/cargos", en: "/roles" },
+    oque: {
+      pt: "Um painel onde cada pessoa pega ou tira um cargo com um toque. Quem administra escolhe até 25 cargos numa lista, e pode deixar um por vez (escolher outro troca). Cargo com poder de moderação nunca entra no painel.",
+      en: "A panel where everyone gets or removes a role with one tap. Admins pick up to 25 roles from a list, and can make it one at a time (picking another swaps it). Roles with moderation powers never go on the panel.",
+    },
+    prova: "function painelDeCargos",
+  },
+  {
+    chave: "moderacao",
+    categoria: "ferramentas",
+    plano: "gratis",
+    nome: { pt: "Moderação leve e registro", en: "Light moderation and log" },
+    como: { pt: "/moderacao", en: "/moderation" },
+    oque: {
+      pt: "Apaga golpe do Nitro grátis e link falso do Discord ou da Steam, e segura a conta invadida que manda a mesma mensagem em vários canais. O registro mostra num canal o que foi apagado ou editado, quem entrou e quem saiu. Quem tem cargo de moderação nunca é moderado.",
+      en: "Deletes free-Nitro scams and fake Discord or Steam links, and holds back a hacked account posting the same message in many channels. The log shows in one channel what was deleted or edited, who joined and who left. Members with moderation roles are never moderated.",
+    },
+    prova: "function pareceGolpe",
+  },
+  {
     chave: "interacoes",
     categoria: "ferramentas",
     plano: "gratis",
