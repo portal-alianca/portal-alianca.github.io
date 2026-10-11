@@ -6550,7 +6550,10 @@ async function instalarServidor(guild) {
   if (!servidor) {
     /* Servidor novo nasce PERGUNTANDO: quem so' quer a agenda nao pode
        ganhar porta de idioma, anuncios e alas que nunca pediu. */
-    const criado = await sbPost("cyron_servidor", { guild_id: guild.id, nome: guild.name, modo: "escolher" });
+    /* Os niveis nascem LIGADOS: era o recurso que mais da' vida ao chat, e
+       desligado ninguem descobria que existia (so' dois servidores ligaram). O
+       ADM desliga no /niveis se nao quiser. */
+    const criado = await sbPost("cyron_servidor", { guild_id: guild.id, nome: guild.name, modo: "escolher", niveis_ligado: true });
     servidor = Array.isArray(criado) ? criado[0] : criado;
     if (!servidor?.id) {
       /* sbPost pode nao devolver a linha; le de volta em vez de adivinhar. */
@@ -11157,6 +11160,7 @@ const DUELO_TEXTOS = {
   revanche: "Revanche", treinarDeNovo: "Treinar de novo", querRevanche: "quer revanche!", toqueAceitar: "toque em Revanche para aceitar.",
   comSeuHeroi: "Quem aceitar luta com o seu herói ativo (⭐ no /duelo).", vaiDe: "vai de",
   aceiteOuEscolha: "toque em Aceitar para lutar com o seu herói ativo, ou escolha outro abaixo.",
+  levarCyron: "CYRON no seu servidor",
 };
 
 /* Um dicionario de textos fixos na lingua pedida, guardado na memoria. */
@@ -11474,10 +11478,14 @@ function telaDoDuelo(estado, agora = Date.now()) {
     ...(estado.imagem ? { image: { url: "attachment://duelo.webp" } } : {}),
   };
   /* No fim, o botao de revanche (enquanto ela vale). */
+  /* E o convite para levar a CYRON: quem assistiu ao duelo e gostou esta' em
+     outros servidores tambem. E' o jeito do jogo fazer o bot circular. */
   if (fim) {
-    return { embeds: [embed], allowedMentions: { parse: [] }, components: estado.revancheAte ? [{ type: 1, components: [{
-      type: 2, custom_id: `duelo:revanche:${estado.id}`, style: 1, emoji: { name: "🔁" },
-      label: String(estado.treino ? tx.treinarDeNovo : tx.revanche).slice(0, 80) }] }] : [] };
+    const levar = { type: 2, style: 5, emoji: { name: "➕" }, label: String(tx.levarCyron || "CYRON").slice(0, 80), url: linkDeConvite() };
+    return { embeds: [embed], allowedMentions: { parse: [] }, components: [{ type: 1, components: [
+      ...(estado.revancheAte ? [{ type: 2, custom_id: `duelo:revanche:${estado.id}`, style: 1, emoji: { name: "🔁" },
+        label: String(estado.treino ? tx.treinarDeNovo : tx.revanche).slice(0, 80) }] : []),
+      levar] }] };
   }
   const botoes = vez.bot ? [] : [{ type: 1, components: vez.kit.map((hab, k) => ({
     type: 2, custom_id: `duelo:hab:${estado.id}:${k}`, style: k === 3 ? 4 : k === 2 ? 1 : 2,
@@ -11939,9 +11947,121 @@ function cancelarDuelo(id, motivo = "") {
   }
 }
 
+/* ---------------- a CYRON chama o chat para duelar ----------------
+
+   O duelo existia e quase ninguem jogava: so' quem ja' sabia do /duelo. Agora
+   a propria CYRON convida -- mas com cuidado, porque bot que posta sozinho no
+   chat de um cliente e' bot expulso:
+
+   - so' com a conversa ANIMADA (8 mensagens de 3 pessoas em 10 minutos), que
+     e' quando um joguinho cai bem e nao interrompe ninguem;
+   - uma vez por dia por servidor, e nunca logo depois de um duelo;
+   - bilingue por construcao (nao gasta cota), com um botao so' para a
+     administracao desligar.
+
+   Quem aceita primeiro luta contra ela, valendo o XP de um duelo de verdade. */
+const CHAMADA_JANELA = 10 * 60 * 1000;
+const CHAMADA_MENSAGENS = 8;
+const CHAMADA_PESSOAS = 3;
+const CHAMADA_SEM_DUELO = 2 * 60 * 60 * 1000;
+const CHAMADA_VALE = 30 * 60 * 1000;
+const conversaNoCanal = new Map();        // canalId -> [{ t, autor }]
+const chamadaDoDia = new Map();           // servidorId -> dia em que ja' chamei
+const ultimoDueloNoServidor = new Map();  // guildId -> quando comecou o ultimo duelo
+const chamadasAceitas = new Set();        // id da mensagem de chamada que ja' tem alguem
+
+function conversaAnimada(lista, agora = Date.now()) {
+  const recentes = lista.filter((m) => agora - m.t < CHAMADA_JANELA);
+  return recentes.length >= CHAMADA_MENSAGENS && new Set(recentes.map((m) => m.autor)).size >= CHAMADA_PESSOAS;
+}
+
+function chamadaParaDuelo() {
+  return {
+    content: "⚔️ **A CYRON desafia o chat!** Quem aceitar primeiro luta contra mim — e vale XP.\n" +
+      "_⚔️ **CYRON challenges the chat!** The first to accept fights me — and it's worth XP._\n" +
+      "-# Desafie alguém também · Challenge someone too: `/duelo`",
+    components: [{ type: 1, components: [
+      { type: 2, custom_id: "duelo:cyron:chat", style: 3, emoji: { name: "⚔️" }, label: "Aceitar · Accept" },
+      { type: 2, custom_id: "duelo:chamada-off:chat", style: 2, emoji: { name: "🔕" }, label: "Desligar (ADM)" },
+    ] }],
+    allowedMentions: { parse: [] },
+  };
+}
+
+async function talvezChamarParaDuelo(msg, servidor, agora = Date.now()) {
+  const canalId = msg.channel.id;
+  const lista = (conversaNoCanal.get(canalId) || []).filter((m) => agora - m.t < CHAMADA_JANELA);
+  lista.push({ t: agora, autor: msg.author.id });
+  conversaNoCanal.set(canalId, lista.slice(-30));
+  while (conversaNoCanal.size > 2000) conversaNoCanal.delete(conversaNoCanal.keys().next().value);
+  if (!conversaAnimada(lista, agora)) return false;
+  const dia = hojeISO();
+  if (chamadaDoDia.get(servidor.id) === dia) return false;
+  if (agora - (ultimoDueloNoServidor.get(String(msg.guild.id)) || 0) < CHAMADA_SEM_DUELO) return false;
+  /* Marca ANTES de qualquer espera: duas mensagens juntas nao viram duas chamadas. */
+  chamadaDoDia.set(servidor.id, dia);
+  const a = await ajustes();
+  if (a[`duelo-chamada-off:${servidor.id}`] === "1" || a[`duelo-chamada:${servidor.id}`] === dia) return false;
+  if (await ehOPainel(msg.guild.id)) return false;
+  /* Replica so' recebe traducao: ninguem conversa nela. */
+  if ((await replicasDoIdioma(servidor.id)).some((c) => c.canal_id === canalId)) return false;
+  const pode = msg.guild.members?.me ? msg.channel.permissionsFor?.(msg.guild.members.me) : null;
+  if (pode && !pode.has(PermissionFlagsBits.SendMessages)) return false;
+  const enviada = await msg.channel.send(chamadaParaDuelo()).catch(() => null);
+  if (!enviada) return false;
+  await porAjuste(`duelo-chamada:${servidor.id}`, dia);
+  contarUso("duelo-chamada", msg.guild.id);
+  return true;
+}
+
+async function aceitarChamada(inter) {
+  const msg = inter.message;
+  if (!msg || chamadasAceitas.has(msg.id)) return avisarNoDuelo(inter, "⚔️", "Alguém já aceitou esse desafio.");
+  if (Date.now() - (msg.createdTimestamp || 0) > CHAMADA_VALE) {
+    await inter.update({ components: [] }).catch(() => {});
+    return;
+  }
+  const eu = inter.user.id;
+  if (duelistaEm.has(eu)) return avisarNoDuelo(inter, "⚔️", "Você já está num duelo. Termine ele primeiro.");
+  chamadasAceitas.add(msg.id);
+  await inter.deferUpdate();
+  const heroi = personagemPorId(await heroiAtivo(eu)) || PERSONAGENS[0];
+  const outros = PERSONAGENS.filter((p) => p.id !== heroi.id);
+  const estado = novoDuelo(inter, [{ userId: eu, nome: inter.member?.displayName || inter.user.username }, { bot: true }],
+    { 0: heroi.id, 1: outros[Math.floor(Math.random() * outros.length)].id }, { treino: true, fixo: { 0: true, 1: true } });
+  estado.chamada = true;
+  await prepararLingua(estado, await linguaDe(inter));
+  estado.msg = msg;
+  lembrarLingua(estado, estado.msg, estado.idioma);
+  estado.comecando = true;
+  contarUso("duelo-chamada-aceita", inter.guildId);
+  return comecarDuelo(estado);
+}
+
+/* O 🔕 da chamada: so' quem administra. Desliga para o servidor inteiro, e a
+   resposta (so' para quem desligou) traz o botao de religar. */
+async function ligarChamada(inter, ligar) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return avisarNoDuelo(inter, "🔕", "Só quem administra o servidor pode desligar os convites da CYRON.");
+  }
+  const servidor = await servidorDoGuild(inter.guildId);
+  if (!servidor) return inter.deferUpdate();
+  await porAjuste(`duelo-chamada-off:${servidor.id}`, ligar ? null : "1");
+  const [t] = await nalingua(await linguaDe(inter), inter.guildId, ligar
+    ? "Pronto: quando o chat estiver animado, eu volto a chamar para duelar (no máximo uma vez por dia)."
+    : "Pronto: não chamo mais o chat para duelar neste servidor. O /duelo continua funcionando.");
+  if (!ligar) inter.message?.edit({ components: [] }).catch(() => {});
+  return inter.reply({ flags: 64, content: `${ligar ? "🔔" : "🔕"} ${t}`,
+    components: ligar ? [] : [{ type: 1, components: [
+      { type: 2, custom_id: "duelo:chamada-on:chat", style: 2, emoji: { name: "🔔" }, label: "Religar" }] }] });
+}
+
 async function cliqueDuelo(inter) {
   const [, acao, id, extra] = inter.customId.split(":");
   if (acao === "revanche") return cliqueRevanche(inter, id);
+  if (acao === "cyron") return aceitarChamada(inter);
+  if (acao === "chamada-off") return ligarChamada(inter, false);
+  if (acao === "chamada-on") return ligarChamada(inter, true);
   const estado = duelos.get(id);
   if (!estado) return avisarNoDuelo(inter, "⚔️", "Esse duelo já acabou.");
   /* Desafio aberto: o primeiro que aceitar entra na vaga. */
@@ -12042,6 +12162,7 @@ function aceitoNaSala(estado, clicada, carga) {
 
 async function comecarDuelo(estado) {
   clearTimeout(estado.expira);
+  ultimoDueloNoServidor.set(String(estado.guildId), Date.now());
   const lutadores = [];
   for (let i = 0; i < 2; i++) {
     const pessoa = estado.pessoas[i];
@@ -12663,6 +12784,17 @@ function xpDoDuelo(venceu, treino, feitosHoje = 0, wo = false) {
   return venceu ? DUELO_XP.vitoria : DUELO_XP.derrota;
 }
 
+/* O XP do duelo e o dos niveis eram dois mundos: o heroi subia, a pessoa nao.
+   Agora o mesmo ganho entra nos niveis do servidor (quando eles estao
+   ligados) -- e duelar vira um jeito de subir de nivel no chat. */
+async function xpDoServidorPeloDuelo(estado, userId, ganho) {
+  const guild = client.guilds.cache.get(String(estado.guildId));
+  if (!guild) return;
+  const servidor = await servidorDoGuild(guild.id);
+  if (!servidor?.niveis_ligado) return;
+  await somarXp(guild, userId, ganho, servidor, estado.msg?.channel || null);
+}
+
 async function terminarDuelo(estado) {
   clearTimeout(estado.relogio);
   if (estado.encerrado) return;
@@ -12675,10 +12807,15 @@ async function terminarDuelo(estado) {
     const l = estado.lutadores[i];
     if (l.bot) continue;
     const venceu = estado.vencedor === i;
-    const chaveDia = `${l.userId}:${estado.treino ? "treino" : "duelo"}:${dia}`;
+    /* A chamada da CYRON no chat e' contra ela, mas vale como duelo de
+       verdade: foi ela que convidou, e quem aceita merece o premio inteiro. */
+    const treino = estado.treino && !estado.chamada;
+    const chaveDia = `${l.userId}:${treino ? "treino" : "duelo"}:${dia}`;
     const feitos = treinosHoje.get(chaveDia) || 0;
-    const ganho = xpDoDuelo(venceu, estado.treino, feitos, estado.motivo === "W.O.");
+    const ganho = xpDoDuelo(venceu, treino, feitos, estado.motivo === "W.O.");
     treinosHoje.set(chaveDia, feitos + 1);
+    if (ganho > 0) xpDoServidorPeloDuelo(estado, l.userId, ganho).catch((e) =>
+      console.error("duelo: nao somei o XP do servidor:", e?.message || e));
     const xpNovo = l.xpAntes + ganho;
     const nivelNovo = nivelDoPersonagem(xpNovo);
     /* Sem o kit: quem mexeu no /equipar durante o duelo nao perde a escolha. */
@@ -17213,6 +17350,8 @@ const NOMES_DAS_FUNCOES = {
   "ia-privado": "🧠 Respostas da IA no privado",
   imagem: "🖼️ Ler imagem",
   audio: "🎧 Ouvir áudio",
+  "duelo-chamada": "⚔️ A CYRON chamou o chat para duelar",
+  "duelo-chamada-aceita": "⚔️ Alguém aceitou a chamada da CYRON",
 };
 
 function nomeDaFuncao(recurso) {
@@ -21316,6 +21455,7 @@ client.on("messageCreate", async (msg) => {
     /* XP: sem await, e antes de qualquer corte -- foto sem legenda tambem e'
        participar da conversa. */
     ganharXp(msg, servidor).catch((e) => console.error("niveis: falhou:", e?.message || e));
+    talvezChamarParaDuelo(msg, servidor).catch((e) => console.error("duelo: chamada falhou:", e?.message || e));
 
     const texto = String(msg.content || "").trim();
 

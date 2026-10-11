@@ -8827,7 +8827,9 @@ function conferirCartao(onde, embed, componentes = []) {
   const treinoAcabou = m.telaDoDuelo(Object.assign(duelo(), { vencedor: 0, limite: 0, revancheAte: 1, treino: true }));
   ok("no treino ele vira Treinar de novo", treinoAcabou.components[0].components[0].label, "Treinar de novo");
   const acabou = m.telaDoDuelo(Object.assign(duelo(), { vencedor: 1, limite: 0 }));
-  ok("no fim, sem botões", acabou.components, []);
+  ok("revanche vencida: no fim fica só o convite para levar a CYRON", acabou.components[0].components.map((c) => c.style), [5]);
+  verdade("o convite é link de instalação, e não clique", acabou.components[0].components[0].url.includes("oauth2/authorize"));
+  ok("com revanche, ela vem antes do convite", comRevanche.components[0].components.map((c) => c.style), [1, 5]);
   verdade("o fim mostra quem venceu", acabou.embeds[0].description.includes("🏆"));
 
   const eq = m.telaDeEquipar(P("joana"), 1, {}, 0);
@@ -8979,7 +8981,7 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("os comandos do duelo são de todos", /COMANDOS_DE_TODOS = new Set\([^)]*"duelo", "equipar", "codex"/.test(idx));
   verdade("o Duelar publica o desafio com Aceitar e Treinar", /acao !== "duelar"[^]{0,2500}duelo:aceitar:\$\{estado\.id\}[^]{0,300}duelo:treino:\$\{estado\.id\}/.test(idx));
   verdade("na revanche entre duas pessoas, as duas precisam tocar", /humanos\.some\(\(p\) => !r\.querem\.has\(p\.userId\)\)/.test(idx));
-  verdade("a revanche é tratada antes de procurar o duelo (que já acabou)", /if \(acao === "revanche"\) return cliqueRevanche\(inter, id\);[^]{0,100}const estado = duelos\.get\(id\)/.test(idx));
+  verdade("a revanche é tratada antes de procurar o duelo (que já acabou)", /if \(acao === "revanche"\) return cliqueRevanche\(inter, id\);[^]{0,400}const estado = duelos\.get\(id\)/.test(idx));
   /* O acesso de suporte: so' com liberacao do ADM, so' para o dono, com prazo. */
   {
     const sp = carregar(["SUPORTE_HORAS", "suportes", "donosConfirmados", "suporteValido"]);
@@ -12201,6 +12203,88 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("pula o painel do dono", marcos.includes("ehOPainel"));
   verdade("e marca o anunciado no cyron_ajuste", marcos.includes("porAjuste(`marco:${s.id}`, String(marco))"));
   verdade("roda de hora em hora", /setInterval\(\(\) => anunciarMarcos\(\)/.test(semComentarios(fonte)));
+}
+
+/* ===== A CYRON chama o chat para duelar, e o duelo vale XP do servidor =====
+ *
+ * O duelo existia e quase ninguém jogava. Agora a CYRON convida quando a
+ * conversa está animada (uma vez por dia, nunca logo depois de um duelo), os
+ * níveis nascem ligados, e o XP do duelo também sobe o nível no chat. */
+{
+  const D = carregar(["CHAMADA_JANELA", "CHAMADA_MENSAGENS", "CHAMADA_PESSOAS", "CHAMADA_SEM_DUELO", "CHAMADA_VALE",
+    "conversaNoCanal", "chamadaDoDia", "ultimoDueloNoServidor", "chamadasAceitas", "conversaAnimada", "chamadaParaDuelo",
+    "talvezChamarParaDuelo", "ligarChamada", "xpDoServidorPeloDuelo"]);
+  const t0 = Date.UTC(2026, 9, 11, 20);
+  const fala = (n, pessoas, desde = t0) => Array.from({ length: n }, (_, i) => ({ t: desde + i * 1000, autor: `p${i % pessoas}` }));
+  verdade("8 mensagens de 3 pessoas em 10 minutos: conversa animada", D.conversaAnimada(fala(8, 3), t0 + 9000));
+  verdade("7 mensagens não bastam", !D.conversaAnimada(fala(7, 3), t0 + 9000));
+  verdade("duas pessoas conversando sozinhas não viram plateia", !D.conversaAnimada(fala(12, 2), t0 + 15000));
+  verdade("o que passou de 10 minutos não conta", !D.conversaAnimada(fala(8, 3), t0 + 11 * 60000));
+
+  const c = D.chamadaParaDuelo();
+  verdade("a chamada é bilíngue por construção (não gasta cota)", c.content.includes("A CYRON desafia o chat") && c.content.includes("CYRON challenges the chat"));
+  ok("botões: aceitar e desligar (ADM)", c.components[0].components.map((b) => b.custom_id), ["duelo:cyron:chat", "duelo:chamada-off:chat"]);
+  ok("não marca ninguém", c.allowedMentions, { parse: [] });
+
+  const antes = { ajustes: globalThis.ajustes, porAjuste: globalThis.porAjuste, ehOPainel: globalThis.ehOPainel,
+    replicasDoIdioma: globalThis.replicasDoIdioma, hojeISO: globalThis.hojeISO, client: globalThis.client,
+    servidorDoGuild: globalThis.servidorDoGuild, somarXp: globalThis.somarXp, avisarNoDuelo: globalThis.avisarNoDuelo };
+  try {
+    const marcas = {};
+    globalThis.ajustes = async () => marcas;
+    globalThis.porAjuste = async (k, v) => { marcas[k] = v; };
+    globalThis.ehOPainel = async () => false;
+    globalThis.replicasDoIdioma = async () => [{ canal_id: "replica" }];
+    globalThis.hojeISO = () => "2026-10-11";
+    const enviadas = [];
+    const canal = (id) => ({ id, permissionsFor: () => ({ has: () => true }), send: async (m) => { enviadas.push([id, m]); return { id: "m" + enviadas.length }; } });
+    const servidor = { id: "srv" };
+    const msg = (canalId, autor, guild = "g1") => ({ channel: canal(canalId), author: { id: autor }, guild: { id: guild, members: { me: {} } } });
+    let chamou = false;
+    for (let i = 0; i < 8; i++) chamou = await D.talvezChamarParaDuelo(msg("geral", `p${i % 3}`), servidor, t0 + i * 1000) || chamou;
+    verdade("conversa animada: a CYRON chama o chat", chamou && enviadas.length === 1 && enviadas[0][0] === "geral");
+    ok("e marca o dia no banco", marcas["duelo-chamada:srv"], "2026-10-11");
+    for (let i = 0; i < 10; i++) await D.talvezChamarParaDuelo(msg("geral", `p${i % 4}`), servidor, t0 + 20000 + i * 1000);
+    ok("uma vez por dia por servidor", enviadas.length, 1);
+
+    D.chamadaDoDia.clear(); delete marcas["duelo-chamada:srv"]; D.conversaNoCanal.clear();
+    D.ultimoDueloNoServidor.set("g1", t0);
+    for (let i = 0; i < 8; i++) await D.talvezChamarParaDuelo(msg("geral", `p${i % 3}`), servidor, t0 + 60000 + i * 1000);
+    ok("alguém duelou há pouco: não interrompe", enviadas.length, 1);
+    D.ultimoDueloNoServidor.clear(); D.chamadaDoDia.clear(); D.conversaNoCanal.clear();
+
+    for (let i = 0; i < 8; i++) await D.talvezChamarParaDuelo(msg("replica", `p${i % 3}`), servidor, t0 + i * 1000);
+    ok("réplica só recebe tradução: ali não chama", enviadas.length, 1);
+    D.chamadaDoDia.clear(); D.conversaNoCanal.clear();
+
+    marcas["duelo-chamada-off:srv"] = "1";
+    for (let i = 0; i < 8; i++) await D.talvezChamarParaDuelo(msg("geral", `p${i % 3}`), servidor, t0 + i * 1000);
+    ok("a administração desligou: não chama mais", enviadas.length, 1);
+
+    const avisos = [];
+    globalThis.avisarNoDuelo = async (inter, e, t) => { avisos.push(t); };
+    await D.ligarChamada({ memberPermissions: { has: () => false } }, false);
+    verdade("só quem administra desliga", avisos[0]?.includes("Só quem administra"));
+
+    const somados = [];
+    globalThis.somarXp = async (guild, uid, ganho) => { somados.push([guild.id, uid, ganho]); };
+    globalThis.client = { guilds: { cache: new Map([["g1", { id: "g1" }], ["g2", { id: "g2" }]]) } };
+    globalThis.servidorDoGuild = async (g) => ({ id: "s-" + g, niveis_ligado: g === "g1" });
+    await D.xpDoServidorPeloDuelo({ guildId: "g1", msg: null }, "u1", 30);
+    await D.xpDoServidorPeloDuelo({ guildId: "g2", msg: null }, "u1", 30);
+    ok("o XP do duelo entra nos níveis do servidor só onde eles estão ligados", somados, [["g1", "u1", 30]]);
+  } finally {
+    Object.assign(globalThis, antes);
+  }
+
+  const limpo = semComentarios(fonte);
+  verdade("servidor novo nasce com os níveis ligados", /sbPost\("cyron_servidor", \{[^}]*niveis_ligado: true/.test(limpo));
+  verdade("a chamada roda em toda mensagem de gente (junto do XP)", /ganharXp\(msg, servidor\)[^\n]*\n\s*talvezChamarParaDuelo\(msg, servidor\)/.test(limpo));
+  verdade("aceitar a chamada abre um duelo contra a CYRON, marcado como chamada", /async function aceitarChamada[^]*?treino: true[^]*?estado\.chamada = true[^]*?comecarDuelo\(estado\)/.test(limpo));
+  verdade("a chamada vale o XP de duelo de verdade", limpo.includes("const treino = estado.treino && !estado.chamada;"));
+  verdade("e todo XP de duelo também vai para os níveis do servidor", /xpDoServidorPeloDuelo\(estado, l\.userId, ganho\)/.test(limpo));
+  verdade("os cliques da chamada são tratados antes de procurar o duelo", /if \(acao === "cyron"\) return aceitarChamada\(inter\);[^]{0,200}const estado = duelos\.get\(id\)/.test(limpo));
+  verdade("todo duelo que começa marca o servidor (a chamada não interrompe)", /async function comecarDuelo\(estado\) \{\s*clearTimeout\(estado\.expira\);\s*ultimoDueloNoServidor\.set/.test(limpo));
 }
 
 let resumiu = false;
