@@ -12481,45 +12481,90 @@ client.on("guildMemberRemove", async (member) => {
   }
 });
 
-/* /moderacao: liga e desliga cada parte; sem nada, mostra como esta'. */
+/* /moderacao: liga e desliga cada parte; sem nada, mostra como esta'. A
+   tela vem com os botoes: tocar liga ou desliga ali mesmo, sem digitar o
+   comando de novo com as opcoes certas. */
+async function salvarModeracao(guildId, cfg) {
+  const vazio = !cfg.registro && !cfg.golpe && !cfg.spam;
+  await porAjuste(`moderacao:${guildId}`, vazio ? null : JSON.stringify(cfg));
+  contarUso("moderacao-ajuste", guildId);
+}
+
+/* O que falta eu poder fazer para cumprir o que esta' ligado. */
+function faltasDaModeracao(guild, cfg) {
+  const eu = guild?.members?.me;
+  const faltam = [];
+  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ManageMessages)) faltam.push("Gerenciar Mensagens · Manage Messages");
+  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ModerateMembers)) faltam.push("Castigar Membros · Timeout Members");
+  const canalReg = cfg.registro ? guild?.channels?.cache?.get(cfg.registro) : null;
+  if (cfg.registro && !canalReg?.permissionsFor?.(eu)?.has(PermissionFlagsBits.SendMessages)) faltam.push(`escrever em · send messages in <#${cfg.registro}>`);
+  return faltam;
+}
+
+/* A tela inteira: o estado e os botoes. Verde = ligado. Pura. */
+function telaDaModeracao(cfg, faltam = [], salvo = false) {
+  const sim = (v) => (v ? "🟢" : "⚪");
+  const botao = (id, ligado, rotulo) => ({ type: 2, custom_id: id, style: ligado ? 3 : 2, emoji: { name: ligado ? "🟢" : "⚪" }, label: rotulo });
+  return {
+    allowedMentions: { parse: [] },
+    embeds: [{ color: 0x5865F2,
+      title: `🛡️ Moderação · Moderation${salvo ? " — salvo · saved" : ""}`,
+      description: [
+        `${sim(cfg.golpe)} **Anti-golpe · Anti-scam** — Nitro grátis, Discord e Steam falsos · fake Nitro, Discord and Steam links`,
+        `${sim(cfg.spam)} **Anti-spam** — mesma mensagem em vários canais, flood, menções em massa · same message in many channels, flood, mass mentions`,
+        `${sim(cfg.registro)} **Registro · Log** — ${cfg.registro ? `<#${cfg.registro}>` : "desligado · off"}: apagadas, editadas, entradas, saídas · deleted, edited, joins, leaves`,
+        "",
+        "-# Toque para ligar ou desligar · Tap to turn on or off",
+        "-# Quem tem cargo de moderação nunca é moderado. · Members with moderation roles are never moderated.",
+        ...(faltam.length ? ["", `⚠️ **Falta permissão · Missing permission:** ${faltam.join(" · ")}`] : []),
+      ].join("\n") }],
+    components: [
+      { type: 1, components: [
+        botao("mod:golpe", cfg.golpe, "Anti-golpe · Anti-scam"),
+        botao("mod:spam", cfg.spam, "Anti-spam"),
+        ...(cfg.registro ? [{ type: 2, custom_id: "mod:sem-registro", style: 4, emoji: { name: "🔕" }, label: "Desligar registro · Log off" }] : []),
+      ] },
+      { type: 1, components: [{ type: 8, custom_id: "mod:registro", channel_types: [0, 5], min_values: 1, max_values: 1,
+        placeholder: cfg.registro ? "📋 Trocar o canal do registro · Change log channel" : "📋 Ligar o registro: escolha o canal · Pick a log channel",
+        ...(cfg.registro ? { default_values: [{ id: cfg.registro, type: "channel" }] } : {}) }] },
+    ],
+  };
+}
+
 async function comandoModeracao(inter) {
   if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     return inter.reply({ flags: 64, content: "🛡️ Só quem administra o servidor mexe na moderação.\n_Only server admins can change moderation._" });
   }
   await inter.deferReply({ flags: 64 });
-  const chave = `moderacao:${inter.guildId}`;
   const cfg = configDaModeracao(await ajustes(), inter.guildId);
   const registro = inter.options.getChannel("registro");
   const golpe = inter.options.getBoolean("anti-golpe");
   const spam = inter.options.getBoolean("anti-spam");
   const semRegistro = inter.options.getBoolean("desligar-registro");
-  const mudou = registro || golpe !== null || spam !== null || semRegistro;
+  const mudou = !!(registro || golpe !== null || spam !== null || semRegistro);
   if (registro) cfg.registro = registro.id;
   if (semRegistro) cfg.registro = null;
   if (golpe !== null) cfg.golpe = golpe;
   if (spam !== null) cfg.spam = spam;
-  if (mudou) {
-    const vazio = !cfg.registro && !cfg.golpe && !cfg.spam;
-    await porAjuste(chave, vazio ? null : JSON.stringify(cfg));
-    contarUso("moderacao-ajuste", inter.guildId);
+  if (mudou) await salvarModeracao(inter.guildId, cfg);
+  return inter.editReply(telaDaModeracao(cfg, faltasDaModeracao(inter.guild, cfg), mudou));
+}
+
+/* Os botoes e a lista de canal da tela. Cargo e' conferido de novo a cada
+   toque: a tela e' efemera, mas cargo muda. */
+async function cliqueModeracao(inter) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🛡️ Só quem administra o servidor mexe na moderação.\n_Only server admins can change moderation._" });
   }
-  const eu = inter.guild?.members?.me;
-  const faltam = [];
-  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ManageMessages)) faltam.push("Gerenciar Mensagens · Manage Messages");
-  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ModerateMembers)) faltam.push("Castigar Membros · Timeout Members");
-  const canalReg = cfg.registro ? inter.guild?.channels?.cache?.get(cfg.registro) : null;
-  if (cfg.registro && !canalReg?.permissionsFor?.(eu)?.has(PermissionFlagsBits.SendMessages)) faltam.push(`escrever em · send messages in <#${cfg.registro}>`);
-  const sim = (v) => (v ? "🟢" : "⚪");
-  return inter.editReply({ allowedMentions: { parse: [] }, embeds: [{ color: 0x5865F2,
-    title: `🛡️ Moderação · Moderation${mudou ? " — salvo · saved" : ""}`,
-    description: [
-      `${sim(cfg.golpe)} **Anti-golpe · Anti-scam** — Nitro grátis, Discord e Steam falsos · fake Nitro, Discord and Steam links`,
-      `${sim(cfg.spam)} **Anti-spam** — mesma mensagem em vários canais, flood, menções em massa · same message in many channels, flood, mass mentions`,
-      `${sim(cfg.registro)} **Registro · Log** — ${cfg.registro ? `<#${cfg.registro}>` : "desligado · off"}: apagadas, editadas, entradas, saídas · deleted, edited, joins, leaves`,
-      "",
-      "-# Quem tem cargo de moderação nunca é moderado. · Members with moderation roles are never moderated.",
-      ...(faltam.length ? ["", `⚠️ **Falta permissão · Missing permission:** ${faltam.join(" · ")}`] : []),
-    ].join("\n") }] });
+  const acao = inter.customId.split(":")[1];
+  const cfg = configDaModeracao(await ajustes(), inter.guildId);
+  if (acao === "golpe") cfg.golpe = !cfg.golpe;
+  else if (acao === "spam") cfg.spam = !cfg.spam;
+  else if (acao === "sem-registro") cfg.registro = null;
+  else if (acao === "registro" && inter.values?.[0]) cfg.registro = String(inter.values[0]);
+  else return inter.deferUpdate();
+  await salvarModeracao(inter.guildId, cfg);
+  return inter.update(telaDaModeracao(cfg, faltasDaModeracao(inter.guild, cfg), true));
 }
 
 /* ---------------- 🃏 HERÓIS NO CHAT ----------------
@@ -22171,6 +22216,9 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isButton() && inter.customId.startsWith("cargo:")) {
       return await cliqueCargo(inter);
+    }
+    if ((inter.isButton() || inter.isChannelSelectMenu()) && inter.customId.startsWith("mod:")) {
+      return await cliqueModeracao(inter);
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("equipar:")) {
       return await cliqueEquipar(inter);
