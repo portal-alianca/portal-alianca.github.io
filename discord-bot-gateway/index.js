@@ -19,6 +19,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
    nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
 import { CATEGORIAS, doCliente } from "./catalogo.js";
 import { QUEM_SOU, REGRAS, DUVIDAS } from "./roteiro.js";
+import { LOCAIS_DO_DISCORD, DESCRICOES_DOS_COMANDOS, ESCOLHAS_DOS_COMANDOS, NOMES_DOS_MENUS, DESCRICOES_DE_FORA }
+  from "./comandos-linguas.js";
 import { PERSONAGENS, ESPACOS, EFEITOS, NIVEIS_DO_PERSONAGEM } from "./duelo-elenco.js";
 /* O que e' so' da alianca [TOP]: fica fora daqui para nao se misturar com o
    produto. Ver o comentario no topo do alianca.js. */
@@ -22431,7 +22433,57 @@ const TRADUCOES_DA_HORA = {
 const OPCAO_DE_MEMBRO = { type: 3, name: "membro", required: true, autocomplete: true, max_length: 100,
   description: "Em quem / Who" };
 
-const GLOBAIS_DO_CYRON = [
+/* AS DESCRICOES NA LINGUA DE CADA UM (comandos-linguas.js).
+
+   O Discord mostra a lista de comandos no idioma do APLICATIVO de cada
+   pessoa: com a descricao em todas as linguas, cada um le na sua. O que ja'
+   estava escrito aqui (o /evento, o /hora, o /boas-vindas) vale primeiro; a
+   tabela preenche o resto. Texto igual ao padrao fica de fora: o Discord o
+   descarta, e a comparacao de "mudou?" acharia diferenca a cada partida. */
+function locaisDoDiscord(textos, padrao) {
+  const fora = {};
+  for (const [l, t] of Object.entries(textos || {})) {
+    if (!t || t === padrao) continue;
+    for (const d of LOCAIS_DO_DISCORD[l] || []) fora[d] = t;
+  }
+  return fora;
+}
+
+function comLinguas(defs) {
+  const juntar = (obj, caminho) => {
+    const novo = { ...obj };
+    const desc = DESCRICOES_DOS_COMANDOS[caminho];
+    if (desc && obj.description) {
+      novo.descriptionLocalizations = { ...locaisDoDiscord(desc, obj.description), ...(obj.descriptionLocalizations || {}) };
+    }
+    /* As variantes que o Discord separa e a lingua nao: o espanhol da America
+       Latina e o chines tradicional leem o que o espanhol e o chines ja' tem. */
+    if (novo.descriptionLocalizations) {
+      const loc = { ...novo.descriptionLocalizations };
+      if (loc["es-ES"] && !loc["es-419"]) loc["es-419"] = loc["es-ES"];
+      if (loc["zh-CN"] && !loc["zh-TW"]) loc["zh-TW"] = loc["zh-CN"];
+      for (const [k, t] of Object.entries(loc)) if (t === obj.description) delete loc[k];
+      novo.descriptionLocalizations = loc;
+    }
+    const escolhas = ESCOLHAS_DOS_COMANDOS[caminho];
+    if (escolhas && Array.isArray(obj.choices)) {
+      novo.choices = obj.choices.map((c) => (escolhas[c.value]
+        ? { ...c, nameLocalizations: { ...locaisDoDiscord(escolhas[c.value], c.name), ...(c.nameLocalizations || {}) } } : c));
+    }
+    if (Array.isArray(obj.options)) novo.options = obj.options.map((o) => juntar(o, `${caminho} ${o.name}`));
+    return novo;
+  };
+  return defs.map((c) => {
+    const novo = juntar(c, c.name);
+    /* So' os menus de botao direito ganham o NOME traduzido: ninguem digita. */
+    if (c.type === 3 && NOMES_DOS_MENUS[c.name]) {
+      novo.nameLocalizations = { ...locaisDoDiscord(NOMES_DOS_MENUS[c.name], c.name), ...(c.nameLocalizations || {}) };
+    }
+    return novo;
+  });
+}
+
+const GLOBAIS_DO_CYRON = comLinguas([
   {
     name: "cyron",
     description: "Abrir o painel de configuração da CYRON",
@@ -22686,7 +22738,7 @@ const GLOBAIS_DO_CYRON = [
     description: "Painel do dono da CYRON",
     dmPermission: false,
   },
-];
+]);
 
 /* O /admin some da lista de quem nao e' o dono.
 
@@ -22770,6 +22822,17 @@ async function garantirComandosGlobais() {
       }
       await client.application.commands.create(def);
       console.log(`comandos: /${def.name} publicado`);
+    }
+    /* O /mylanguage e' publicado fora desta lista: so' ganha as descricoes. */
+    for (const [nome, textos] of Object.entries(DESCRICOES_DE_FORA)) {
+      const publicado = [...globais.values()].find((c) => c.name === nome);
+      if (!publicado) continue;
+      const desejado = { ...locaisDoDiscord(textos, publicado.description), ...(publicado.descriptionLocalizations || {}) };
+      const tem = publicado.descriptionLocalizations || {};
+      if (Object.keys(desejado).some((k) => tem[k] !== desejado[k])) {
+        await publicado.setDescriptionLocalizations(desejado);
+        console.log(`comandos: /${nome} com a descrição nas línguas`);
+      }
     }
   } catch (e) {
     console.error("comandos: não consegui publicar os globais:", e?.message || e);
