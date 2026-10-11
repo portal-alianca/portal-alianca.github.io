@@ -11568,7 +11568,7 @@ function conferirCartao(onde, embed, componentes = []) {
     "IA_RESPOSTA_MAX", "IA_FILA_MAX", "IA_CONVERSAS_MAX", "IA_TRADUZIR", "HOSTS_DA_IA", "conversasDaIA", "perguntasHoje",
     "usoDaIA", "chaveDaIA", "tetoDaIA", "COMECOS_DE_PERGUNTA", "parecePergunta", "vaiParaAIA",
     "GOLPES_DO_MENU_DE_CONTEXTO", "roteiroDaIA", "primeiraFrase", "roteiroGuardado", "roteiroAtual", "OUTROS_NOMES_DOS_HEROIS",
-    "golpesCitados", "PALAVRAS_QUE_NAO_DIZEM_NADA", "funcoesCitadas", "perguntarAIA", "limparRespostaDaIA", "filaDaIA", "naFilaDaIA", "responderComIA",
+    "golpesCitados", "detalheDoDuelo", "FALA_DO_DUELO", "dueloCitado", "PALAVRAS_QUE_NAO_DIZEM_NADA", "funcoesCitadas", "perguntarAIA", "limparRespostaDaIA", "filaDaIA", "naFilaDaIA", "responderComIA",
     "conferirChaveDaIA", "janelaDaIA", "iaPronta", "TRADUZIR_A_PERGUNTA"]);
   /* A instalação na conta liga na partida (ligarNaConta); aqui ela começa
      desligada, como num bot que ainda não conseguiu falar com o Discord. */
@@ -12693,6 +12693,218 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("a migração cria as duas tabelas e as quatro funções",
     ["cyron_colecao", "cyron_diario", "cyron_ganhar_carta", "cyron_presentear", "cyron_somar_xp_heroi", "cyron_pegar_diario"].every((n) => mig.includes(n)));
   verdade("o XP do herói não troca o herói ativo (não mexe na data)", /do update set xp = d\.xp \+ greatest\(p_xp, 0\)\s*returning/.test(mig));
+}
+
+/* ====== 🎭 CARGOS POR BOTÃO e 🛡️ MODERAÇÃO ======
+ *
+ * O que faz um ADM instalar um segundo bot: o painel de cargos e a
+ * moderação com registro. Sem banco (o painel é a própria mensagem; a
+ * moderação é um ajuste), sem tradutor, e com cuidado para nunca entregar
+ * cargo perigoso nem apagar mensagem de quem não fez nada. */
+{
+  const antes = { ajustes: globalThis.ajustes, porAjuste: globalThis.porAjuste };
+  try {
+    const C = carregar(["CARGOS_POR_PAINEL", "ESCOLHA_DE_CARGOS_VALE", "PERMISSOES_PERIGOSAS", "escolhasDeCargos",
+      "ultimoCliqueDeCargo", "porQueNaoDaCargo", "painelDeCargos", "comandoCargos", "escolherCargosDoPainel", "cliqueCargo",
+      "MOD_PADRAO", "DOMINIOS_OFICIAIS", "MARCAS_IMITADAS", "ISCA_DE_GOLPE", "SPAM_JANELA", "SPAM_CANAIS", "FLOOD_JANELA",
+      "FLOOD_MENSAGENS", "MENCOES_EM_MASSA", "CASTIGO_GOLPE", "CASTIGO_SPAM", "falasRecentes", "apagadasPorMim",
+      "configDaModeracao", "dominiosDoTexto", "dominioLido", "pareceGolpe", "anotarESpam", "ehDaModeracao", "registrar",
+      "moderarMensagem", "linhaDeEntrada", "comandoModeracao"]);
+
+    /* ---- que cargo pode ir no painel ---- */
+    const perms = (...quais) => ({ has: (p) => quais.includes(p) });
+    const cargo = (id, posicao = 1, extra = {}) => ({ id, name: `cargo ${id}`, position: posicao, managed: false,
+      guild: { id: "g1" }, permissions: perms(), ...extra });
+    ok("cargo comum: pode", C.porQueNaoDaCargo(cargo("r1"), 10), null);
+    verdade("o @everyone não", /everyone/.test(C.porQueNaoDaCargo(cargo("g1"), 10)));
+    verdade("cargo de bot ou integração não", /integra/.test(C.porQueNaoDaCargo(cargo("r2", 1, { managed: true }), 10)));
+    verdade("acima do meu cargo não (o Discord recusaria)", /acima/.test(C.porQueNaoDaCargo(cargo("r3", 10), 10)));
+    for (const p of [PermissionFlagsBits.Administrator, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ManageRoles]) {
+      verdade(`cargo com poder de moderação nunca entra (${p})`, /moderação/.test(C.porQueNaoDaCargo(cargo("r4", 1, { permissions: perms(p) }), 10)));
+    }
+    verdade("cargo apagado: avisa", /não existe/.test(C.porQueNaoDaCargo(undefined, 10)));
+
+    /* ---- o painel ---- */
+    const sete = Array.from({ length: 7 }, (_, i) => cargo(`r${i}`, 1, { name: i === 0 ? "x".repeat(120) : `Cargo ${i}`, unicodeEmoji: i === 1 ? "🎮" : null }));
+    const painel = C.painelDeCargos(sete, {});
+    ok("até 5 botões por linha", painel.components.map((l) => l.components.length), [5, 2]);
+    ok("cada botão leva o id do cargo", painel.components[0].components[2].custom_id, "cargo:r2");
+    ok("nome comprido é cortado no limite do botão", painel.components[0].components[0].label.length, 80);
+    ok("o emoji do cargo vai junto", painel.components[0].components[1].emoji, { name: "🎮" });
+    verdade("título e instrução bilíngues por padrão", /Pick your roles/.test(painel.embeds[0].title) && /Tap to get or remove/.test(painel.embeds[0].description));
+    ok("não marca ninguém", painel.allowedMentions, { parse: [] });
+    const umSo = C.painelDeCargos(sete.slice(0, 2), { titulo: "Região", texto: "Escolha a sua", umSo: true });
+    verdade("um por vez: o botão sabe disso, e o texto do ADM vai como ele escreveu",
+      umSo.components[0].components[0].custom_id === "cargo:r0:1" && umSo.embeds[0].title === "Região" && /Escolha a sua/.test(umSo.embeds[0].description) && /one role at a time/.test(umSo.embeds[0].description));
+    ok("no máximo 25 cargos", C.painelDeCargos(Array.from({ length: 30 }, (_, i) => cargo(`c${i}`)), {}).components.flatMap((l) => l.components).length, 25);
+
+    /* ---- /cargos ---- */
+    const respostas = [];
+    const adm = (pode, extra = {}) => ({ user: { id: "adm" }, memberPermissions: { has: () => pode }, channel: { id: "aqui" },
+      options: { getChannel: () => null, getString: () => null, getBoolean: () => null },
+      reply: async (m) => { respostas.push(m); }, ...extra });
+    await C.comandoCargos(adm(false));
+    verdade("só quem administra monta o painel", /Só quem administra/.test(respostas[0].content));
+    await C.comandoCargos(adm(true));
+    const lista = respostas[1].components[0].components[0];
+    verdade("o ADM escolhe numa lista de cargos do próprio Discord, até 25", lista.type === 6 && lista.max_values === 25 && lista.custom_id.startsWith("cargos:escolher:"));
+    verdade("e a escolha fica guardada só por um tempo", C.escolhasDeCargos.size === 1);
+
+    /* ---- o ADM escolheu ---- */
+    const token = lista.custom_id.split(":")[2];
+    const publicados = [];
+    const canal = { id: "aqui", permissionsFor: () => perms(PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks),
+      send: async (m) => { publicados.push(m); return { id: "p1" }; } };
+    const eu = { permissions: perms(PermissionFlagsBits.ManageRoles), roles: { highest: { position: 10 } } };
+    const guild = { id: "g1", members: { me: eu }, channels: { cache: new Map([["aqui", canal]]) }, roles: { cache: new Map() } };
+    const escolha = (user, roles) => {
+      const r = { saida: null, atualizada: null };
+      r.inter = { user: { id: user }, customId: `cargos:escolher:${token}`, guild, roles: new Map(roles.map((c) => [c.id, c])),
+        deferUpdate: async () => {}, update: async (m) => { r.atualizada = m; }, editReply: async (m) => { r.saida = m; } };
+      return r;
+    };
+    const intruso = escolha("outro", [cargo("r1")]);
+    await C.escolherCargosDoPainel(intruso.inter);
+    verdade("só quem pediu escolhe", /expirou/.test(intruso.atualizada.content) && !publicados.length);
+    const certo = escolha("adm", [cargo("ok", 2), cargo("mod", 3, { permissions: perms(PermissionFlagsBits.KickMembers) }), cargo("alto", 12)]);
+    await C.escolherCargosDoPainel(certo.inter);
+    ok("o painel sai só com o cargo que pode", publicados[0]?.components.flatMap((l) => l.components).map((b) => b.custom_id), ["cargo:ok"]);
+    verdade("e o ADM fica sabendo o que ficou de fora e por quê", /Ficaram de fora/.test(certo.saida.content) && /<@&mod>/.test(certo.saida.content) && /<@&alto>/.test(certo.saida.content));
+    const deNovo = escolha("adm", [cargo("ok")]);
+    await C.escolherCargosDoPainel(deNovo.inter);
+    verdade("a mesma escolha não publica duas vezes", /expirou/.test(deNovo.atualizada.content) && publicados.length === 1);
+
+    /* ---- o toque no painel ---- */
+    const tocar = (customId, membroTem = [], botoes = [], agora = Date.now()) => {
+      const r = { saida: null, add: [], remove: [] };
+      const tem = new Set(membroTem);
+      const g = { ...guild, roles: { cache: new Map([["r1", cargo("r1")], ["r2", cargo("r2")], ["r3", cargo("r3")],
+        ["perigo", cargo("perigo", 1, { permissions: perms(PermissionFlagsBits.Administrator) })]]) } };
+      r.inter = { user: { id: `u${Math.random()}` }, customId, guild: g,
+        member: { roles: { cache: { has: (id) => tem.has(id) },
+          add: async (id) => { r.add.push(id); }, remove: async (id) => { r.remove.push(id); } } },
+        message: { components: [{ components: botoes.map((id) => ({ customId: `cargo:${id}:1` })) }] },
+        deferReply: async () => {}, deferUpdate: async () => {}, editReply: async (m) => { r.saida = m; } };
+      return r;
+    };
+    const pegar = tocar("cargo:r1");
+    await C.cliqueCargo(pegar.inter);
+    verdade("tocar dá o cargo", pegar.add[0] === "r1" && /Agora você tem/.test(pegar.saida.content));
+    const tirar = tocar("cargo:r1", ["r1"]);
+    await C.cliqueCargo(tirar.inter);
+    verdade("tocar de novo tira", tirar.remove[0] === "r1" && /Tirei/.test(tirar.saida.content));
+    const trocar = tocar("cargo:r2:1", ["r1", "r3"], ["r1", "r2", "r3"]);
+    await C.cliqueCargo(trocar.inter);
+    ok("um por vez: pegar um tira os outros do mesmo painel", [trocar.remove[0], trocar.add[0]], [["r1", "r3"], "r2"]);
+    const perigoso = tocar("cargo:perigo");
+    await C.cliqueCargo(perigoso.inter);
+    verdade("cargo que virou perigoso depois do painel não é dado", !perigoso.add.length && /não pode mais/.test(perigoso.saida.content));
+    const apressado = tocar("cargo:r1");
+    apressado.inter.user.id = "pressa";
+    await C.cliqueCargo(apressado.inter, 100000);
+    const deNovoRapido = tocar("cargo:r1");
+    deNovoRapido.inter.user.id = "pressa";
+    await C.cliqueCargo(deNovoRapido.inter, 100500);
+    verdade("dois toques no mesmo segundo: só um conta", apressado.add.length === 1 && !deNovoRapido.add.length);
+
+    /* ---- o golpe ---- */
+    const golpes = ["olha https://dlscord-nitro.com/gift", "https://steamcornmunity.com/tradeoffer/new", "https://discorcl.gift/abc",
+      "pega aí https://steamcommunity.com.ru/id/x", "free nitro https://discord-nitro.gift/claim",
+      "@everyone nitro de graça https://bit.ly/abc", "https://discord.com-gift.xyz/x"];
+    for (const t of golpes) verdade(`golpe: ${t}`, !!C.pareceGolpe(t));
+    const limpos = ["https://discord.gg/abc entra aí", "https://cdn.discordapp.com/attachments/1/2/a.png", "olha esse bot free https://discordbotlist.com/bots/cyron",
+      "https://discordjs.guide/", "https://www.youtube.com/watch?v=x", "nitro é caro demais", "https://discord.gift/abcdef presente pra vc",
+      "https://store.steampowered.com/app/1", "@everyone reunião hoje https://meet.google.com/x"];
+    for (const t of limpos) ok(`não é golpe: ${t}`, C.pareceGolpe(t), null);
+    ok("o domínio lido como se lê", C.dominioLido("dlscord-nitro.com"), "discordnitro.com");
+
+    /* ---- o spam ---- */
+    const f = (t, canal, id, texto = "compre já https://x.io") => ({ t, canal, id, texto });
+    let r = C.anotarESpam([f(0, "a", 1), f(1000, "b", 2)], f(2000, "c", 3), 2000);
+    verdade("a mesma mensagem em 3 canais em 1 min: conta invadida", /vários canais/.test(r.motivo) && r.apagar.length === 3);
+    r = C.anotarESpam([f(0, "a", 1), f(1000, "a", 2)], f(2000, "a", 3), 2000);
+    ok("repetir no mesmo canal não é isso", r.motivo, null);
+    r = C.anotarESpam([f(0, "a", 1)], f(70000, "b", 2), 70000);
+    ok("passou de 1 min, não junta", r.motivo, null);
+    const rajada = Array.from({ length: 6 }, (_, i) => f(i * 1000, "a", i, `oi ${i}`));
+    r = C.anotarESpam(rajada, f(6000, "a", 9, "oi 9"), 6000);
+    verdade("7 mensagens em 10 s: flood", /demais/.test(r.motivo) && r.apagar.length === 1);
+    r = C.anotarESpam([f(0, "a", 1, "ok"), f(1, "b", 2, "ok")], f(2, "c", 3, "ok"), 2);
+    ok("\"ok\" em três canais não é spam (curto e sem link)", r.motivo, null);
+    ok("ajuste estragado volta ao padrão", C.configDaModeracao({ "moderacao:g1": "{quebrado" }, "g1"), C.MOD_PADRAO);
+
+    /* ---- moderar de verdade ---- */
+    const marcas = {};
+    globalThis.ajustes = async () => marcas;
+    globalThis.porAjuste = async (k, v) => { marcas[k] = v; };
+    const apagadas = [];
+    const registro = [];
+    const castigos = [];
+    const salas = new Map([["sala", { id: "sala", messages: { delete: async (id) => { apagadas.push(id); } } }],
+      ["log", { id: "log", permissionsFor: () => perms(PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks),
+        send: async (m) => { registro.push(m); } }]]);
+    const g2 = { id: "g2", ownerId: "dono", members: { me: { permissions: perms(PermissionFlagsBits.ModerateMembers, PermissionFlagsBits.ManageMessages) } },
+      channels: { cache: salas } };
+    const mensagem = (texto, { autor = "spammer", mod = false, mencoes = 0 } = {}) => ({
+      id: `m${Math.random()}`, content: texto, guild: g2, channel: { id: "sala" }, author: { id: autor, bot: false },
+      mentions: { users: { size: mencoes }, roles: { size: 0 } },
+      member: { id: autor, moderatable: true, permissions: perms(...(mod ? [PermissionFlagsBits.ManageMessages] : [])),
+        timeout: async (ms) => { castigos.push(ms); } } });
+    ok("com a moderação desligada, nada acontece", await C.moderarMensagem(mensagem("https://dlscord-nitro.com")), false);
+    marcas["moderacao:g2"] = JSON.stringify({ registro: "log", golpe: true, spam: true });
+    const golpe = mensagem("https://dlscord-nitro.com/gift");
+    ok("golpe: a mensagem some", await C.moderarMensagem(golpe), true);
+    verdade("é apagada, a conta fica 1 h de castigo e o registro conta", apagadas.includes(golpe.id) && castigos[0] === C.CASTIGO_GOLPE &&
+      /Golpe apagado/.test(registro[0].embeds[0].title));
+    verdade("e o registro de 'mensagem apagada' não repete a mesma", C.apagadasPorMim.has(golpe.id));
+    ok("quem é da moderação nunca é moderado", await C.moderarMensagem(mensagem("https://dlscord-nitro.com", { mod: true })), false);
+    ok("nem o dono do servidor", await C.moderarMensagem(mensagem("https://dlscord-nitro.com", { autor: "dono" })), false);
+    ok("menções em massa: apaga", await C.moderarMensagem(mensagem("oi", { mencoes: 8 })), true);
+    ok("mensagem normal passa", await C.moderarMensagem(mensagem("bom dia, pessoal!", { autor: "ana" })), false);
+
+    /* ---- /moderacao ---- */
+    const telas = [];
+    const pedido = (pode, opcoes = {}) => ({ guildId: "g3", guild: { members: { me: { permissions: perms() } }, channels: { cache: new Map() } },
+      memberPermissions: { has: () => pode },
+      options: { getChannel: (n) => opcoes[n] ?? null, getBoolean: (n) => (n in opcoes ? opcoes[n] : null) },
+      reply: async (m) => { telas.push(m); }, deferReply: async () => {}, editReply: async (m) => { telas.push(m); } });
+    await C.comandoModeracao(pedido(false));
+    verdade("só quem administra mexe", /Só quem administra/.test(telas[0].content));
+    await C.comandoModeracao(pedido(true, { "anti-golpe": true, registro: { id: "canal-log" } }));
+    ok("liga e guarda num ajuste do servidor", JSON.parse(marcas["moderacao:g3"]), { registro: "canal-log", golpe: true, spam: false });
+    verdade("e avisa a permissão que falta", /Falta permissão/.test(telas[1].embeds[0].description) && /Manage Messages/.test(telas[1].embeds[0].description));
+    await C.comandoModeracao(pedido(true, { "anti-golpe": false, "desligar-registro": true }));
+    ok("tudo desligado: o ajuste some", marcas["moderacao:g3"], null);
+
+    const agora = Date.UTC(2026, 9, 11);
+    verdade("conta nova (menos de 7 dias) ganha ⚠️", C.linhaDeEntrada({ id: "1", username: "x", createdTimestamp: agora - 86400000 }, agora).includes("⚠️") &&
+      !C.linhaDeEntrada({ id: "1", username: "x", createdTimestamp: agora - 30 * 86400000 }, agora).includes("⚠️"));
+  } finally {
+    Object.assign(globalThis, antes);
+  }
+
+  /* ---- a IA leva o detalhe do duelo só quando serve ---- */
+  const D = carregar(["detalheDoDuelo", "FALA_DO_DUELO", "dueloCitado"]);
+  verdade("pergunta sobre o duelo leva os efeitos e o XP", /Efeitos:/.test(D.dueloCitado("o que faz atordoar no duelo?")));
+  ok("pergunta de outra coisa não paga por isso", D.dueloCitado("como instalo no meu servidor?"), "");
+
+  /* ---- no bot ---- */
+  const limpo = semComentarios(fonte);
+  verdade("a moderação roda antes de tudo (golpe não chega a ser traduzido)",
+    /if \(msg\.author\.bot\) return;\s*if \(await moderarMensagem\(msg\)[^\n]*\)\) return;\s*const servidor = await servidorDoGuild/.test(limpo));
+  verdade("os cliques têm rota", /isRoleSelectMenu\(\) && inter\.customId\.startsWith\("cargos:"\)/.test(limpo) &&
+    /isButton\(\) && inter\.customId\.startsWith\("cargo:"\)/.test(limpo));
+  verdade("o registro ouve apagadas, editadas, entradas e saídas", ["messageDelete", "messageUpdate", "guildMemberAdd", "guildMemberRemove"]
+    .every((ev) => (limpo.match(new RegExp(`client\\.on\\("${ev}"`, "g")) || []).length >= 1) && /client\.on\("guildMemberRemove"/.test(limpo));
+  for (const nome of ["cargos", "moderacao"]) {
+    const def = GLOBAIS_DO_CYRON.find((c) => c.name === nome);
+    verdade(`/${nome} existe, é só de quem administra, de todos os servidores e nome meu`, def && def.defaultMemberPermissions === PermissionFlagsBits.ManageGuild &&
+      new RegExp(`COMANDOS_DE_TODOS = new Set\\([^)]*"${nome}"`).test(limpo) && new RegExp(`NOMES_MEUS = new Set\\([^)]*"${nome}"`).test(limpo));
+  }
+  const secao = limpo.slice(limpo.indexOf("const CARGOS_POR_PAINEL"), limpo.indexOf("const APARICAO_MENSAGENS"));
+  verdade("nada nos cargos e na moderação passa pelo tradutor (zero custo)", secao.length > 3000 && !/nalingua\(|traduzir\w*\(|traduzirEmbed\(/.test(secao));
+  const priv = readFileSync(`${aqui}/../cyron/privacidade.html`, "utf8");
+  verdade("a privacidade conta o que a moderação lê e copia", /Moderação, só se o ADM ligar/.test(priv) && /Moderation, only if an admin turns it on/.test(priv));
 }
 
 let resumiu = false;

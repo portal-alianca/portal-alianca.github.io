@@ -12092,6 +12092,436 @@ async function ligarChamada(inter, ligar) {
       { type: 2, custom_id: "duelo:chamada-on:chat", style: 2, emoji: { name: "🔔" }, label: "Religar" }] }] });
 }
 
+/* ---------------- 🎭 CARGOS POR BOTÃO ----------------
+
+   O motivo numero um de um ADM instalar um segundo bot (Carl-bot, MEE6): um
+   painel onde cada pessoa pega o cargo que quiser -- jogo, regiao, avisos --
+   com um toque. Agora a CYRON tem o seu.
+
+   SEM BANCO: o painel E' a mensagem. Cada botao leva o id do cargo no
+   custom_id, e o Discord so' aceita clique em botao que existe na mensagem;
+   ninguem forja um botao de outro cargo. Mesmo assim o cargo e' conferido de
+   novo a cada clique (porQueNaoDaCargo), porque cargo muda depois do painel
+   publicado: ganha permissao, sobe acima do meu, e' apagado.
+
+   Cargo com poder de moderacao nunca entra: um painel com "Admin" por engano
+   entregaria o servidor a quem tocasse primeiro. */
+const CARGOS_POR_PAINEL = 25;
+const ESCOLHA_DE_CARGOS_VALE = 10 * 60 * 1000;
+const PERMISSOES_PERIGOSAS = [
+  PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageRoles,
+  PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ManageWebhooks,
+  PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ModerateMembers,
+  PermissionFlagsBits.MentionEveryone, PermissionFlagsBits.ManageNicknames, PermissionFlagsBits.ManageThreads,
+  PermissionFlagsBits.ManageEvents, PermissionFlagsBits.ManageGuildExpressions, PermissionFlagsBits.ViewAuditLog,
+];
+const escolhasDeCargos = new Map(); // token -> { userId, canalId, titulo, texto, umSo, ate }
+const ultimoCliqueDeCargo = new Map(); // userId -> quando
+
+/* Por que este cargo NAO pode ir num painel, ou null quando pode. Pura. */
+function porQueNaoDaCargo(cargo, meuMaisAlto) {
+  if (!cargo) return "não existe mais · no longer exists";
+  if (cargo.id === cargo.guild?.id) return "é o @everyone · it's @everyone";
+  if (cargo.managed) return "é de um bot ou integração · it belongs to a bot or integration";
+  if (meuMaisAlto != null && cargo.position >= meuMaisAlto) return "está acima do meu cargo · it's above my role";
+  if (PERMISSOES_PERIGOSAS.some((p) => cargo.permissions?.has?.(p))) return "dá poder de moderação · it grants moderation powers";
+  return null;
+}
+
+/* O painel publico. Bilingue de nascenca, como tudo que nao e' do ADM; o
+   titulo e o texto que o ADM escrever vao como ele escreveu. Pura. */
+function painelDeCargos(cargos, { titulo = null, texto = null, umSo = false } = {}) {
+  const botoes = cargos.slice(0, CARGOS_POR_PAINEL).map((c) => ({
+    type: 2, style: 2, custom_id: `cargo:${c.id}${umSo ? ":1" : ""}`, label: String(c.name || "?").slice(0, 80),
+    ...(c.unicodeEmoji ? { emoji: { name: c.unicodeEmoji } } : {}),
+  }));
+  const linhas = [];
+  for (let i = 0; i < botoes.length; i += 5) linhas.push({ type: 1, components: botoes.slice(i, i + 5) });
+  const como = umSo
+    ? "Toque para escolher: vale um cargo por vez.\n_Tap to choose: one role at a time._"
+    : "Toque para pegar ou tirar um cargo.\n_Tap to get or remove a role._";
+  return {
+    embeds: [{ color: 0x5865F2, title: String(titulo || "🎭 Escolha seus cargos · Pick your roles").slice(0, 256),
+      description: `${texto ? `${String(texto).slice(0, 1500)}\n\n` : ""}${como}` }],
+    components: linhas,
+    allowedMentions: { parse: [] },
+  };
+}
+
+async function comandoCargos(inter) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🎭 Só quem administra o servidor monta painel de cargos.\n_Only server admins can build a roles panel._" });
+  }
+  const canal = inter.options.getChannel("canal") || inter.channel;
+  const token = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+  for (const [k, e] of escolhasDeCargos) if (Date.now() > e.ate) escolhasDeCargos.delete(k);
+  escolhasDeCargos.set(token, { userId: inter.user.id, canalId: canal?.id, titulo: inter.options.getString("titulo"),
+    texto: inter.options.getString("texto"), umSo: !!inter.options.getBoolean("um-so"), ate: Date.now() + ESCOLHA_DE_CARGOS_VALE });
+  return inter.reply({ flags: 64,
+    content: `🎭 Escolha os cargos que as pessoas vão poder pegar (até ${CARGOS_POR_PAINEL}). O painel sai em <#${canal?.id}>.\n` +
+      `_Pick the roles people will be able to get (up to ${CARGOS_POR_PAINEL}). The panel goes to <#${canal?.id}>._`,
+    components: [{ type: 1, components: [{ type: 6, custom_id: `cargos:escolher:${token}`, min_values: 1,
+      max_values: CARGOS_POR_PAINEL, placeholder: "Cargos · Roles" }] }] });
+}
+
+/* O ADM escolheu os cargos: confere cada um, publica o painel e diz o que
+   ficou de fora e por que. */
+async function escolherCargosDoPainel(inter) {
+  const token = inter.customId.split(":")[2];
+  const pedido = escolhasDeCargos.get(token);
+  if (!pedido || pedido.userId !== inter.user.id || Date.now() > pedido.ate) {
+    return inter.update({ content: "⌛ Isso expirou: use /cargos de novo. · _This expired: run /cargos again._", components: [] });
+  }
+  escolhasDeCargos.delete(token);
+  await inter.deferUpdate();
+  const guild = inter.guild;
+  const eu = guild?.members?.me;
+  const responder = (content) => inter.editReply({ content, components: [], allowedMentions: { parse: [] } });
+  if (!eu?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+    return responder("⚠️ Preciso da permissão **Gerenciar Cargos** para dar cargos. · _I need the **Manage Roles** permission._");
+  }
+  const maisAlto = eu.roles.highest.position;
+  const bons = [];
+  const ruins = [];
+  for (const cargo of inter.roles.values()) {
+    const motivo = porQueNaoDaCargo(cargo, maisAlto);
+    if (motivo) ruins.push(`<@&${cargo.id}> — ${motivo}`);
+    else bons.push(cargo);
+  }
+  const foraDoPainel = ruins.length ? `\n\n**Ficaram de fora · Left out:**\n${ruins.join("\n")}`.slice(0, 1500) : "";
+  if (!bons.length) return responder(`🎭 Nenhum desses cargos pode ir no painel. · _None of these roles can go on a panel._${foraDoPainel}`);
+  const canal = guild.channels.cache.get(pedido.canalId);
+  const pode = canal?.permissionsFor?.(eu);
+  if (!canal || !pode?.has(PermissionFlagsBits.SendMessages) || !pode.has(PermissionFlagsBits.EmbedLinks)) {
+    return responder(`⚠️ Não consigo escrever em <#${pedido.canalId}>. · _I can't post in that channel._`);
+  }
+  bons.sort((a, b) => b.position - a.position);
+  const enviada = await canal.send(painelDeCargos(bons, pedido)).catch(() => null);
+  if (!enviada) return responder(`⚠️ Não consegui publicar em <#${canal.id}>. · _I couldn't post there._`);
+  contarUso("cargos-painel", guild.id);
+  return responder(`✅ Painel publicado em <#${canal.id}> com ${bons.length} cargo(s). · _Panel posted with ${bons.length} role(s)._\n` +
+    "-# Para mudar, use /cargos de novo e apague o painel antigo. · To change it, run /cargos again and delete the old panel." + foraDoPainel);
+}
+
+/* Um toque: pega ou tira. No painel de "um so'", pegar um tira os outros
+   DAQUELE painel (os ids vem dos proprios botoes da mensagem). */
+async function cliqueCargo(inter, agora = Date.now()) {
+  const [, cargoId, umSo] = inter.customId.split(":");
+  const antes = ultimoCliqueDeCargo.get(inter.user.id);
+  if (antes != null && agora - antes < 1500) return inter.deferUpdate();
+  ultimoCliqueDeCargo.set(inter.user.id, agora);
+  if (ultimoCliqueDeCargo.size > 5000) ultimoCliqueDeCargo.clear();
+  await inter.deferReply({ flags: 64 });
+  const guild = inter.guild;
+  const eu = guild?.members?.me;
+  const membro = inter.member;
+  const dizer = (content) => inter.editReply({ content, allowedMentions: { parse: [] } });
+  if (!eu?.permissions?.has(PermissionFlagsBits.ManageRoles) || !membro?.roles?.cache) {
+    return dizer("⚠️ Estou sem a permissão **Gerenciar Cargos**. Avise a administração.\n_I'm missing the **Manage Roles** permission. Let the admins know._");
+  }
+  const cargo = guild.roles.cache.get(cargoId);
+  const motivo = porQueNaoDaCargo(cargo, eu.roles.highest.position);
+  if (motivo) return dizer(`⚠️ Este cargo não pode mais ser dado (${motivo}). Avise a administração.\n_This role can't be given anymore. Let the admins know._`);
+  if (membro.roles.cache.has(cargoId)) {
+    await membro.roles.remove(cargoId, "Painel de cargos da CYRON");
+    contarUso("cargo-botao", guild.id);
+    return dizer(`➖ Tirei <@&${cargoId}>. · _Removed <@&${cargoId}>._`);
+  }
+  const trocados = [];
+  if (umSo) {
+    const doPainel = (inter.message?.components || []).flatMap((l) => l.components || [])
+      .map((b) => String(b.customId || b.custom_id || "").split(":")[1]).filter((id) => id && id !== cargoId);
+    for (const id of doPainel) if (membro.roles.cache.has(id)) trocados.push(id);
+    if (trocados.length) await membro.roles.remove(trocados, "Painel de cargos da CYRON (um por vez)");
+  }
+  await membro.roles.add(cargoId, "Painel de cargos da CYRON");
+  contarUso("cargo-botao", guild.id);
+  return dizer(`✅ Agora você tem <@&${cargoId}>. · _You now have <@&${cargoId}>._` +
+    (trocados.length ? `\n-# ➖ ${trocados.map((id) => `<@&${id}>`).join(" ")}` : ""));
+}
+
+/* ---------------- 🛡️ MODERAÇÃO LEVE E REGISTRO ----------------
+
+   O outro motivo de instalar um segundo bot: apagar o golpe do "Nitro
+   gratis" antes que alguem clique, segurar a conta invadida que manda o
+   mesmo link em todos os canais, e um canal onde a administracao ve o que
+   foi apagado, editado, quem entrou e quem saiu.
+
+   Leve DE PROPOSITO. Apagar mensagem de quem nao fez nada e' pior que deixar
+   passar um spam: as regras pegam so' o que tem cara inconfundivel, e quem
+   tem cargo de moderacao nunca e' moderado. Tudo em memoria e em expressao
+   regular -- nenhuma chamada paga, nenhum dado no banco alem do ajuste.
+
+   O registro so' copia para o canal escolhido pelo ADM, dentro do proprio
+   servidor; nada disso e' guardado por mim. Mensagem apagada que ja' tinha
+   saido da memoria (passou de meia hora) nao entra: sem o texto ela so' faria
+   barulho -- e as que eu mesma apago (avisos temporarios) tambem nao. */
+const MOD_PADRAO = { registro: null, golpe: false, spam: false };
+const DOMINIOS_OFICIAIS = ["discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.media",
+  "discord.new", "discord.gift", "discordstatus.com", "steamcommunity.com", "steampowered.com", "steamstatic.com", "steam.tv"];
+const MARCAS_IMITADAS = ["discord", "steamcommunity", "steampowered"];
+/* So' palavra que quase so' aparece em golpe. "free", "gratis" e "presente"
+   ficaram de fora: "olha esse bot free" nao pode custar uma hora de castigo. */
+const ISCA_DE_GOLPE = /nitro|airdrop|\bgifts?\b|steam\s*(gift|card)/i;
+const SPAM_JANELA = 60 * 1000;
+const SPAM_CANAIS = 3;          // a mesma mensagem em 3 canais em 1 min: conta invadida
+const FLOOD_JANELA = 10 * 1000;
+const FLOOD_MENSAGENS = 7;      // 7 mensagens em 10 s
+const MENCOES_EM_MASSA = 6;     // pessoas e cargos marcados numa mensagem so'
+const CASTIGO_GOLPE = 60 * 60 * 1000;
+const CASTIGO_SPAM = 10 * 60 * 1000;
+const falasRecentes = new Map(); // `${guildId}|${userId}` -> [{ t, canal, id, texto }]
+const apagadasPorMim = new Set(); // ids que a moderacao apagou: o registro de "apagada" nao repete
+
+function configDaModeracao(a, guildId) {
+  try {
+    return { ...MOD_PADRAO, ...JSON.parse(a?.[`moderacao:${guildId}`] || "{}") };
+  } catch {
+    return { ...MOD_PADRAO };
+  }
+}
+
+function dominiosDoTexto(texto) {
+  return [...String(texto || "").matchAll(/https?:\/\/([^\s/?#<>]+)/gi)]
+    .map((m) => m[1].toLowerCase().replace(/^www\./, "").replace(/:\d+$/, ""));
+}
+
+/* O dominio "lido como se le": 1 e l viram i, rn vira m, cl vira d, 0 vira o.
+   E' assim que dlscord, discorcl e steamcornmunity viram as marcas que
+   imitam. Pura. */
+function dominioLido(d) {
+  return d.replace(/[-_]/g, "").replace(/rn/g, "m").replace(/cl/g, "d").replace(/[1l|]/g, "i").replace(/0/g, "o")
+    .replace(/3/g, "e").replace(/5/g, "s");
+}
+
+/* E' golpe? Devolve o motivo, ou null. So' quatro formas, todas inconfundiveis:
+   - o dominio oficial com outra coisa colada (steamcommunity.com.ru);
+   - um dominio que IMITA o Discord ou a Steam (dlscord.gift, steamcornmunity);
+   - a marca num dominio que nao e' dela, com isca de golpe (nitro, gift...);
+   - @everyone/@here com link e isca: a assinatura da conta invadida.
+   Pura. */
+function pareceGolpe(texto) {
+  const t = String(texto || "");
+  const dominios = dominiosDoTexto(t);
+  if (!dominios.length) return null;
+  const oficial = (d) => DOMINIOS_OFICIAIS.some((o) => d === o || d.endsWith(`.${o}`));
+  for (const d of dominios) {
+    if (oficial(d)) continue;
+    /* O dominio de verdade com outra coisa colada: steamcommunity.com.ru,
+       discord.com-gift.xyz. */
+    if (DOMINIOS_OFICIAIS.some((o) => d.startsWith(`${o}.`) || d.startsWith(`${o}-`))) {
+      return "domínio disfarçado de oficial · disguised official domain";
+    }
+    const lido = dominioLido(d);
+    const marca = MARCAS_IMITADAS.find((m) => lido.includes(m.replace(/l/g, "i")));
+    if (!marca) continue;
+    const imita = !MARCAS_IMITADAS.some((m) => d.includes(m));
+    if (imita) return `link imitando ${marca.startsWith("steam") ? "a Steam" : "o Discord"} · fake ${marca.startsWith("steam") ? "Steam" : "Discord"} link`;
+    if (ISCA_DE_GOLPE.test(t)) return "link falso de Nitro/presente · fake Nitro/gift link";
+  }
+  if (/@(everyone|here)/.test(t) && ISCA_DE_GOLPE.test(t)) return "@everyone com link e isca de golpe · @everyone with a bait link";
+  return null;
+}
+
+/* Anota a fala e diz se ela fecha um padrao de spam. Devolve
+   { motivo, apagar: [{ canal, id }] } ou null. Pura com o mapa de fora. */
+function anotarESpam(lista, fala, agora) {
+  const recentes = lista.filter((f) => agora - f.t < SPAM_JANELA);
+  recentes.push(fala);
+  const texto = fala.texto.trim().toLowerCase();
+  if (texto.length >= 8 || /https?:\/\//.test(texto)) {
+    const iguais = recentes.filter((f) => f.texto.trim().toLowerCase() === texto);
+    if (new Set(iguais.map((f) => f.canal)).size >= SPAM_CANAIS) {
+      return { recentes, motivo: "a mesma mensagem em vários canais · the same message in many channels", apagar: iguais };
+    }
+  }
+  const rajada = recentes.filter((f) => agora - f.t < FLOOD_JANELA);
+  if (rajada.length >= FLOOD_MENSAGENS) return { recentes, motivo: "mensagens demais em segundos · too many messages in seconds", apagar: [fala] };
+  return { recentes, motivo: null, apagar: [] };
+}
+
+function ehDaModeracao(membro, guild) {
+  if (!membro) return false;
+  if (guild?.ownerId && membro.id === guild.ownerId) return true;
+  const p = membro.permissions;
+  return !!(p?.has?.(PermissionFlagsBits.Administrator) || p?.has?.(PermissionFlagsBits.ManageMessages) ||
+    p?.has?.(PermissionFlagsBits.ModerateMembers));
+}
+
+/* Manda uma linha para o canal de registro do servidor, se ele tiver um. */
+async function registrar(guild, embed, cfg = null) {
+  const config = cfg || configDaModeracao(await ajustes(), guild.id);
+  if (!config.registro) return false;
+  const canal = guild.channels.cache.get(config.registro);
+  const eu = guild.members?.me;
+  const pode = canal?.permissionsFor?.(eu);
+  if (!canal || !pode?.has(PermissionFlagsBits.SendMessages) || !pode.has(PermissionFlagsBits.EmbedLinks)) return false;
+  await canal.send({ embeds: [{ timestamp: new Date().toISOString(), ...embed }], allowedMentions: { parse: [] } }).catch(() => {});
+  return true;
+}
+
+/* Roda em toda mensagem de gente num servidor, antes de qualquer traducao.
+   true = a mensagem foi apagada (e nao deve seguir para o resto). */
+async function moderarMensagem(msg, agora = Date.now()) {
+  if (!msg.guild || msg.author?.bot || msg.webhookId) return false;
+  const cfg = configDaModeracao(await ajustes(), msg.guild.id);
+  if (!cfg.golpe && !cfg.spam) return false;
+  if (ehDaModeracao(msg.member, msg.guild)) return false;
+  const texto = String(msg.content || "");
+  let motivo = null;
+  let apagar = [];
+  let castigo = 0;
+  if (cfg.golpe) {
+    motivo = pareceGolpe(texto);
+    if (motivo) { apagar = [{ canal: msg.channel.id, id: msg.id }]; castigo = CASTIGO_GOLPE; }
+  }
+  if (!motivo && cfg.spam) {
+    const mencoes = (msg.mentions?.users?.size || 0) + (msg.mentions?.roles?.size || 0);
+    if (mencoes >= MENCOES_EM_MASSA) {
+      motivo = `${mencoes} menções numa mensagem · ${mencoes} mentions in one message`;
+      apagar = [{ canal: msg.channel.id, id: msg.id }];
+      castigo = CASTIGO_SPAM;
+    } else {
+      const chave = `${msg.guild.id}|${msg.author.id}`;
+      const r = anotarESpam(falasRecentes.get(chave) || [], { t: agora, canal: msg.channel.id, id: msg.id, texto }, agora);
+      falasRecentes.set(chave, r.recentes.slice(-20));
+      if (falasRecentes.size > 5000) falasRecentes.delete(falasRecentes.keys().next().value);
+      if (r.motivo) { motivo = r.motivo; apagar = r.apagar; castigo = CASTIGO_SPAM; falasRecentes.delete(chave); }
+    }
+  }
+  if (!motivo) return false;
+  const eu = msg.guild.members?.me;
+  for (const f of apagar) {
+    apagadasPorMim.add(f.id);
+    const canal = msg.guild.channels.cache.get(f.canal);
+    await canal?.messages?.delete(f.id).catch(() => {});
+  }
+  while (apagadasPorMim.size > 2000) apagadasPorMim.delete(apagadasPorMim.values().next().value);
+  let segurou = false;
+  if (castigo && eu?.permissions?.has(PermissionFlagsBits.ModerateMembers) && msg.member?.moderatable) {
+    segurou = await msg.member.timeout(castigo, `CYRON: ${motivo}`).then(() => true).catch(() => false);
+  }
+  contarUso(castigo === CASTIGO_GOLPE ? "mod-golpe" : "mod-spam", msg.guild.id);
+  await registrar(msg.guild, {
+    color: 0xE03E3E,
+    title: `🛡️ ${castigo === CASTIGO_GOLPE ? "Golpe apagado · Scam removed" : "Spam parado · Spam stopped"}`,
+    description: `**${motivo}**\n\n${texto.slice(0, 1000) || "_(sem texto · no text)_"}`,
+    fields: [
+      { name: "Quem · Who", value: `<@${msg.author.id}> (${msg.author.id})`, inline: true },
+      { name: "Canal · Channel", value: `<#${msg.channel.id}>`, inline: true },
+      { name: "Feito · Done", value: `🗑️ ${apagar.length}${segurou ? ` · ⏳ ${Math.round(castigo / 60000)} min` : ""}`, inline: true },
+    ],
+  }, cfg);
+  return apagar.some((f) => f.id === msg.id);
+}
+
+client.on("messageDelete", async (msg) => {
+  try {
+    if (!msg?.guild || msg.partial || msg.author?.bot || msg.webhookId) return;
+    if (apagadasPorMim.has(msg.id)) return;
+    const cfg = configDaModeracao(await ajustes(), msg.guild.id);
+    if (!cfg.registro || msg.channel?.id === cfg.registro) return;
+    await registrar(msg.guild, {
+      color: 0x9AA4B2, title: "🗑️ Mensagem apagada · Message deleted",
+      description: String(msg.content || "").slice(0, 1500) || "_(sem texto · no text)_",
+      fields: [
+        { name: "Autor · Author", value: `<@${msg.author?.id}>`, inline: true },
+        { name: "Canal · Channel", value: `<#${msg.channel?.id}>`, inline: true },
+      ],
+    }, cfg);
+  } catch (e) {
+    console.error("registro: apagada falhou:", e?.message || e);
+  }
+});
+
+client.on("messageUpdate", async (velha, nova) => {
+  try {
+    if (!nova?.guild || !velha || velha.partial || nova.author?.bot || nova.webhookId) return;
+    if (velha.content === nova.content) return;
+    const cfg = configDaModeracao(await ajustes(), nova.guild.id);
+    if (!cfg.registro || nova.channel?.id === cfg.registro) return;
+    await registrar(nova.guild, {
+      color: 0xE0A63A, title: "✏️ Mensagem editada · Message edited",
+      url: nova.url,
+      fields: [
+        { name: "Antes · Before", value: String(velha.content || "—").slice(0, 1000) },
+        { name: "Depois · After", value: String(nova.content || "—").slice(0, 1000) },
+        { name: "Autor · Author", value: `<@${nova.author?.id}>`, inline: true },
+        { name: "Canal · Channel", value: `<#${nova.channel?.id}>`, inline: true },
+      ],
+    }, cfg);
+  } catch (e) {
+    console.error("registro: editada falhou:", e?.message || e);
+  }
+});
+
+/* Conta nova (menos de 7 dias) ganha o ⚠️: e' o sinal mais simples de conta
+   criada so' para atrapalhar. */
+function linhaDeEntrada(user, agora = Date.now()) {
+  const criada = Number(user?.createdTimestamp) || 0;
+  const nova = criada && agora - criada < 7 * 24 * 60 * 60 * 1000;
+  return `<@${user?.id}> · ${user?.username || "?"}\n-# Conta criada · Account created <t:${Math.floor(criada / 1000)}:R>${nova ? " ⚠️" : ""}`;
+}
+
+client.on("guildMemberAdd", async (member) => {
+  try {
+    if (member.user?.bot) return;
+    await registrar(member.guild, { color: 0x2BB673, title: "📥 Entrou · Joined", description: linhaDeEntrada(member.user) });
+  } catch (e) {
+    console.error("registro: entrada falhou:", e?.message || e);
+  }
+});
+
+client.on("guildMemberRemove", async (member) => {
+  try {
+    if (member.user?.bot) return;
+    await registrar(member.guild, { color: 0x6B7280, title: "📤 Saiu · Left", description: `<@${member.id}> · ${member.user?.username || "?"}` });
+  } catch (e) {
+    console.error("registro: saida falhou:", e?.message || e);
+  }
+});
+
+/* /moderacao: liga e desliga cada parte; sem nada, mostra como esta'. */
+async function comandoModeracao(inter) {
+  if (!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return inter.reply({ flags: 64, content: "🛡️ Só quem administra o servidor mexe na moderação.\n_Only server admins can change moderation._" });
+  }
+  await inter.deferReply({ flags: 64 });
+  const chave = `moderacao:${inter.guildId}`;
+  const cfg = configDaModeracao(await ajustes(), inter.guildId);
+  const registro = inter.options.getChannel("registro");
+  const golpe = inter.options.getBoolean("anti-golpe");
+  const spam = inter.options.getBoolean("anti-spam");
+  const semRegistro = inter.options.getBoolean("desligar-registro");
+  const mudou = registro || golpe !== null || spam !== null || semRegistro;
+  if (registro) cfg.registro = registro.id;
+  if (semRegistro) cfg.registro = null;
+  if (golpe !== null) cfg.golpe = golpe;
+  if (spam !== null) cfg.spam = spam;
+  if (mudou) {
+    const vazio = !cfg.registro && !cfg.golpe && !cfg.spam;
+    await porAjuste(chave, vazio ? null : JSON.stringify(cfg));
+    contarUso("moderacao-ajuste", inter.guildId);
+  }
+  const eu = inter.guild?.members?.me;
+  const faltam = [];
+  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ManageMessages)) faltam.push("Gerenciar Mensagens · Manage Messages");
+  if ((cfg.golpe || cfg.spam) && !eu?.permissions?.has(PermissionFlagsBits.ModerateMembers)) faltam.push("Castigar Membros · Timeout Members");
+  const canalReg = cfg.registro ? inter.guild?.channels?.cache?.get(cfg.registro) : null;
+  if (cfg.registro && !canalReg?.permissionsFor?.(eu)?.has(PermissionFlagsBits.SendMessages)) faltam.push(`escrever em · send messages in <#${cfg.registro}>`);
+  const sim = (v) => (v ? "🟢" : "⚪");
+  return inter.editReply({ allowedMentions: { parse: [] }, embeds: [{ color: 0x5865F2,
+    title: `🛡️ Moderação · Moderation${mudou ? " — salvo · saved" : ""}`,
+    description: [
+      `${sim(cfg.golpe)} **Anti-golpe · Anti-scam** — Nitro grátis, Discord e Steam falsos · fake Nitro, Discord and Steam links`,
+      `${sim(cfg.spam)} **Anti-spam** — mesma mensagem em vários canais, flood, menções em massa · same message in many channels, flood, mass mentions`,
+      `${sim(cfg.registro)} **Registro · Log** — ${cfg.registro ? `<#${cfg.registro}>` : "desligado · off"}: apagadas, editadas, entradas, saídas · deleted, edited, joins, leaves`,
+      "",
+      "-# Quem tem cargo de moderação nunca é moderado. · Members with moderation roles are never moderated.",
+      ...(faltam.length ? ["", `⚠️ **Falta permissão · Missing permission:** ${faltam.join(" · ")}`] : []),
+    ].join("\n") }] });
+}
+
 /* ---------------- 🃏 HERÓIS NO CHAT ----------------
 
    O que os bots mais vivos do Discord tem em comum (Mudae, Pokétwo): algo
@@ -17718,6 +18148,11 @@ const NOMES_DAS_FUNCOES = {
   "heroi-pego": "✋ Alguém pegou um herói",
   "heroi-presente": "🎁 Carta dada de presente",
   diario: "🎁 /diario pego",
+  "cargos-painel": "🎭 Painel de cargos publicado",
+  "cargo-botao": "🎭 Alguém pegou ou tirou um cargo",
+  "mod-golpe": "🛡️ Golpe apagado",
+  "mod-spam": "🛡️ Spam parado",
+  "moderacao-ajuste": "🛡️ Moderação ajustada",
 };
 
 function nomeDaFuncao(recurso) {
@@ -20989,12 +21424,9 @@ function roteiroDaIA({ convite = "", conta = "", suporte = "", beta = "" } = {})
       `Quatro habilidades: básica (${custo("basica")}), defesa (${custo("defesa")}), especial (${custo("especial")}) e suprema (${custo("suprema")}, só a partir do turno ${ESPACOS.suprema.aPartirDoTurno}). ` +
       `Cada vez dura ${DUELO_TEMPO / 1000} segundos: sem jogar, sai a básica, e ${DUELO_AUSENCIAS} vezes seguidas sem jogar é W.O. ` +
       `A partir da jogada ${DUELO_MORTE_SUBITA}, a arena tira vida dos dois a cada vez, e cada vez mais.`,
-    `Efeitos: ${Object.entries(EFEITOS).map(([k, e]) => `${k} (${e.texto})`).join("; ")}.`,
-    `Cada herói sobe do nível 1 ao ${NIVEIS_DO_PERSONAGEM.length} com XP: vitória ${DUELO_XP.vitoria}, derrota ${DUELO_XP.derrota}; no treino ${DUELO_XP.treinoVitoria} e ${DUELO_XP.treinoDerrota}. ` +
-      `Contam XP, por dia, até ${DUELO_DUELOS_DIA} duelos e ${DUELO_TREINOS_DIA} treinos. ` +
-      `Cada habilidade tem uma alternativa, liberada no nível ${ESPACOS.defesa.nivelAlternativa} (defesa), ${ESPACOS.basica.nivelAlternativa} (básica), ` +
-      `${ESPACOS.especial.nivelAlternativa} (especial) e ${ESPACOS.suprema.nivelAlternativa} (suprema): diferente, nunca mais forte. ` +
-      "Troca no painel do /duelo (aba Habilidades) ou com /equipar. Cada nível abre uma página do /codex, com curiosidades reais do herói.",
+    /* Efeitos e XP sairam daqui: vao junto so' com pergunta sobre o duelo
+       (dueloCitado), como a ficha dos herois. Sao ~250 tokens que toda
+       pergunta pagava -- e o roteiro tinha batido no teto. */
     `Patente, pelas vitórias somadas de todos os heróis, mostrada no /perfil: ${PATENTES.map((p) => `${p.nome} (${p.min})`).join(", ")}. Perder não rebaixa.`,
     /* So' os nomes: o titulo de cada um (O Conquistador...) custava ~50 tokens
        em TODA pergunta, e quando a conversa cita um heroi, golpesCitados ja'
@@ -21051,6 +21483,25 @@ function roteiroAtual() {
   const chave = JSON.stringify(links);
   if (roteiroGuardado.chave !== chave) Object.assign(roteiroGuardado, { chave, texto: roteiroDaIA(links) });
   return roteiroGuardado.texto;
+}
+
+/* O detalhe do duelo: os efeitos e a conta do XP. Vai junto so' quando a
+   conversa e' sobre o duelo -- o roteiro fixo leva o resumo. Pura. */
+function detalheDoDuelo() {
+  return [
+    `Efeitos: ${Object.entries(EFEITOS).map(([k, e]) => `${k} (${e.texto})`).join("; ")}.`,
+    `Cada herói sobe do nível 1 ao ${NIVEIS_DO_PERSONAGEM.length} com XP: vitória ${DUELO_XP.vitoria}, derrota ${DUELO_XP.derrota}; no treino ${DUELO_XP.treinoVitoria} e ${DUELO_XP.treinoDerrota}. ` +
+      `Contam XP, por dia, até ${DUELO_DUELOS_DIA} duelos e ${DUELO_TREINOS_DIA} treinos. ` +
+      `Cada habilidade tem uma alternativa, liberada no nível ${ESPACOS.defesa.nivelAlternativa} (defesa), ${ESPACOS.basica.nivelAlternativa} (básica), ` +
+      `${ESPACOS.especial.nivelAlternativa} (especial) e ${ESPACOS.suprema.nivelAlternativa} (suprema): diferente, nunca mais forte. ` +
+      "Troca no painel do /duelo (aba Habilidades) ou com /equipar. Cada nível abre uma página do /codex, com curiosidades reais do herói.",
+  ].join("\n");
+}
+
+const FALA_DO_DUELO = /duel|duelo|herói|heroi|hero|habilidad|skill|efeit|effect|\bxp\b|n[ií]vel|level|codex|c[oó]dex|treino|train|atordo|queim|escudo|esquiv|perfur|dren|confund|prepar|energia|energy|equipar|equip|suprema|especial/i;
+
+function dueloCitado(texto) {
+  return FALA_DO_DUELO.test(String(texto || "")) ? detalheDoDuelo() : "";
 }
 
 /* Os golpes dos herois que a conversa cita (pelo nome do heroi ou de uma
@@ -21201,7 +21652,8 @@ async function responderComIA(msg, texto, agora = Date.now()) {
 
   const historico = (conversasDaIA.get(eu)?.msgs || []).slice(-IA_TURNOS);
   const anterior = historico.filter((m) => m.role === "user").slice(-1)[0]?.content || "";
-  const consulta = [funcoesCitadas(`${anterior}\n${texto}`), golpesCitados(`${anterior}\n${texto}`)].filter(Boolean).join("\n");
+  const consulta = [funcoesCitadas(`${anterior}\n${texto}`), golpesCitados(`${anterior}\n${texto}`),
+    dueloCitado(`${anterior}\n${texto}`)].filter(Boolean).join("\n");
   const mensagens = [
     { role: "system", content: roteiroAtual() },
     ...historico,
@@ -21555,6 +22007,10 @@ async function comandoDeInteracao(inter) {
     if (!inter.guildId && nome === "duelo") return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     return nome === "duelo" ? comandoDuelo(inter) : nome === "equipar" ? comandoEquipar(inter) : comandoCodex(inter);
   }
+  if (nome === "cargos" || nome === "moderacao") {
+    if (!inter.guildId) return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
+    return nome === "cargos" ? comandoCargos(inter) : comandoModeracao(inter);
+  }
   if (nome === "colecao" || nome === "diario" || nome === "presentear") {
     if (!inter.guildId && nome === "presentear") return inter.reply({ flags: 64, content: "Este comando só funciona dentro de um servidor." });
     return nome === "colecao" ? comandoColecao(inter) : nome === "diario" ? comandoDiario(inter) : comandoPresentear(inter);
@@ -21709,6 +22165,12 @@ client.on("interactionCreate", async (inter) => {
     }
     if (inter.isButton() && inter.customId.startsWith("heroi:")) {
       return await cliqueHeroi(inter);
+    }
+    if (inter.isRoleSelectMenu() && inter.customId.startsWith("cargos:")) {
+      return await escolherCargosDoPainel(inter);
+    }
+    if (inter.isButton() && inter.customId.startsWith("cargo:")) {
+      return await cliqueCargo(inter);
     }
     if (inter.isMessageComponent() && inter.customId.startsWith("equipar:")) {
       return await cliqueEquipar(inter);
@@ -21917,6 +22379,10 @@ client.on("messageCreate", async (msg) => {
       return;
     }
     if (msg.author.bot) return;
+
+    /* Antes de tudo: golpe apagado nao pode chegar a ser traduzido e
+       espalhado pelas salas de cada lingua. */
+    if (await moderarMensagem(msg).catch((e) => { console.error("moderacao: falhou:", e?.message || e); return false; })) return;
 
     const servidor = await servidorDoGuild(msg.guild.id);
     if (!servidor) return; // servidor sem instalacao
@@ -22304,7 +22770,8 @@ client.on("messageReactionAdd", async (reacao, quem) => {
    separarComandos leria /admin como comando do jogo e o empurraria pros
    servidores com alianca -- exatamente o contrario do que ele e'. */
 const COMANDOS_DE_TODOS = new Set(["mylanguage", "Translate", "cyron", "help", "admin", "arena", "evento", "Criar evento", "hora", "boas-vindas", "perfil", "top", "niveis", "xp",
-  "sorteio", "abraco", "beijo", "tapa", "cafune", "duelo", "equipar", "codex", "suporte", "colecao", "diario", "presentear"]);
+  "sorteio", "abraco", "beijo", "tapa", "cafune", "duelo", "equipar", "codex", "suporte", "colecao", "diario", "presentear",
+  "cargos", "moderacao"]);
 
 async function separarComandos() {
   try {
@@ -22742,6 +23209,7 @@ const NOMES_MEUS = new Set([
   "sorteio", "giveaway", "abraco", "hug", "beijo", "kiss", "tapa", "slap", "cafune", "pat",
   "duelo", "duel", "equipar", "equip", "codex", "suporte", "support",
   "colecao", "collection", "coleccion", "diario", "daily", "presentear", "gift", "regalar",
+  "cargos", "roles", "moderacao", "moderation", "moderacion",
 ]);
 
 /* Uma linha do formulario que carrega duas respostas: "todos 60".
@@ -23563,6 +24031,34 @@ const GLOBAIS_DO_CYRON = soNoServidor(comLinguas([
         choices: PERSONAGENS.map((p) => ({ name: `${p.bandeira} ${p.nome}`.slice(0, 100), value: p.id })) },
       { type: 4, name: "raridade", required: false, description: "Qual raridade (padrão: comum) / Which rarity",
         choices: RARIDADES.map((r) => ({ name: `${r.estrelas} ${r.pt} · ${r.en}`, value: r.n })) },
+    ],
+  },
+  {
+    /* So' de quem administra: e' ele que decide que cargo cada um pode pegar. */
+    name: "cargos",
+    nameLocalizations: { "en-US": "roles", "en-GB": "roles", "es-ES": "roles" },
+    description: "Painel onde cada pessoa pega seus cargos com um toque / Self-roles panel",
+    defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+    dmPermission: false,
+    options: [
+      { type: 3, name: "titulo", required: false, max_length: 100, description: "Título do painel (opcional) / Panel title" },
+      { type: 3, name: "texto", required: false, max_length: 1000, description: "Texto do painel (opcional) / Panel text" },
+      { type: 7, name: "canal", required: false, channelTypes: [0, 5], description: "Onde publicar (padrão: aqui) / Where to post" },
+      { type: 5, name: "um-so", required: false, description: "Um cargo por pessoa: escolher outro troca / One role at a time" },
+    ],
+  },
+  {
+    name: "moderacao",
+    nameLocalizations: { "en-US": "moderation", "en-GB": "moderation", "es-ES": "moderacion" },
+    description: "Moderação automática e registro do servidor / Auto-moderation and server log",
+    defaultMemberPermissions: PermissionFlagsBits.ManageGuild,
+    dmPermission: false,
+    options: [
+      { type: 7, name: "registro", required: false, channelTypes: [0, 5],
+        description: "Canal do registro: apagadas, editadas, entradas, saídas / Log channel" },
+      { type: 5, name: "anti-golpe", required: false, description: "Apagar links de golpe (Nitro grátis, Discord falso) / Anti-scam" },
+      { type: 5, name: "anti-spam", required: false, description: "Parar flood, mensagem repetida e menções em massa / Anti-spam" },
+      { type: 5, name: "desligar-registro", required: false, description: "Parar o registro / Turn the log off" },
     ],
   },
   {
