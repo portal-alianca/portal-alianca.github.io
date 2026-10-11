@@ -52,10 +52,12 @@ export const DESCRICOES_DOS_COMANDOS = {
     "Otwórz panel ustawień CYRON", "CYRON ayar panelini aç", "Buka panel pengaturan CYRON", "Mở bảng cài đặt của CYRON",
     "เปิดแผงตั้งค่าของ CYRON", "CYRON का सेटिंग पैनल खोलें", "CYRONの設定パネルを開く", "CYRON 설정 패널 열기",
     "打开 CYRON 的设置面板"),
-  help: L("Como usar a CYRON", "How to use CYRON", "Cómo usar CYRON", "Comment utiliser CYRON", "So benutzt du CYRON",
-    "Come usare CYRON", "Zo gebruik je CYRON", "Как пользоваться CYRON", "Як користуватися CYRON", "Jak korzystać z CYRON",
-    "CYRON nasıl kullanılır", "Cara memakai CYRON", "Cách dùng CYRON", "วิธีใช้ CYRON", "CYRON का इस्तेमाल कैसे करें",
-    "CYRONの使い方", "CYRON 사용법", "如何使用 CYRON"),
+  help: L("Todos os comandos e como usar a CYRON", "All commands and how to use CYRON", "Todos los comandos y cómo usar CYRON",
+    "Toutes les commandes et comment utiliser CYRON", "Alle Befehle und wie man CYRON benutzt", "Tutti i comandi e come usare CYRON",
+    "Alle commando's en hoe je CYRON gebruikt", "Все команды и как пользоваться CYRON", "Усі команди та як користуватися CYRON",
+    "Wszystkie komendy i jak korzystać z CYRON", "Tüm komutlar ve CYRON nasıl kullanılır", "Semua perintah dan cara memakai CYRON",
+    "Tất cả lệnh và cách dùng CYRON", "คำสั่งทั้งหมดและวิธีใช้ CYRON", "सभी कमांड और CYRON का इस्तेमाल कैसे करें",
+    "すべてのコマンドとCYRONの使い方", "모든 명령어와 CYRON 사용법", "所有命令和 CYRON 的用法"),
   evento: L("Marcar um evento com hora", "Schedule an event with a time", "Programar un evento con hora",
     "Programmer un événement à une heure", "Ein Ereignis mit Uhrzeit planen", "Programma un evento con orario",
     "Een evenement met tijd plannen", "Запланировать событие на время", "Запланувати подію на час",
@@ -437,4 +439,26 @@ export const DESCRICOES_DE_FORA = {
     "Deine Sprache wählen", "Scegli la tua lingua", "Kies je taal", "Выбрать свой язык", "Обрати свою мову",
     "Wybierz swój język", "Dilini seç", "Pilih bahasamu", "Chọn ngôn ngữ của bạn", "เลือกภาษาของคุณ", "अपनी भाषा चुनें",
     "言語を選ぶ", "언어 선택", "选择你的语言"),
+};
+
+/* O que o /help diz dos menus de botão direito: menu não tem descrição no
+   Discord, então a frase mora aqui, nas mesmas 18 línguas. */
+export const DESCRICOES_DA_AJUDA = {
+  Translate: L("Segure uma mensagem: a tradução, só para você", "Hold a message: the translation, just for you",
+    "Mantén pulsado un mensaje: la traducción, solo para ti", "Maintiens un message : la traduction, rien que pour toi",
+    "Nachricht gedrückt halten: die Übersetzung, nur für dich", "Tieni premuto un messaggio: la traduzione, solo per te",
+    "Houd een bericht ingedrukt: de vertaling, alleen voor jou", "Удерживай сообщение: перевод только для тебя",
+    "Утримуй повідомлення: переклад лише для тебе", "Przytrzymaj wiadomość: tłumaczenie tylko dla ciebie",
+    "Bir mesaja basılı tut: çeviri sadece sana", "Tahan sebuah pesan: terjemahannya hanya untukmu",
+    "Nhấn giữ tin nhắn: bản dịch chỉ cho bạn", "กดค้างที่ข้อความ: คำแปลเฉพาะคุณ", "किसी संदेश को दबाकर रखें: अनुवाद सिर्फ़ आपके लिए",
+    "メッセージを長押し: 翻訳はあなただけに", "메시지를 길게 누르기: 번역은 나만 보기", "长按一条消息：翻译只给你看"),
+  "Criar evento": L("Segure o print ou a mensagem de um evento: a CYRON monta o evento", "Hold an event's screenshot or message: CYRON builds the event",
+    "Mantén pulsada la captura o el mensaje de un evento: CYRON arma el evento", "Maintiens la capture ou le message d'un événement : CYRON le crée",
+    "Screenshot oder Nachricht eines Events gedrückt halten: CYRON erstellt es", "Tieni premuto lo screenshot o il messaggio di un evento: CYRON lo crea",
+    "Houd de screenshot of het bericht van een event ingedrukt: CYRON maakt het", "Удерживай скриншот или сообщение о событии: CYRON создаст его",
+    "Утримуй скриншот або повідомлення про подію: CYRON створить її", "Przytrzymaj zrzut lub wiadomość o wydarzeniu: CYRON je utworzy",
+    "Bir etkinliğin ekran görüntüsüne veya mesajına basılı tut: CYRON oluşturur", "Tahan tangkapan layar atau pesan acara: CYRON membuat acaranya",
+    "Nhấn giữ ảnh chụp hoặc tin nhắn sự kiện: CYRON tạo sự kiện", "กดค้างที่ภาพหรือข้อความกิจกรรม: CYRON สร้างกิจกรรมให้",
+    "किसी इवेंट के स्क्रीनशॉट या संदेश को दबाकर रखें: CYRON इवेंट बना देगी", "イベントのスクショやメッセージを長押し: CYRONがイベントを作成",
+    "이벤트 스크린샷이나 메시지를 길게 누르기: CYRON이 이벤트를 만들어요", "长按活动截图或消息：CYRON 帮你创建活动"),
 };
