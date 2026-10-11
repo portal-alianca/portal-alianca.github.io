@@ -8849,6 +8849,7 @@ function conferirCartao(onde, embed, componentes = []) {
     const jpg = await c.desenharQuadroDoDuelo(sharp, base, [{ hp: 64, en: 50 }, { hp: 12, en: 100 }], 0, null, FONTE);
     const meta = await sharp(jpg).metadata();
     ok("o cartaz sai em 1024x540", [meta.width, meta.height], [1024, 540]);
+    ok("em WebP (metade do tamanho do JPEG, sobe mais rápido a cada jogada)", meta.format, "webp");
     const fim = await c.desenharQuadroDoDuelo(sharp, base, [{ hp: 0, en: 0 }, { hp: 30, en: 20 }], 0, 1, FONTE);
     verdade("o quadro do fim também sai", fim.length > 0);
     /* A barra de vida tem que mudar de verdade: o pixel no meio da barra e'
@@ -8906,7 +8907,7 @@ function conferirCartao(onde, embed, componentes = []) {
       verdade(`${lic} acompanha a fonte`, /Open Font License/.test(readFileSync(new URL(`./fontes/${lic}`, import.meta.url), "utf8")));
     }
     const tela = m.telaDoDuelo(Object.assign(duelo(), { limite: 0, imagem: true }));
-    ok("a tela aponta para o anexo", tela.embeds[0].image.url, "attachment://duelo.jpg");
+    ok("a tela aponta para o anexo", tela.embeds[0].image.url, "attachment://duelo.webp");
     verdade("com o quadro, as barras saem do texto", !tela.embeds[0].description.includes("▰"));
     const semImagem = m.telaDoDuelo(Object.assign(duelo(), { limite: 0, imagem: false }));
     verdade("sem o quadro, as barras voltam para o texto", semImagem.embeds[0].description.includes("▰"));
@@ -11906,13 +11907,39 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o desafio direto vai para a sala do desafiado",
     /if \(contraHumano\) await levarDueloAQuemNaoVe\(estado, inter\.guild, \[alvo\.id\], convite\)/.test(fonteD));
   verdade("cada jogada edita todas as mensagens do duelo",
-    /async function editarDuelo[^]*?return await editarTodas\(estado, \{ content: "", \.\.\.telaDoDuelo\(estado\), \.\.\.anexo \}\)/.test(fonteD));
+    /async function editarDuelo[^]*?const tela = telaDoDuelo\(estado\);\s*estado\.jaMostrado = estado\.historico\.length;\s*return await editarTodas\(estado, \{ content: "", \.\.\.tela, \.\.\.anexo \}\)/.test(fonteD));
   verdade("cancelar avisa em todas, cada uma na sua língua", /function cancelarDuelo[^]*?editarTodas\(estado, \{ content: `\$\{motivo\}/.test(fonteD));
   verdade("o desafio aberto do painel aparece em todas as salas da conversa",
     /estado\.convites = \[\];\s*for \(const sala of await salasIrmas\(inter\.guildId, estado\.msg\.channelId\)/.test(fonteD));
   verdade("treino: o convite onde tocaram fica, os outros saem", /aceitoNaSala\(estado, inter\.message\?\.id, null\);\s*return comecarDuelo\(estado\);/.test(fonteD));
-  verdade("aceitar reconhece o clique antes de mexer nas mensagens",
-    /await inter\.deferUpdate\(\);\s*aceitoNaSala\(estado, inter\.message\?\.id, null\);\s*await editarTodas\(estado, carga\);/.test(fonteD));
+  verdade("aceitar reconhece o clique e a luta começa na hora, com o herói ativo",
+    /estado\.comecando = true;\s*await inter\.deferUpdate\(\);[^]{0,300}estado\.escolhas\[1\] = await heroiAtivo\(inter\.user\.id\);\s*aceitoNaSala\(estado, inter\.message\?\.id, null\);\s*return comecarDuelo\(estado\);/.test(fonteD));
+  verdade("no desafio direto, só o desafiado aceita (e a lista continua para trocar de herói)",
+    /if \(direto && estado\.pessoas\[1\]\?\.userId !== inter\.user\.id\)/.test(fonteD) &&
+    /estado\.direto = true;[^]{0,700}duelo:aceitar:\$\{id\}[^]{0,200}\.\.\.escolhaDePersonagem\(id,/.test(fonteD));
+
+  /* MAIS FLUIDO: a CYRON responde na mesma tela, sem 1,8 s de espera. */
+  {
+    const F = carregar(["DUELO_TEXTOS", "ESPACOS_ORDEM", "nivelDoPersonagem", "kitEquipado", "novoLutador", "DUELO_VIDA",
+      "DUELO_ENERGIA_INICIAL", "DUELO_ENERGIA_TURNO", "DUELO_ENERGIA_MAX", "DUELO_MORTE_SUBITA", "DUELO_PERFURAR", "DUELO_TEMPO",
+      "DUELO_AUSENCIAS", "podeUsar", "danoPrevisto", "comecarVez", "usarHabilidade", "passarVez", "jogadaDoBot", "barra",
+      "estadoDoLutador", "telaDoDuelo", "mostrarDuelo"]);
+    let telas = 0;
+    globalThis.editarDuelo = async () => { telas++; };
+    globalThis.terminarDuelo = async () => {};
+    const luta = { id: "x", historico: [], jogadas: 0, vez: 1, vencedor: null,
+      lutadores: [F.novoLutador({ userId: "a", personagem: PERSONAGENS[0] }), F.novoLutador({ userId: null, personagem: PERSONAGENS[1], bot: true })] };
+    await F.mostrarDuelo(luta);
+    clearTimeout(luta.relogio);
+    verdade("vez da CYRON: ela já jogou quando a tela sai", luta.vez === 0 && luta.historico.length >= 1 && luta.jogadas === 1);
+    ok("e sai UMA tela só (antes eram duas, com espera no meio)", telas, 1);
+
+    const tela = (jaMostrado, n = 6) => F.telaDoDuelo({ ...luta, historico: Array.from({ length: n }, (_, i) => `L${i}`),
+      jaMostrado, limite: 0 }).embeds[0].description.match(/-# L\d/g);
+    ok("o que aconteceu desde a última tela aparece inteiro", tela(3), ["-# L3", "-# L4", "-# L5"]);
+    ok("no mínimo as duas últimas linhas", tela(5), ["-# L4", "-# L5"]);
+    ok("no máximo quatro (cabe no celular)", tela(0), ["-# L2", "-# L3", "-# L4", "-# L5"]);
+  }
   verdade("nenhum aviso do duelo espera a tradução antes de responder",
     !/inter\.reply\(\{ flags: 64, content: `[^`]*\$\{await fala\(/.test(fonteD.slice(fonteD.indexOf("async function cliqueDuelo"), fonteD.indexOf("async function comecarDuelo"))));
   /* As marcas: o texto do duelo é um só, e cada sala lê na sua língua. */

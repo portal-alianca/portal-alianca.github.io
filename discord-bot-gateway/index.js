@@ -11114,6 +11114,8 @@ const DUELO_TEXTOS = {
   escolhaSeu: "escolha seu personagem", vaiTreinar: "vai treinar contra", desafiou: "desafiou", paraDuelo: "para um duelo!",
   cadaUm: "Cada um escolhe o seu personagem abaixo.", cancelado: "Duelo cancelado.",
   revanche: "Revanche", treinarDeNovo: "Treinar de novo", querRevanche: "quer revanche!", toqueAceitar: "toque em Revanche para aceitar.",
+  comSeuHeroi: "Quem aceitar luta com o seu herói ativo (⭐ no /duelo).", vaiDe: "vai de",
+  aceiteOuEscolha: "toque em Aceitar para lutar com o seu herói ativo, ou escolha outro abaixo.",
 };
 
 /* Um dicionario de textos fixos na lingua pedida, guardado na memoria. */
@@ -11417,14 +11419,18 @@ function telaDoDuelo(estado, agora = Date.now()) {
     linhas.push(`🏆 **${v.p.curto}** ${tx.venceu}${v.bot ? "" : ` · <@${v.userId}>`}${estado.motivo ? ` (${estado.motivo})` : ""}`,
       ...(estado.extra || []));
   } else {
-    linhas.push(...estado.historico.slice(-2).map((t) => `-# ${t}`),
+    /* Tudo o que aconteceu desde a ultima tela (a jogada e a resposta da
+       CYRON vem juntas), de 2 a 4 linhas: cabe no celular e nada some. */
+    const total = estado.historico.length;
+    const desde = Math.max(total - 4, Math.min(total - 2, estado.jaMostrado ?? total - 2), 0);
+    linhas.push(...estado.historico.slice(desde).map((t) => `-# ${t}`),
       `⏳ ${vez.bot ? `🤖 ${tx.pensando}` : `${tx.vezDe} <@${vez.userId}> · <t:${Math.floor((estado.limite || agora) / 1000)}:R>`}`);
   }
   const embed = {
     color: fim ? 0xF5C542 : 0xE74C3C,
     title: `⚔️ ${a.p.curto} × ${b.p.curto}`,
     description: linhas.join("\n").slice(0, 4000),
-    ...(estado.imagem ? { image: { url: "attachment://duelo.jpg" } } : {}),
+    ...(estado.imagem ? { image: { url: "attachment://duelo.webp" } } : {}),
   };
   /* No fim, o botao de revanche (enquanto ela vale). */
   if (fim) {
@@ -11740,7 +11746,7 @@ async function cliqueDoPainel(inter) {
   const tx = await prepararLingua(estado, ctx.idioma);
   /* No canal, a' vista de todos. Sem permissao de mandar ali (app
      instalado so' pela pessoa), vai como resposta publica da interacao. */
-  const conteudo = { content: `⚔️ <@${eu}> ${tx.querDuelar} ${heroi.bandeira} **${heroi.curto}**! ${tx.quemAceita}\n-# ${tx.abertoPor}`,
+  const conteudo = { content: `⚔️ <@${eu}> ${tx.querDuelar} ${heroi.bandeira} **${heroi.curto}**! ${tx.quemAceita}\n-# ${tx.abertoPor} ${tx.comSeuHeroi}`,
     components: [{ type: 1, components: [
       { type: 2, custom_id: `duelo:aceitar:${estado.id}`, style: 3, emoji: { name: "⚔️" }, label: String(tx.aceitar).slice(0, 80) },
       { type: 2, custom_id: `duelo:treino:${estado.id}`, style: 2, emoji: { name: "🤖" }, label: String(tx.treinar).slice(0, 80) },
@@ -11815,10 +11821,19 @@ async function comandoDuelo(inter) {
   estado.tx = tx;
   await inter.reply({ content: `⚔️ <@${inter.user.id}>${contraHumano ? ` → <@${alvo.id}>` : " → 🤖 CYRON"}`,
     allowedMentions: { users: contraHumano ? [alvo.id] : [] } });
-  const titulo = contraHumano ? `⚔️ <@${inter.user.id}> ${tx.desafiou} <@${alvo.id}> ${tx.paraDuelo}` : `⚔️ <@${inter.user.id}> ${tx.vaiTreinar} 🤖 CYRON`;
-  const convite = { content: `${titulo}\n-# ${tx.cadaUm}`,
-    components: escolhaDePersonagem(id, contraHumano ? "1 · 2" : (inter.member?.displayName || "🤖"), tx),
-    allowedMentions: { users: contraHumano ? [alvo.id] : [] } };
+  /* Quem desafia vai com o heroi ativo (o ⭐ do /duelo); o desafiado toca em
+     Aceitar (e vai com o dele) ou escolhe outro na lista. Um toque so' entre
+     o desafio e a luta. */
+  const meu = personagemPorId(await heroiAtivo(inter.user.id)) || PERSONAGENS[0];
+  estado.escolhas[0] = meu.id;
+  estado.fixo = { 0: true };
+  estado.direto = true;
+  const titulo = `⚔️ <@${inter.user.id}> ${tx.desafiou} <@${alvo.id}> ${tx.paraDuelo}`;
+  const convite = { content: `${titulo}\n<@${inter.user.id}> ${tx.vaiDe} ${meu.bandeira} **${meu.curto}**.\n-# <@${alvo.id}>, ${tx.aceiteOuEscolha}`,
+    components: [{ type: 1, components: [
+      { type: 2, custom_id: `duelo:aceitar:${id}`, style: 3, emoji: { name: "⚔️" }, label: String(tx.aceitar).slice(0, 80) }] },
+    ...escolhaDePersonagem(id, alvoMembro?.displayName || alvo.username, tx)],
+    allowedMentions: { users: [alvo.id] } };
   const naMinha = desmarcarCarga(convite, await linguaDoDuelo(estado, estado.idioma).catch(() => null));
   await inter.editReply({ ...naMinha, allowedMentions: { parse: [] } }).catch(() => {});
   estado.msg = await inter.fetchReply().catch(() => null);
@@ -11889,24 +11904,29 @@ async function cliqueDuelo(inter) {
   const estado = duelos.get(id);
   if (!estado) return avisarNoDuelo(inter, "⚔️", "Esse duelo já acabou.");
   /* Desafio aberto: o primeiro que aceitar entra na vaga. */
+  /* ⚔️ Aceitar: a luta comeca NA HORA, com o heroi ativo de quem aceitou
+     (o ⭐ do /duelo). Antes ainda havia uma lista para escolher -- um passo a
+     mais entre o "aceito" e o primeiro golpe. No desafio direto (/duelo
+     @pessoa) so' o desafiado aceita, e a lista continua la' para quem quiser
+     outro heroi. */
   if (acao === "aceitar") {
-    if (estado.pessoas[0].userId === inter.user.id) return avisarNoDuelo(inter, "⚔️", "Esse desafio é seu: espere alguém aceitar.");
-    if (estado.pessoas[1] || estado.comecando) return avisarNoDuelo(inter, "⚔️", "Alguém já aceitou esse desafio.");
-    if (duelistaEm.has(inter.user.id)) return avisarNoDuelo(inter, "⚔️", "Você já está num duelo. Termine ele primeiro.");
-    estado.pessoas[1] = { userId: inter.user.id, nome: inter.member?.displayName || inter.user.username };
-    duelistaEm.set(inter.user.id, id);
-    clearTimeout(estado.expira);
-    estado.expira = setTimeout(() => cancelarDuelo(id, "⌛"), DUELO_ESCOLHA);
-    const h = personagemPorId(estado.escolhas[0]);
-    const tx = estado.tx || DUELO_TEXTOS;
-    const carga = { content: `⚔️ <@${inter.user.id}> ${tx.aceitou} <@${estado.pessoas[0].userId}> (${h.bandeira} **${h.curto}**)!\n-# <@${inter.user.id}>, ${tx.escolhaAbaixo}`,
-      components: escolhaDePersonagem(id, estado.pessoas[1].nome, tx), allowedMentions: { parse: [] } };
-    /* Reconhece primeiro; a tela nova vai para todas as mensagens, cada uma
-       na lingua da sua sala. */
+    const direto = !!estado.direto;
+    if (direto && estado.pessoas[1]?.userId !== inter.user.id) {
+      return avisarNoDuelo(inter, "⚔️", estado.pessoas[0].userId === inter.user.id
+        ? "Esse desafio é seu: espere a outra pessoa aceitar." : "Esse desafio é para outra pessoa. Para duelar, use /duelo.");
+    }
+    if (!direto && estado.pessoas[0].userId === inter.user.id) return avisarNoDuelo(inter, "⚔️", "Esse desafio é seu: espere alguém aceitar.");
+    if ((!direto && estado.pessoas[1]) || estado.comecando || estado.lutadores) return avisarNoDuelo(inter, "⚔️", "Alguém já aceitou esse desafio.");
+    if (!direto && duelistaEm.has(inter.user.id)) return avisarNoDuelo(inter, "⚔️", "Você já está num duelo. Termine ele primeiro.");
+    estado.comecando = true;
     await inter.deferUpdate();
+    if (!direto) {
+      estado.pessoas[1] = { userId: inter.user.id, nome: inter.member?.displayName || inter.user.username };
+      duelistaEm.set(inter.user.id, id);
+    }
+    estado.escolhas[1] = await heroiAtivo(inter.user.id);
     aceitoNaSala(estado, inter.message?.id, null);
-    await editarTodas(estado, carga);
-    return;
+    return comecarDuelo(estado);
   }
   /* 🤖 no desafio: so' quem desafiou, e so' enquanto ninguem aceitou. */
   if (acao === "treino") {
@@ -12013,6 +12033,17 @@ async function comecarDuelo(estado) {
 
 async function mostrarDuelo(estado) {
   clearTimeout(estado.relogio);
+  /* Vez da CYRON: ela joga NA HORA, e a tela sai uma vez so', com a jogada
+     de quem jogou e a resposta dela. Antes eram duas telas -- dois cartazes
+     subindo -- com 1,8 s de espera no meio: a luta parecia travar a cada
+     rodada. (O teto e' so' seguranca: atordoada, a pessoa perde a vez e a
+     CYRON joga de novo.) */
+  for (let k = 0; k < 6 && estado.vencedor === null && estado.lutadores[estado.vez]?.bot; k++) {
+    const bot = estado.lutadores[estado.vez];
+    estado.historico.push(...usarHabilidade(estado, estado.vez, jogadaDoBot(bot, Math.random, estado.lutadores[1 - estado.vez])));
+    estado.jogadas++;
+    estado.historico.push(...passarVez(estado));
+  }
   if (estado.vencedor !== null) return terminarDuelo(estado);
   estado.limite = Date.now() + DUELO_TEMPO;
   await editarDuelo(estado);
@@ -12146,7 +12177,9 @@ async function desenharQuadroDoDuelo(sharp, base, lutadores, vez, vencedor = nul
   }).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><defs>` +
     `<filter id="s"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.8"/></filter></defs>${partes}</svg>`;
-  return await sharp(base).composite([{ input: Buffer.from(svg) }, ...selos]).jpeg({ quality: 84 }).toBuffer();
+  /* WebP: metade do tamanho do JPEG (uns 43 KB contra 81), e o cartaz sobe a
+     cada jogada -- e' o que mais demora para chegar no celular. */
+  return await sharp(base).composite([{ input: Buffer.from(svg) }, ...selos]).webp({ quality: 80 }).toBuffer();
 }
 
 /* A foto de cada lutador (a do servidor, se tiver; a da CYRON no treino).
@@ -12193,10 +12226,12 @@ async function editarDuelo(estado) {
   const cartaz = await cartazDoDuelo(estado);
   estado.imagem = Boolean(cartaz);
   /* attachments: [] tira o quadro anterior; sem isso a mensagem acumula. */
-  const anexo = cartaz ? { files: [{ attachment: cartaz, name: "duelo.jpg" }], attachments: [] } : { attachments: [] };
+  const anexo = cartaz ? { files: [{ attachment: cartaz, name: "duelo.webp" }], attachments: [] } : { attachments: [] };
   /* A tela vai para a mensagem do duelo e para as copias nas outras salas
      de idioma (ver levarDueloAQuemNaoVe). */
-  return await editarTodas(estado, { content: "", ...telaDoDuelo(estado), ...anexo });
+  const tela = telaDoDuelo(estado);
+  estado.jaMostrado = estado.historico.length;
+  return await editarTodas(estado, { content: "", ...tela, ...anexo });
 }
 
 /* A FICHA DO PERSONAGEM (/codex personagem): um pergaminho com o retrato,
