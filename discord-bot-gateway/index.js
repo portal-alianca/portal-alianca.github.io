@@ -1077,6 +1077,42 @@ async function descarregarUso() {
   }
 }
 
+/* ---------------- o que cada funcao e' usada ----------------
+
+   A traducao ja' era contada (logo acima); o resto do bot nao. Sem isto,
+   "o que melhorar" era palpite: sao dezenas de funcoes e nenhum numero dizendo
+   quais alguem usa. O mesmo jeito da contagem de traducao -- em memoria,
+   descarregada de minuto em minuto -- e no cyron_uso_recurso, que ja' existe,
+   com o prefixo "uso:". Sem migracao, e sem se misturar com as cotas pagas
+   (visao, audio) que moram na mesma tabela sem prefixo. */
+const USO_DE_FUNCAO = new Map(); // `${recurso}|${guildId}` -> quantidade
+
+function contarUso(recurso, guildId = null, quantidade = 1) {
+  if (!recurso) return;
+  const chave = `${recurso}|${guildId || ""}`;
+  USO_DE_FUNCAO.set(chave, (USO_DE_FUNCAO.get(chave) || 0) + quantidade);
+}
+
+async function descarregarFuncoes(agora = Date.now()) {
+  if (!USO_DE_FUNCAO.size) return;
+  /* Tira tudo antes de escrever, pelo mesmo motivo do descarregarUso. */
+  const leva = [...USO_DE_FUNCAO.entries()];
+  USO_DE_FUNCAO.clear();
+  const mes = primeiroDoMes(agora);
+  for (const [chave, n] of leva) {
+    const i = chave.indexOf("|");
+    const recurso = chave.slice(0, i), guildId = chave.slice(i + 1);
+    try {
+      const servidor = guildId ? await servidorDoGuild(guildId).catch(() => null) : null;
+      await rpc("cyron_somar_recurso", { p_recurso: `uso:${recurso}`, p_servidor: servidor?.id || "",
+        p_mes: mes, p_quantidade: n });
+    } catch (e) {
+      console.error("funcoes: nao consegui gravar:", e?.message || e);
+      USO_DE_FUNCAO.set(chave, (USO_DE_FUNCAO.get(chave) || 0) + n);
+    }
+  }
+}
+
 /* O que este servidor traduziu hoje, pro painel. */
 async function usoDeHoje(servidorId) {
   const linhas = await sb(
@@ -3213,6 +3249,7 @@ function avisoDoPro(recurso) {
 }
 
 async function cliqueOuvirAudio(inter, buscar = fetch) {
+  contarUso("audio", inter.guildId);
   await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const motor = await motorDoGuild(inter.guildId);
@@ -3653,6 +3690,7 @@ function textoDaEnquete(msg) {
 }
 
 async function espelharMensagem(msg, lista, origem, texto, motor = MOTOR_AUTO, servidorId = null, termos = []) {
+  contarUso("espelho", msg.guild?.id);
   /* Enquete vira o corpo da fala quando nao ha' texto nenhum. Se a pessoa
      escreveu algo junto, o que ela escreveu vem primeiro. */
   const enquete = textoDaEnquete(msg);
@@ -5589,6 +5627,7 @@ async function preencherReplica(fonte, webhookUrl, idioma, motor = MOTOR_AUTO) {
 async function replicarPorIdioma(msg, servidorId, tipo, motor = MOTOR_AUTO) {
   const destinos = (await replicasDoIdioma(servidorId)).filter((r) => r.tipo === tipo);
   if (!destinos.length) return;
+  contarUso("replica", msg.guild?.id);
 
   const emb = msg.embeds?.[0];
   if (!String(emb?.title || "").trim() && !String(emb?.description || msg.content || "").trim() &&
@@ -9784,8 +9823,9 @@ async function darBoasVindas(member) {
     await member.guild.channels.fetch(String(canalId)).catch(() => null);
   if (!canal?.isTextBased?.()) return;
   const linguas = await linguasDoRelogio(member.guild.id);
-  await canal.send(await mensagemDeBoasVindas(member, linguas, servidor.boas_vindas_texto)).catch((e) =>
-    console.error(`boas-vindas: nao consegui postar em ${member.guild.name}:`, e?.message || e));
+  await canal.send(await mensagemDeBoasVindas(member, linguas, servidor.boas_vindas_texto))
+    .then(() => contarUso("boas-vindas", member.guild.id))
+    .catch((e) => console.error(`boas-vindas: nao consegui postar em ${member.guild.name}:`, e?.message || e));
 }
 
 /* /boas-vindas #canal liga (e mostra na hora o cartao de quem pediu);
@@ -10034,6 +10074,7 @@ async function somarXp(guild, userId, ganho, servidor, canalPadrao, agora = Date
 }
 
 async function subiuDeNivel(guild, userId, servidor, nivel, canalPadrao) {
+  contarUso("nivel", guild.id);
   const membro = guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
   /* Os cargos primeiro: o anuncio pode falhar (canal sem permissao) e o
      cargo ainda assim tem que chegar. */
@@ -13590,6 +13631,7 @@ function menuDoAnuncio() {
 }
 
 async function cliqueTraduzirFixo(inter) {
+  contarUso("botao-traduzir", inter.guildId);
   const idioma = String(inter.values?.[0] || "");
   if (!LINGUAS_MENU.some(([c]) => c === idioma)) {
     return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
@@ -13616,8 +13658,81 @@ function botoesDoRecibo() {
     components: [
       { type: 2, custom_id: "cyron:publicar", style: 3, emoji: { name: "📣" },
         label: "Publicar para o servidor" },
+      /* O "Indique e ganhe" morava so' na aba Plano, onde ninguem vai sem
+         motivo -- e nunca foi usado. Aqui ele aparece na semana em que o dono
+         esta' olhando o que a CYRON fez por ele. */
+      { type: 2, custom_id: "cyron:indicar", style: 2, emoji: { name: "🤝" }, label: "Indique e ganhe" },
     ],
   }];
+}
+
+/* ---------------- os marcos ----------------
+
+   100, 500, 2000... mensagens traduzidas desde que a CYRON chegou. E' o
+   momento em que o dono mais acredita nela -- e o melhor para pedir a
+   indicacao: "conhece outra alianca assim?". Vai para a sala da
+   administracao, como o recibo, e uma vez por marco (o ultimo anunciado fica
+   no cyron_ajuste). Quem ja' tinha passado de varios marcos quando isto
+   chegou recebe so' o maior.
+
+   O cartao e' bilingue por construcao, como o recibo: comemorar gastando
+   cota de traducao seria a CYRON pagando a propria festa. O convite a indicar
+   vai FORA do cartao, no texto da mensagem: o 📣 publica so' o cartao para a
+   comunidade, e "os dois servidores ganham Pro" e' conversa de dono. */
+const MARCOS_DE_TRADUCAO = [100, 500, 2000, 10000, 50000, 200000];
+
+function marcoAlcancado(total, anunciado) {
+  const ja = Number(anunciado) || 0;
+  const alcancado = MARCOS_DE_TRADUCAO.filter((m) => total >= m).pop();
+  return alcancado && alcancado > ja ? alcancado : null;
+}
+
+function cartaoDoMarco(guild, marco) {
+  return {
+    content: [
+      `🤝 Conhece outra aliança com gente de vários países? Indique a CYRON: quando ela usar de verdade, ` +
+        `**os dois servidores ganham ${INDICACAO.dias} dias de Pro**.`,
+      `_Know another server with people from many countries? Refer CYRON: once they really use it, ` +
+        `**both servers get ${INDICACAO.dias} days of Pro**._`,
+    ].join("\n"),
+    embeds: [{
+      color: COR_OK,
+      title: `🎉 ${marco} mensagens traduzidas · ${marco} messages translated`,
+      description: [
+        `Desde que a CYRON chegou, **${marco} mensagens** atravessaram idiomas em **${guild.name}**.`,
+        `_Since CYRON arrived, **${marco} messages** crossed languages in **${guild.name}**._`,
+      ].join("\n"),
+    }],
+    components: [{ type: 1, components: [
+      { type: 2, custom_id: "cyron:indicar", style: 1, emoji: { name: "🤝" }, label: "Indique e ganhe" },
+      { type: 2, custom_id: "cyron:publicar", style: 3, emoji: { name: "📣" }, label: "Publicar para o servidor" },
+    ] }],
+    allowedMentions: { parse: [] },
+  };
+}
+
+async function anunciarMarcos() {
+  const servidores = await sb("cyron_servidor?saiu_em=is.null&canal_config=not.is.null&select=id,guild_id,canal_config")
+    .catch(() => null) || [];
+  const marcas = await ajustes();
+  for (const s of servidores) {
+    try {
+      const guild = client.guilds.cache.get(String(s.guild_id));
+      if (!guild || await ehOPainel(guild.id)) continue;
+      const linhas = await sb(`cyron_uso_diario?servidor_id=eq.${s.id}&select=traducoes`).catch(() => null);
+      if (linhas === null) continue;   // banco fora: tento na proxima hora
+      const total = linhas.reduce((a, l) => a + Number(l.traducoes || 0), 0);
+      const marco = marcoAlcancado(total, marcas[`marco:${s.id}`]);
+      if (!marco) continue;
+      const canal = await guild.channels.fetch(String(s.canal_config)).catch(() => null);
+      if (typeof canal?.send === "function") await canal.send(cartaoDoMarco(guild, marco)).catch(() => null);
+      /* Sem canal tambem marca: o proximo marco tenta de novo, e insistir no
+         mesmo de hora em hora nao muda nada. */
+      await porAjuste(`marco:${s.id}`, String(marco));
+    } catch (e) {
+      console.error(`marcos: falhei no servidor ${s.id}:`, e?.message || e);
+    }
+  }
 }
 
 /* O painel na língua de quem abriu -- quando dá para saber quem abriu.
@@ -16766,7 +16881,7 @@ const ABAS_DO_ADMIN = [
 ];
 
 /* O botao que mostra uma tela de dentro de uma aba continua naquela aba. */
-const ABA_DO_BOTAO = { uso: "crescimento", erros: "saude", remontar: "ferramentas" };
+const ABA_DO_BOTAO = { uso: "crescimento", funcoes: "crescimento", erros: "saude", remontar: "ferramentas" };
 
 function abaDoAdmin(acao) {
   if (ABA_DO_BOTAO[acao]) return ABA_DO_BOTAO[acao];
@@ -16786,7 +16901,7 @@ function linhasDoAdmin(aba = "resumo", servidores = []) {
     resumo: [[botao("resumo", "🔄", "Atualizar"), convite]],
     dinheiro: [[botao("dinheiro", "🔄", "Atualizar"), botao("codigos", "🎟️", "Gerar códigos", 1)]],
     crescimento: [[botao("crescimento", "🔄", "Atualizar"), botao("uso", "🏆", "Quem usa mais"),
-      botao("diario", "📊", "Ver o diário agora")]],
+      botao("funcoes", "🧩", "Funções usadas"), botao("diario", "📊", "Ver o diário agora")]],
     saude: [[botao("saude", "🔄", "Atualizar"), botao("erros", "🐛", "Erros um a um")]],
     servidores: [[botao("servidores", "🔄", "Atualizar"), botao("busca", "🔎", "Procurar por nome ou id", 1)]],
     ferramentas: [
@@ -16818,7 +16933,7 @@ async function telaDoAdmin(acao) {
     return { embeds: [embed], components: linhasDoAdmin(aba, servidores) };
   }
   const montar = { dinheiro: embedDoDinheiro, crescimento: embedDoCrescimento, saude: embedDeSaude,
-    uso: embedDeUso, erros: embedDeErros, ferramentas: embedDasFerramentas }[acao]
+    uso: embedDeUso, funcoes: embedDasFuncoes, erros: embedDeErros, ferramentas: embedDasFerramentas }[acao]
     || { crescimento: embedDoCrescimento, saude: embedDeSaude, ferramentas: embedDasFerramentas }[aba]
     || embedDoResumo;
   return { embeds: [await montar()], components: linhasDoAdmin(aba) };
@@ -17081,6 +17196,72 @@ async function embedDeUso() {
       ? ranking.map(([id, v], i) =>
           `**${i + 1}.** ${nomes.get(id) || id} — ${(v.c / 1000).toFixed(1)}k caracteres · ${v.t} traduções`).join("\n")
       : "_ninguém traduziu nada nos últimos 7 dias_",
+  };
+}
+
+/* Os nomes do que o contarUso() conta. Comando e menu nao precisam estar aqui:
+   viram "/nome" e "Apps → nome" sozinhos. */
+const NOMES_DAS_FUNCOES = {
+  bandeira: "🏳️ Bandeira (tradução no privado)",
+  espelho: "💬 Salas por idioma (mensagens)",
+  replica: "📰 Canais copiados (mensagens)",
+  "botao-traduzir": "🌐 Botão de tradução",
+  idioma: "🗣️ Escolheu o idioma",
+  "boas-vindas": "👋 Boas-vindas postadas",
+  nivel: "⭐ Alguém subiu de nível",
+  privado: "✉️ Mensagens no privado",
+  "ia-privado": "🧠 Respostas da IA no privado",
+  imagem: "🖼️ Ler imagem",
+  audio: "🎧 Ouvir áudio",
+};
+
+function nomeDaFuncao(recurso) {
+  if (recurso.startsWith("cmd:")) return `/${recurso.slice(4)}`;
+  if (recurso.startsWith("menu:")) return `Apps → ${recurso.slice(5)}`;
+  return NOMES_DAS_FUNCOES[recurso] || recurso;
+}
+
+/* O que foi usado no mes, por funcao: quantas vezes e em quantos servidores,
+   com o mes passado do lado. Embaixo, os comandos que ninguem usou -- e' essa
+   linha que diz o que da' para tirar ou explicar melhor. */
+async function embedDasFuncoes(agora = Date.now()) {
+  const mes = primeiroDoMes(agora);
+  const d = new Date(`${mes}T00:00:00Z`);
+  const anterior = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  const [linhas, antes] = await Promise.all([
+    sb(`cyron_uso_recurso?recurso=like.uso:*&mes=eq.${mes}&select=recurso,servidor_id,quantidade`).catch(() => null),
+    sb(`cyron_uso_recurso?recurso=like.uso:*&mes=eq.${anterior}&select=recurso,quantidade`).catch(() => null),
+  ]);
+  if (linhas === null) return { color: 0xB4534A, title: "🧩 Funções usadas", description: "Não consegui ler o banco agora." };
+  const total = new Map(), servidores = new Map(), passado = new Map();
+  for (const l of linhas) {
+    const r = String(l.recurso).slice(4);
+    total.set(r, (total.get(r) || 0) + Number(l.quantidade || 0));
+    if (l.servidor_id) (servidores.get(r) || servidores.set(r, new Set()).get(r)).add(l.servidor_id);
+  }
+  for (const l of antes || []) {
+    const r = String(l.recurso).slice(4);
+    passado.set(r, (passado.get(r) || 0) + Number(l.quantidade || 0));
+  }
+  const lista = [...total.entries()].sort((a, b) => b[1] - a[1]);
+  const usados = new Set(lista.map(([r]) => r));
+  const parados = GLOBAIS_DO_CYRON
+    .map((c) => (c.type === 3 ? `menu:${c.name}` : `cmd:${c.name}`))
+    .filter((r) => !usados.has(r))
+    .map(nomeDaFuncao);
+  const linhaDe = ([r, n]) => {
+    const srv = servidores.get(r)?.size || 0;
+    const p = passado.get(r);
+    return `**${nomeDaFuncao(r)}** — ${n}` + (srv ? ` · ${srv} ${srv === 1 ? "servidor" : "servidores"}` : "") +
+      (p ? ` · mês passado ${p}` : "");
+  };
+  const corpo = lista.length ? lista.slice(0, 30).map(linhaDe).join("\n") : "_Ainda nada contado este mês._";
+  return {
+    color: 0x2E8B7A,
+    title: `🧩 Funções usadas — ${mes.slice(5, 7)}/${mes.slice(0, 4)}`,
+    description: corpo.slice(0, 3500),
+    fields: parados.length ? [{ name: "😴 Ninguém usou este mês", value: parados.join(" · ").slice(0, 1000) }] : [],
+    footer: { text: "Contado desde a versão que começou a medir. Mensagens nas salas contam uma vez cada." },
   };
 }
 
@@ -18888,6 +19069,88 @@ async function cartaoDoPrimeiroPasso(guild, servidor, idioma) {
   };
 }
 
+/* ---------------- o servidor que parou ----------------
+
+   O guia de primeiros passos cuida de quem instalou e nunca usou. Faltava o
+   outro lado: quem USOU e parou. Nos numeros, era o caso mais comum -- dois
+   servidores traduziram por uns dias e silenciaram, e ninguem ficou sabendo
+   por que. As vezes e' so' o pessoal quieto; as vezes e' coisa que o dono
+   nem imagina: o plano voltou ao gratis e as salas por idioma pararam, alguem
+   apagou a sala, ou tiraram uma permissao minha.
+
+   Uma vez por pausa (o ultimo dia com traducao e' a marca) e no maximo uma a
+   cada 30 dias, entre 7 e 60 dias parado: antes disso pode ser fim de semana,
+   depois disso o servidor ja' seguiu a vida e o aviso so' incomoda. */
+const DIAS_PARADO = 7;
+const JANELA_DO_PARADO = 60;
+const PAUSA_ENTRE_PARADOS = 30;
+
+function avisoDeParado(ultimoDia, marca, agora = Date.now()) {
+  if (!ultimoDia) return null;
+  const dias = Math.floor((agora - Date.parse(`${ultimoDia}T00:00:00Z`)) / 864e5);
+  if (!(dias >= DIAS_PARADO && dias <= JANELA_DO_PARADO)) return null;
+  const [dia, quando] = String(marca || "").split("|");
+  if (dia === ultimoDia) return null;
+  if (quando && agora - Date.parse(quando) < PAUSA_ENTRE_PARADOS * 864e5) return null;
+  return { dias, marca: `${ultimoDia}|${new Date(agora).toISOString()}` };
+}
+
+/* O que eu consigo conferir sozinho. Cada achado e' um texto para traduzir e
+   os pedacos que entram nele (menção de canal, nome de idioma): a menção nunca
+   passa pelo tradutor. */
+async function problemasDoServidor(guild, servidor) {
+  const achados = [];
+  const salas = await sb(`discord_chat_espelho?servidor_id=eq.${servidor.id}&select=idioma,canal_id,role_id`)
+    .catch(() => null) || [];
+  const comSala = salas.filter((s) => s.canal_id);
+  if (comSala.length && limitesDo(servidor).idiomas === 0) {
+    achados.push({ texto: "As salas por idioma são do plano Pro, e este servidor está no plano grátis: por isso elas pararam. Nada foi apagado, e elas voltam assim que o plano voltar.", args: [] });
+  }
+  const eu = guild.members?.me;
+  for (const sala of comSala) {
+    if (achados.length >= 4) break;
+    const canal = guild.channels?.cache?.get(String(sala.canal_id)) ||
+      await guild.channels?.fetch?.(String(sala.canal_id)).catch(() => null);
+    if (!canal) {
+      achados.push({ texto: "A sala de {0} foi apagada. Abra **/cyron** → **🌐 Tradução** que eu crio outra.", args: [nomeDoIdioma(sala.idioma)] });
+      continue;
+    }
+    const pode = eu ? canal.permissionsFor?.(eu) : null;
+    if (!pode) continue;
+    if (!pode.has(PermissionFlagsBits.ViewChannel)) {
+      achados.push({ texto: "Não consigo ver a sala {0}: me devolva a permissão **Ver canal** nela.", args: [`<#${canal.id}>`] });
+    } else if (!pode.has(PermissionFlagsBits.SendMessages)) {
+      achados.push({ texto: "Não consigo escrever na sala {0}: me devolva a permissão **Enviar mensagens** nela.", args: [`<#${canal.id}>`] });
+    } else if (!pode.has(PermissionFlagsBits.ManageWebhooks)) {
+      achados.push({ texto: "Na sala {0} me falta **Gerenciar webhooks**, que eu uso para escrever com o nome e a foto de cada pessoa.", args: [`<#${canal.id}>`] });
+    }
+  }
+  const lidas = leitoresPorIdioma(guild, salas).filter((l) => l.quantos > 0);
+  if (comSala.length && lidas.length === 1) {
+    achados.push({ texto: "Só uma língua tem leitores ({0}). A tradução aparece quando alguém escolhe outra: vale lembrar o pessoal de escolher o idioma no canal 🌐.", args: [nomeDoIdioma(lidas[0].idioma)] });
+  }
+  return achados;
+}
+
+async function cartaoDeParado(guild, servidor, dias, idioma) {
+  const T = falaFixa(idioma);
+  const problemas = await problemasDoServidor(guild, servidor).catch(() => []);
+  const linhas = [await T("Faz **{0} dias** que não traduzo nenhuma mensagem em **{1}**. Conferi o servidor:", dias, guild.name), ""];
+  if (problemas.length) {
+    for (const p of problemas) linhas.push(`• ${await T(p.texto, ...p.args)}`);
+  } else {
+    linhas.push(await T("✅ Do meu lado está tudo certo: salas, permissões e plano. Talvez o pessoal só esteja mais quieto."));
+  }
+  linhas.push("", await T("Dica: reagir com a bandeira de um país (🇺🇸 🇧🇷 🇪🇸…) numa mensagem manda a tradução no privado de quem reagiu, em qualquer canal."));
+  if (podeTestar(servidor)) {
+    linhas.push(await T("O teste grátis de 7 dias libera as salas por idioma: **/cyron** → **💳 Plano** → **🎁**."));
+  }
+  return {
+    embeds: [{ color: COR, title: await T("😴 A CYRON está parada em {0}", guild.name), description: linhas.join("\n") }],
+    components: [{ type: 1, components: [botaoDeSuporte()] }],
+  };
+}
+
 async function falarComOsDonos(agora = Date.now()) {
   const servidores = await sb("cyron_servidor?saiu_em=is.null&select=*").catch(() => null) || [];
   const marcas = await ajustes();
@@ -18918,6 +19181,20 @@ async function falarComOsDonos(agora = Date.now()) {
           if (dono) await dono.send(await cartaoDoPrimeiroPasso(guild, s, await linguaDoDono(guild))).catch(() => null);
         }
         await porAjuste(`guia:${s.id}`, usou.length ? "ja-usava" : new Date(agora).toISOString());
+      }
+
+      const ultimo = await sb(`cyron_uso_diario?servidor_id=eq.${s.id}&traducoes=gt.0&select=dia&order=dia.desc&limit=1`)
+        .catch(() => null);
+      const parado = ultimo ? avisoDeParado(ultimo[0]?.dia, marcas[`parado:${s.id}`], agora) : null;
+      if (parado) {
+        const dono = await client.users.fetch(guild.ownerId).catch(() => null);
+        const foi = dono && await dono.send(await cartaoDeParado(guild, s, parado.dias, await linguaDoDono(guild)))
+          .catch(() => null);
+        /* Privado fechado tambem vira marca, como no vencimento. Eu fico
+           sabendo pelo painel e posso falar com ele por outro caminho. */
+        await porAjuste(`parado:${s.id}`, parado.marca);
+        await avisarNoPainel(CANAL_NOVOS, `😴 **${guild.name}** está há ${parado.dias} dias sem traduzir — ` +
+          (foi ? "mandei o diagnóstico para o dono." : "não consegui falar com o dono (privado fechado)."));
       }
     } catch (e) {
       console.error(`donos: falhei no servidor ${s.id}:`, e?.message || e);
@@ -19158,6 +19435,7 @@ async function responder(inter, embed, { efemera = true, idioma } = {}) {
 
 /* Seletor de idioma: no hall de entrada, nas boas-vindas e no convite. */
 async function cliqueEscolherIdioma(inter) {
+  contarUso("idioma", inter.guildId);
   const idioma = String(inter.values?.[0] || "");
   if (!nomeDoIdioma(idioma) || !LINGUAS_MENU.some(([c]) => c === idioma)) {
     return inter.reply({ content: "🤔 Não reconheci esse idioma.", flags: 64 });
@@ -19220,6 +19498,7 @@ async function cliqueEscolherIdioma(inter) {
    pediu. Publicar na sala seria a traducao para UMA lingua jogada numa sala
    que le outra -- e mais uma mensagem no meio da conversa. */
 async function cliqueLerImagem(inter) {
+  contarUso("imagem", inter.guildId);
   await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const embed = await explicarImagem(inter.message, idioma, inter.guildId);
@@ -19346,6 +19625,7 @@ function rodapeDeDivulgacao(servidor) {
 }
 
 async function cliqueTraduzirMsg(inter) {
+  contarUso("botao-traduzir", inter.guildId);
   const id = inter.customId.slice("traduzir-msg:".length);
   const idioma = String(inter.values?.[0] || "");
   if (!LINGUAS_MENU.some(([c]) => c === idioma)) {
@@ -20542,6 +20822,7 @@ async function resumoDaIA() {
 
 async function atenderNoPrivado(msg) {
   const texto = String(msg.content || "").trim();
+  contarUso("privado");
   /* O ESCOLHIDO, não o de palpite: é ele que decide se a conversa abre
      perguntando a língua ou já se apresentando nela. */
   const escolhido = await idiomaEscolhido(msg.author.id);
@@ -20561,6 +20842,7 @@ async function atenderNoPrivado(msg) {
     return "nao";
   });
   if (ia === "respondeu") {
+    contarUso("ia-privado");
     marcarApresentado(msg.author.id);
     return;
   }
@@ -20629,6 +20911,7 @@ async function comandoArena(inter) {
 
 async function comandoDeInteracao(inter) {
   const nome = inter.commandName;
+  contarUso(inter.isMessageContextMenuCommand?.() ? `menu:${nome}` : `cmd:${nome}`, inter.guildId);
 
   /* Rotear PRIMEIRO, ler o banco depois.
 
@@ -21363,6 +21646,7 @@ client.on("messageReactionAdd", async (reacao, quem) => {
       }],
     });
     if (!onde) return; // nem privado nem sala: nao ha o que limpar
+    contarUso("bandeira", msg.guild.id);
 
     /* Tirar a bandeira devolve a mensagem limpa e deixa a pessoa pedir de
        novo. So' depois de entregar: reacao que sumiu sem resposta seria a
@@ -23283,9 +23567,17 @@ client.once("clientReady", () => {
     setInterval(() => falarComOsDonos().catch((e) => console.error("donos: falhei:", e?.message || e)),
       60 * 60 * 1000);
   }, 2 * 60 * 1000);
+  /* Os marcos, de hora em hora tambem: a marca no banco garante um anuncio
+     por marco, e de hora em hora o dono fica sabendo no mesmo dia. */
+  setTimeout(() => {
+    anunciarMarcos().catch((e) => console.error("marcos: falhei:", e?.message || e));
+    setInterval(() => anunciarMarcos().catch((e) => console.error("marcos: falhei:", e?.message || e)),
+      60 * 60 * 1000);
+  }, 3 * 60 * 1000);
   setInterval(() => {
     sincronizarRecentes().catch((e) => console.error("espelho: passada curta falhou:", e?.message || e));
     descarregarUso().catch((e) => console.error("uso: descarga falhou:", e?.message || e));
+    descarregarFuncoes().catch((e) => console.error("funcoes: descarga falhou:", e?.message || e));
     rodarXpDeVoz().catch((e) => console.error("niveis: voz falhou:", e?.message || e));
     rodarSorteios().catch((e) => console.error("sorteio: ronda falhou:", e?.message || e));
     descarregarXp().catch((e) => console.error("niveis: descarga falhou:", e?.message || e));

@@ -162,6 +162,9 @@ function carregar(nomes) {
 globalThis.AsyncLocalStorage = (await import("node:async_hooks")).AsyncLocalStorage;
 Object.assign(globalThis, carregar(["textoDoBot", "comoTextoDoBot", "ehTextoDoBot", "traducoesDoBot", "MAX_DO_BOT",
   "guardarDoBot", "traduzirEmbedDoBot"]));
+/* O contador de uso de cada funcao tambem: muitas funcoes testadas sozinhas
+   chamam contarUso() logo na primeira linha. */
+Object.assign(globalThis, carregar(["USO_DE_FUNCAO", "contarUso"]));
 
 /* Comentário NÃO é código, e um teste que lê texto-fonte precisa saber disso.
 
@@ -3061,8 +3064,8 @@ function conferirCartao(onde, embed, componentes = []) {
   ok("uma linha de botões", linhas.length, 1);
   verdade("cabe nos 5 componentes da linha", linhas[0].components.length <= 5);
   verdade("o rótulo cabe no botão", linhas[0].components[0].label.length <= 80);
-  ok("um botão só", linhas[0].components.length, 1);
-  verdade("e ele é de clique, não de link", linhas[0].components[0].custom_id === "cyron:publicar");
+  ok("dois botões: publicar e indicar", linhas[0].components.map((c) => c.custom_id), ["cyron:publicar", "cyron:indicar"]);
+  verdade("e eles são de clique, não de link", linhas[0].components.every((c) => c.custom_id && !c.url));
 
   /* ---- o cartão inteiro ---- */
   globalThis.client = { user: { id: "bot" } };
@@ -11737,7 +11740,7 @@ function conferirCartao(onde, embed, componentes = []) {
     atender.indexOf("responderComIA(") > 0 && atender.indexOf("responderComIA(") < atender.indexOf("podeApresentar(") &&
     atender.indexOf("responderComIA(") < atender.indexOf("guardarPraTraduzir("));
   verdade("quando a IA responde, o cartão de apresentação não vem junto",
-    /if \(ia === "respondeu"\) \{\s*marcarApresentado\(msg\.author\.id\);\s*return;/.test(atender));
+    /if \(ia === "respondeu"\) \{\s*(contarUso\("ia-privado"\);\s*)?marcarApresentado\(msg\.author\.id\);\s*return;/.test(atender));
   verdade("o 🌐 da resposta tem rota, antes do deferUpdate que trocaria o cartão",
     /async function cliqueNoPrivado\(inter\) \{\s*if \(inter\.customId === TRADUZIR_A_PERGUNTA\) return traduzirAPergunta\(inter\);\s*await inter\.deferUpdate\(\)/.test(idxIA));
     verdade("o botão 🧠 abre a janela, e a janela tem quem a receba",
@@ -12038,6 +12041,166 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o /mylanguage (publicado fora da lista) ganha as descrições na partida",
     /for \(const \[nome, textos\] of Object\.entries\(DESCRICOES_DE_FORA\)\)[^]*?setDescriptionLocalizations\(desejado\)/.test(semComentarios(fonte)));
   ok("o /mylanguage tem as 18 línguas", Object.keys(CL.DESCRICOES_DE_FORA.mylanguage).length, 18);
+}
+
+/* ===== O uso de cada função =====
+ *
+ * A tradução já era contada; o resto não, e "o que melhorar" era palpite. O
+ * contador junta em memória e grava de minuto em minuto no cyron_uso_recurso,
+ * com o prefixo "uso:" para não se misturar às cotas pagas. */
+{
+  const F = carregar(["descarregarFuncoes", "primeiroDoMes", "NOMES_DAS_FUNCOES", "nomeDaFuncao", "embedDasFuncoes"]);
+  const rpcAntes = globalThis.rpc, sbAntes = globalThis.sb, srvAntes = globalThis.servidorDoGuild;
+  try {
+    USO_DE_FUNCAO.clear();
+    contarUso("bandeira", "g1"); contarUso("bandeira", "g1"); contarUso("cmd:duelo", "g2"); contarUso("privado");
+    contarUso("");
+    ok("o contador junta por função e servidor (e ignora nome vazio)",
+      [...USO_DE_FUNCAO.entries()].sort(), [["bandeira|g1", 2], ["cmd:duelo|g2", 1], ["privado|", 1]].sort());
+
+    const gravados = [];
+    globalThis.servidorDoGuild = async (g) => ({ id: "srv-" + g });
+    globalThis.rpc = async (nome, a) => { gravados.push([nome, a.p_recurso, a.p_servidor, a.p_mes, a.p_quantidade]); };
+    await F.descarregarFuncoes(Date.UTC(2026, 9, 11, 15));
+    ok("descarrega com o prefixo uso:, o id do servidor e o mês", gravados.sort(), [
+      ["cyron_somar_recurso", "uso:bandeira", "srv-g1", "2026-10-01", 2],
+      ["cyron_somar_recurso", "uso:cmd:duelo", "srv-g2", "2026-10-01", 1],
+      ["cyron_somar_recurso", "uso:privado", "", "2026-10-01", 1],
+    ].sort());
+    ok("e esvazia o que já foi gravado", USO_DE_FUNCAO.size, 0);
+
+    contarUso("espelho", "g1", 3);
+    globalThis.rpc = async () => { throw new Error("banco fora"); };
+    await F.descarregarFuncoes(Date.UTC(2026, 9, 11, 15));
+    contarUso("espelho", "g1");
+    ok("banco fora: a contagem volta para a próxima leva, sem perder nada", USO_DE_FUNCAO.get("espelho|g1"), 4);
+    USO_DE_FUNCAO.clear();
+
+    ok("comando vira /nome e menu vira Apps → nome", [F.nomeDaFuncao("cmd:duelo"), F.nomeDaFuncao("menu:Translate")],
+      ["/duelo", "Apps → Translate"]);
+    verdade("cada função contada tem nome bonito", ["bandeira", "espelho", "replica", "botao-traduzir", "idioma",
+      "boas-vindas", "nivel", "privado", "ia-privado", "imagem", "audio"].every((r) => F.NOMES_DAS_FUNCOES[r]));
+
+    globalThis.sb = async (q) => q.includes("mes=eq.2026-10-01")
+      ? [{ recurso: "uso:cmd:duelo", servidor_id: "a", quantidade: 2 }, { recurso: "uso:cmd:duelo", servidor_id: "b", quantidade: 1 },
+        { recurso: "uso:bandeira", servidor_id: "a", quantidade: 9 }, { recurso: "uso:privado", servidor_id: "", quantidade: 4 }]
+      : [{ recurso: "uso:cmd:duelo", quantidade: 2 }];
+    const e = await F.embedDasFuncoes(Date.UTC(2026, 9, 11));
+    const linhas = e.description.split("\n");
+    ok("o mais usado primeiro", linhas[0], "**🏳️ Bandeira (tradução no privado)** — 9 · 1 servidor");
+    ok("o que não vem de servidor não diz servidor", linhas[1], "**✉️ Mensagens no privado** — 4");
+    ok("com quantos servidores e o mês passado do lado", linhas[2], "**/duelo** — 3 · 2 servidores · mês passado 2");
+    const parados = e.fields[0]?.value || "";
+    verdade("os comandos que ninguém usou aparecem embaixo", parados.includes("/perfil") && !parados.includes("/duelo"));
+    verdade("o menu de botão direito também conta como função", GLOBAIS_DO_CYRON.some((c) => c.type === 3) && parados.includes("Apps → "));
+    globalThis.sb = async () => null;
+    verdade("banco fora: diz que não leu, sem inventar zero", (await F.embedDasFuncoes()).description.includes("Não consegui ler"));
+  } finally {
+    globalThis.rpc = rpcAntes; globalThis.sb = sbAntes; globalThis.servidorDoGuild = srvAntes;
+  }
+
+  const limpo = semComentarios(fonte);
+  const corpo = (nome) => limpo.slice(limpo.indexOf(nome), limpo.indexOf(nome) + 1500);
+  verdade("todo comando e menu é contado num ponto só", /async function comandoDeInteracao\(inter\) \{\s*const nome = inter\.commandName;\s*contarUso\(/.test(limpo));
+  verdade("a bandeira conta só depois de entregar", /if \(!onde\) return;[^\n]*\n\s*contarUso\("bandeira"/.test(limpo));
+  verdade("salas por idioma e canais copiados contam cada mensagem", corpo("async function espelharMensagem(").includes('contarUso("espelho"') &&
+    corpo("async function replicarPorIdioma(").includes('contarUso("replica"'));
+  verdade("boas-vindas só conta o que foi postado", /mensagemDeBoasVindas\([^)]*\)\)\s*\.then\(\(\) => contarUso\("boas-vindas"/.test(limpo));
+  verdade("a descarga roda junto com a da tradução, de minuto em minuto", /descarregarUso\(\)[^\n]*\n\s*descarregarFuncoes\(\)/.test(limpo));
+  verdade("o /admin tem o botão das funções na aba Crescimento", /botao\("funcoes", "🧩", "Funções usadas"\)/.test(limpo) &&
+    /funcoes: "crescimento"/.test(limpo) && /funcoes: embedDasFuncoes/.test(limpo));
+}
+
+/* ===== O servidor que usou e parou =====
+ *
+ * O guia de primeiros passos cuida de quem nunca usou. Este cuida de quem usou
+ * e silenciou: o dono recebe, uma vez por pausa, o que eu consegui conferir
+ * (plano, sala apagada, permissão, uma língua só). */
+{
+  globalThis.BETA = false; globalThis.BETA_ATE = "";
+  const P = carregar(["DIAS_PARADO", "JANELA_DO_PARADO", "PAUSA_ENTRE_PARADOS", "avisoDeParado", "PLANOS", "venceEm",
+    "planoDe", "faixaDe", "limitesDo", "podeTestar", "LINGUAS_MENU", "nomeDoIdioma", "leitoresPorIdioma",
+    "problemasDoServidor", "porMolde", "falaFixa", "COR", "cartaoDeParado"]);
+  const agora = Date.UTC(2026, 9, 11, 12);
+  const a9 = P.avisoDeParado("2026-10-02", undefined, agora);
+  ok("9 dias parado: avisa, com o dia e a hora na marca", a9, { dias: 9, marca: "2026-10-02|2026-10-11T12:00:00.000Z" });
+  ok("3 dias pode ser só fim de semana: não avisa", P.avisoDeParado("2026-10-08", undefined, agora), null);
+  ok("mais de 60 dias: o servidor já seguiu a vida, não incomoda", P.avisoDeParado("2026-07-01", undefined, agora), null);
+  ok("sem tradução nenhuma é caso do guia de primeiros passos, não deste", P.avisoDeParado(undefined, undefined, agora), null);
+  ok("a mesma pausa não avisa duas vezes", P.avisoDeParado("2026-10-02", "2026-10-02|2026-10-10T00:00:00.000Z", agora), null);
+  ok("voltou, parou de novo, mas faz só 10 dias do último aviso: espera", 
+    P.avisoDeParado("2026-10-02", "2026-09-10|2026-10-01T00:00:00.000Z", agora), null);
+  verdade("e passados 30 dias do último aviso, avisa a pausa nova",
+    P.avisoDeParado("2026-10-02", "2026-08-01|2026-09-05T00:00:00.000Z", agora)?.dias === 9);
+
+  const sbAntes = globalThis.sb;
+  try {
+    const salas = [{ idioma: "en", canal_id: "c1", role_id: "r1" }, { idioma: "es", canal_id: "c9", role_id: "r2" }];
+    globalThis.sb = async (q) => q.startsWith("discord_chat_espelho") ? salas : [];
+    const semWebhook = { has: (x) => x !== PermissionFlagsBits.ManageWebhooks };
+    const guild = {
+      name: "Reino 7", members: { me: {} },
+      channels: { cache: new Map([["c1", { id: "c1", permissionsFor: () => semWebhook }]]), fetch: async () => null },
+      roles: { cache: new Map([["r1", { members: { size: 5 } }], ["r2", { members: { size: 0 } }]]) },
+    };
+    const gratis = { id: "s1", plano: "gratis" };
+    const achados = await P.problemasDoServidor(guild, gratis);
+    ok("acha os quatro: plano, permissão, sala apagada e uma língua só", achados.map((x) => x.texto.slice(0, 22)), [
+      "As salas por idioma sã", "Na sala {0} me falta *", "A sala de {0} foi apag", "Só uma língua tem leit"]);
+    ok("a menção do canal vai como pedaço, e não dentro do texto que se traduz", achados[1].args, ["<#c1>"]);
+
+    const tudoCerto = { has: () => true };
+    const guildOk = { ...guild, channels: { cache: new Map([["c1", { id: "c1", permissionsFor: () => tudoCerto }],
+      ["c9", { id: "c9", permissionsFor: () => tudoCerto }]]), fetch: async () => null },
+    roles: { cache: new Map([["r1", { members: { size: 5 } }], ["r2", { members: { size: 3 } }]]) } };
+    ok("plano pago, salas no lugar e duas línguas lidas: nada a reclamar",
+      await P.problemasDoServidor(guildOk, { id: "s2", plano: "pago" }), []);
+    globalThis.sb = async () => [];
+    ok("servidor sem salas (só bandeira): não inventa problema de plano", await P.problemasDoServidor(guild, gratis), []);
+
+    globalThis.sb = async (q) => q.startsWith("discord_chat_espelho") ? salas : [];
+    const cartao = await P.cartaoDeParado(guild, gratis, 9, "");
+    const texto = cartao.embeds[0].description;
+    ok("o cartão diz o servidor no título", cartao.embeds[0].title, "😴 A CYRON está parada em Reino 7");
+    verdade("diz há quantos dias", texto.includes("Faz **9 dias** que não traduzo nenhuma mensagem em **Reino 7**"));
+    verdade("lista o que achou", texto.includes("• As salas por idioma são do plano Pro") && texto.includes("• Na sala <#c1> me falta"));
+    verdade("e oferece o teste grátis a quem ainda pode testar", texto.includes("O teste grátis de 7 dias"));
+    verdade("com o botão do suporte", JSON.stringify(cartao.components).includes("discord.gg/suporte"));
+    globalThis.sb = async () => [];
+    const quieto = (await P.cartaoDeParado(guildOk, { id: "s3", plano: "pago" }, 12, "")).embeds[0].description;
+    verdade("sem nada errado, diz que do lado dela está tudo certo", quieto.includes("✅ Do meu lado está tudo certo"));
+    verdade("e não oferece teste a quem já paga", !quieto.includes("teste grátis"));
+  } finally {
+    globalThis.sb = sbAntes;
+  }
+  const donos = semComentarios(pedaco("falarComOsDonos"));
+  verdade("a ronda dos donos procura o último dia com tradução", donos.includes("traducoes=gt.0&select=dia&order=dia.desc&limit=1"));
+  verdade("marca a pausa e conta no painel do dono", donos.includes("porAjuste(`parado:${s.id}`, parado.marca)") &&
+    donos.includes("avisarNoPainel(CANAL_NOVOS"));
+}
+
+/* ===== Os marcos de tradução e o "Indique e ganhe" na hora certa ===== */
+{
+  const M = carregar(["MARCOS_DE_TRADUCAO", "marcoAlcancado", "INDICACAO", "COR_OK", "cartaoDoMarco"]);
+  ok("99 traduções: nenhum marco ainda", M.marcoAlcancado(99, undefined), null);
+  ok("passou de 100: anuncia o 100", M.marcoAlcancado(140, undefined), 100);
+  ok("o 100 já foi anunciado: espera o 500", M.marcoAlcancado(480, "100"), null);
+  ok("quem já tinha 12688 quando isto chegou recebe só o maior (10000)", M.marcoAlcancado(12688, undefined), 10000);
+  ok("e não volta a anunciar marco menor", M.marcoAlcancado(12688, "10000"), null);
+  const c = M.cartaoDoMarco({ name: "Kingdom #2311" }, 500);
+  ok("o título é número e as duas línguas", c.embeds[0].title, "🎉 500 mensagens traduzidas · 500 messages translated");
+  verdade("o número sem separador de milhar (1.000 mente para quem lê em inglês)",
+    !/\d\.\d{3}/.test(JSON.stringify(M.cartaoDoMarco({ name: "X" }, 10000).embeds)));
+  verdade("o convite a indicar fica FORA do cartão (o 📣 publica só o cartão)",
+    c.content.includes("Indique a CYRON") && !JSON.stringify(c.embeds).includes("Indique"));
+  verdade("com o prêmio de verdade, em dias de Pro", c.content.includes(`${M.INDICACAO.dias} dias de Pro`));
+  ok("botões: indicar e publicar", c.components[0].components.map((b) => b.custom_id), ["cyron:indicar", "cyron:publicar"]);
+  ok("ninguém é marcado", c.allowedMentions, { parse: [] });
+  const marcos = semComentarios(pedaco("anunciarMarcos"));
+  verdade("vai para a sala da administração (canal_config), não para a comunidade", marcos.includes("s.canal_config"));
+  verdade("pula o painel do dono", marcos.includes("ehOPainel"));
+  verdade("e marca o anunciado no cyron_ajuste", marcos.includes("porAjuste(`marco:${s.id}`, String(marco))"));
+  verdade("roda de hora em hora", /setInterval\(\(\) => anunciarMarcos\(\)/.test(semComentarios(fonte)));
 }
 
 let resumiu = false;
