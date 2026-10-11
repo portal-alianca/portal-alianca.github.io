@@ -148,6 +148,18 @@ export const RECURSOS = [
     prova: "atenderNoPrivado",
   },
   {
+    chave: "na-conta",
+    categoria: "traduzir",
+    plano: "gratis",
+    nome: { pt: "Traduzir em qualquer servidor", en: "Translate in any server" },
+    como: { pt: "Instalar na sua conta → segurar a mensagem → Apps → Translate", en: "Add to your account → hold the message → Apps → Translate" },
+    oque: {
+      pt: "Instalada na sua conta, e não só no servidor, a CYRON vai com você: o Translate funciona em qualquer servidor — até onde ela não está —, no privado e em grupo. Não precisa ser ADM, e só você vê a tradução. Fora dos servidores com a CYRON ela traduz o texto; imagem e áudio ficam para os servidores que a têm.",
+      en: "Added to your account, not just to a server, CYRON goes with you: Translate works in any server — even where she isn't —, in DMs and group chats. No admin needed, and only you see the translation. Outside servers with CYRON she translates text; images and voice stay with the servers that have her.",
+    },
+    prova: "traduzirPelaConta",
+  },
+  {
     chave: "ler-imagem",
     categoria: "traduzir",
     plano: "gratis",
