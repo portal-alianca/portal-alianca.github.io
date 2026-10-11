@@ -8921,7 +8921,8 @@ function conferirCartao(onde, embed, componentes = []) {
     globalThis.MEMORIA_PARA_DESENHAR = 1e12;
     const pn = carregar(["ESPACOS_ORDEM", "personagemPorId", "nivelDoPersonagem", "kitEquipado", "descricaoDaHabilidade",
       "ROTULOS_DA_FICHA", "LINGUAS_SEM_FONTE_NO_CARD", "linguaDoCard", "traduzirTextos", "HEROIS_NA_LINGUA", "heroiNaLingua",
-      "TEXTOS_DO_PAINEL", "PAINEL_NA_LINGUA", "textosNaLingua", "textosDoPainel", "DUELO_TEXTOS", "DUELO_NA_LINGUA", "prepararLingua",
+      "TEXTOS_DO_PAINEL", "PAINEL_NA_LINGUA", "textosNaLingua", "textosDoPainel", "DUELO_TEXTOS", "DUELO_NA_LINGUA",
+      "MARCAS_DO_DUELO", "TITULOS_NA_LINGUA", "titulosNaLingua", "linguaDoDuelo", "prepararLingua",
       "RANKING_GUARDADO", "rankingsDoServidor", "placarDosDuelistas", "rankingDoServidor",
       "heroisAtivos", "cardsDoPainel", "CARDS_GUARDADOS", "heroiAtivo", "cardDoPainel", "progressoDeTodos", "abasDoPainel", "telaDoPainel"]);
     const zumbi = elenco.PERSONAGENS.findIndex((p) => p.id === "zumbi");
@@ -8939,10 +8940,11 @@ function conferirCartao(onde, embed, componentes = []) {
     verdade("o retrato e os números não mudam", enHeroi.p.id === "alexandre" && enHeroi.p.kit.especial[0].dano === 18);
     const luta = { guildId: "1" };
     await pn.prepararLingua(luta, "en");
-    ok("a luta pega as palavras fixas na língua de quem desafiou", luta.tx.errou, "EN:errou!");
+    ok("o texto da luta usa marcas (cada sala troca pela sua língua)", luta.tx.errou, "⟦tx:errou⟧");
+    ok("e a língua de quem desafiou já fica pronta", luta.porLingua.get("en").tx.errou, "EN:errou!");
     const lutaPt = {};
     await pn.prepararLingua(lutaPt, "pt");
-    ok("em português não vai ao tradutor", lutaPt.tx.errou, "errou!");
+    ok("em português não vai ao tradutor", lutaPt.porLingua.get("pt").tx.errou, "errou!");
     const enPainel = await pn.textosDoPainel("en", "1");
     ok("os botões do painel também", enPainel.duelar, "EN:Duelar");
     const herois = await pn.telaDoPainel("111111", "herois", zumbi);
@@ -11836,7 +11838,18 @@ function conferirCartao(onde, embed, componentes = []) {
  * outro. Agora a mensagem do duelo ganha uma cópia na sala que ele enxerga,
  * e as duas andam juntas. */
 {
-  const D = carregar(["mensagensDoDuelo", "salaDeQuemNaoVe", "levarDueloAQuemNaoVe", "aceitoNaSala"]);
+  const D = carregar(["DUELO_TEXTOS", "personagemPorId", "MARCAS_DO_DUELO", "heroiMarcado", "desmarcar", "desmarcarCarga",
+    "lembrarLingua", "idiomaDaMensagem", "editarTodas", "avisarNoDuelo",
+    "mensagensDoDuelo", "salaDeQuemNaoVe", "levarDueloAQuemNaoVe", "aceitoNaSala"]);
+  /* A língua de cada sala, de mentira: o inglês põe "EN:" na frente. */
+  const linguaDeMentira = (idioma) => idioma === "en"
+    ? { tx: Object.fromEntries(Object.entries(D.DUELO_TEXTOS).map(([k, t]) => [k, `EN:${t}`])),
+      titulos: { alexandre: "EN:O Conquistador" },
+      herois: new Map([["alexandre", { ...PERSONAGENS[0],
+        kit: Object.fromEntries(Object.entries(PERSONAGENS[0].kit).map(([e, hs]) => [e, hs.map((h) => ({ ...h, nome: `EN:${h.nome}` }))])),
+        fatos: PERSONAGENS[0].fatos.map((f) => `EN:${f}`) }]]) }
+    : null;
+  globalThis.linguaDoDuelo = async (estado, idioma) => linguaDeMentira(idioma);
   const log = [];
   const mensagem = (id, canal) => ({ id, channelId: canal, channel: { id: canal },
     edit: async (c) => { log.push(["edit", id, c?.content ?? null]); return true; },
@@ -11854,14 +11867,15 @@ function conferirCartao(onde, embed, componentes = []) {
   const salas = new Map(["c-pt", "c-en", "c-es"].map((id) => [id, sala(id)]));
   const guild = { id: "g", members: { cache: new Map(Object.keys(vê).map((id) => [id, { id }])), fetch: async () => null },
     channels: { cache: salas } };
-  globalThis.salasIrmas = async (g, canal) => ["c-pt", "c-en", "c-es"].filter((c) => c !== canal).map((c) => ({ canal_id: c }));
-  ok("quem não vê a sala do duelo: a sala que ela vê", (await D.salaDeQuemNaoVe(guild, salas.get("c-pt"), "maelle"))?.id, "c-en");
+  globalThis.salasIrmas = async (g, canal) => ["c-pt", "c-en", "c-es"].filter((c) => c !== canal).map((c) => ({ canal_id: c, idioma: c.slice(2) }));
+  ok("quem não vê a sala do duelo: a sala que ela vê", (await D.salaDeQuemNaoVe(guild, salas.get("c-pt"), "maelle"))?.canal?.id, "c-en");
   ok("quem vê (o ADM): nenhuma, joga na de origem", await D.salaDeQuemNaoVe(guild, salas.get("c-pt"), "adm"), null);
 
   const estado = { msg: { ...mensagem("orig", "c-pt"), channel: salas.get("c-pt") } };
   await D.levarDueloAQuemNaoVe(estado, guild, ["maelle", "adm"], { content: "desafio" });
   ok("o desafio vai só para a sala de quem não via", enviados.map((e) => e[0]), ["c-en"]);
   ok("e vira cópia do duelo", estado.copias.map((m) => m.channelId), ["c-en"]);
+  verdade("e a cópia lembra a língua da sala dela", D.idiomaDaMensagem(estado, estado.copias[0]) === "en");
   await D.levarDueloAQuemNaoVe(estado, guild, ["maelle"], { content: "de novo" });
   ok("uma cópia por sala, nunca duas", estado.copias.length, 1);
 
@@ -11884,13 +11898,66 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o desafio direto vai para a sala do desafiado",
     /if \(contraHumano\) await levarDueloAQuemNaoVe\(estado, inter\.guild, \[alvo\.id\], convite\)/.test(fonteD));
   verdade("cada jogada edita todas as mensagens do duelo",
-    /async function editarDuelo[^]*?mensagensDoDuelo\(estado\)\.map\(\(m\) => m\.edit\(/.test(fonteD));
-  verdade("cancelar avisa em todas", /function cancelarDuelo[^]*?for \(const m of mensagensDoDuelo\(estado\)\)/.test(fonteD));
+    /async function editarDuelo[^]*?return await editarTodas\(estado, \{ content: "", \.\.\.telaDoDuelo\(estado\), \.\.\.anexo \}\)/.test(fonteD));
+  verdade("cancelar avisa em todas, cada uma na sua língua", /function cancelarDuelo[^]*?editarTodas\(estado, \{ content: `\$\{motivo\}/.test(fonteD));
   verdade("o desafio aberto do painel aparece em todas as salas da conversa",
     /estado\.convites = \[\];\s*for \(const sala of await salasIrmas\(inter\.guildId, estado\.msg\.channelId\)/.test(fonteD));
-  verdade("treino tira os convites das outras salas", /aceitoNaSala\(estado, estado\.msg\?\.id, null\);\s*return comecarDuelo\(estado\);/.test(fonteD));
+  verdade("treino: o convite onde tocaram fica, os outros saem", /aceitoNaSala\(estado, inter\.message\?\.id, null\);\s*return comecarDuelo\(estado\);/.test(fonteD));
+  verdade("aceitar reconhece o clique antes de mexer nas mensagens",
+    /await inter\.deferUpdate\(\);\s*aceitoNaSala\(estado, inter\.message\?\.id, null\);\s*await editarTodas\(estado, carga\);/.test(fonteD));
+  verdade("nenhum aviso do duelo espera a tradução antes de responder",
+    !/inter\.reply\(\{ flags: 64, content: `[^`]*\$\{await fala\(/.test(fonteD.slice(fonteD.indexOf("async function cliqueDuelo"), fonteD.indexOf("async function comecarDuelo"))));
+  /* As marcas: o texto do duelo é um só, e cada sala lê na sua língua. */
+  const alex = PERSONAGENS[0];
+  const marcado = D.heroiMarcado(alex);
+  verdade("o herói marcado guarda o nome e marca habilidades, título e curiosidades",
+    marcado.curto === alex.curto && marcado.kit.basica[0].nome === "⟦h:alexandre:kit:basica:0⟧" &&
+    marcado.titulo === "⟦h:alexandre:titulo⟧" && marcado.fatos[2] === "⟦h:alexandre:fato:2⟧" && marcado.kit.basica[0].dano === alex.kit.basica[0].dano);
+  const frase = `${marcado.kit.basica[0].nome} ${D.MARCAS_DO_DUELO.venceu} · ${marcado.titulo} · ${marcado.fatos[0]}`;
+  ok("sem língua: o português original", D.desmarcar(frase, null),
+    `${alex.kit.basica[0].nome} ${D.DUELO_TEXTOS.venceu} · ${alex.titulo} · ${alex.fatos[0]}`);
+  ok("em inglês: palavras, habilidade, título e curiosidade traduzidos", D.desmarcar(frase, linguaDeMentira("en")),
+    `EN:${alex.kit.basica[0].nome} EN:${D.DUELO_TEXTOS.venceu} · EN:O Conquistador · EN:${alex.fatos[0]}`);
+  const cargaM = D.desmarcarCarga({ content: D.MARCAS_DO_DUELO.cancelado, embeds: [{ title: marcado.titulo, description: D.MARCAS_DO_DUELO.venceu }],
+    components: [{ type: 1, components: [{ type: 2, label: `${marcado.kit.suprema[1].nome}${"x".repeat(90)}` },
+      { type: 3, placeholder: D.MARCAS_DO_DUELO.escolhaSeu, options: [{ label: `${alex.nome} · ${marcado.titulo}`, value: "a" }] }] }],
+    files: ["f"] }, linguaDeMentira("en"));
+  verdade("a mensagem inteira troca: texto, cartão, botão, lista", cargaM.content.startsWith("EN:") && cargaM.embeds[0].title === "EN:O Conquistador" &&
+    cargaM.components[0].components[0].label.startsWith("EN:") && cargaM.components[0].components[1].placeholder.startsWith("EN:") &&
+    cargaM.components[0].components[1].options[0].label === `${alex.nome} · EN:O Conquistador`);
+  ok("o botão é cortado de novo no tamanho do Discord", cargaM.components[0].components[0].label.length, 80);
+  ok("e o que não é texto passa inteiro (o cartaz)", cargaM.files, ["f"]);
+
+  /* O motor, com marcas, e a mesma jogada lida em duas línguas. */
+  const MT = carregar(["ESPACOS_ORDEM", "nivelDoPersonagem", "kitEquipado", "novoLutador", "DUELO_VIDA", "DUELO_ENERGIA_INICIAL",
+    "DUELO_PERFURAR", "usarHabilidade"]);
+  const lutaM = { tx: D.MARCAS_DO_DUELO, lutadores: [MT.novoLutador({ userId: "a", personagem: marcado }),
+    MT.novoLutador({ userId: "b", personagem: D.heroiMarcado(PERSONAGENS[1]) })] };
+  const linhaM = MT.usarHabilidade(lutaM, 0, lutaM.lutadores[0].kit[0], () => 0.99)[0];
+  verdade("a jogada sai com marcas", linhaM.includes("⟦h:alexandre:kit:basica:0⟧"));
+  verdade("e cada sala lê na sua", D.desmarcar(linhaM, null).includes(alex.kit.basica[0].nome) &&
+    D.desmarcar(linhaM, linguaDeMentira("en")).includes(`EN:${alex.kit.basica[0].nome}`));
+
+  /* Todas as mensagens do duelo, cada uma na sua língua. */
+  const editadas = {};
+  const msgM = (id) => ({ id, edit: async (c) => { editadas[id] = c.content; } });
+  const dueloM = { idioma: "pt", msg: msgM("orig"), copias: [msgM("copia")] };
+  D.lembrarLingua(dueloM, dueloM.copias[0], "en");
+  await D.editarTodas(dueloM, { content: D.MARCAS_DO_DUELO.cancelado });
+  ok("a origem em português, a cópia em inglês", editadas, { orig: D.DUELO_TEXTOS.cancelado, copia: `EN:${D.DUELO_TEXTOS.cancelado}` });
+
+  /* O aviso só para quem clicou reconhece o clique ANTES de traduzir. */
+  const ordem = [];
+  globalThis.linguaDe = async () => "en";
+  globalThis.nalingua = async (i, g, f) => { ordem.push("traduziu"); return [`EN:${f}`]; };
+  const clique = { deferred: false, replied: false, guildId: "g",
+    deferReply: async (o) => { ordem.push(`reconheceu:${o.flags}`); clique.deferred = true; },
+    editReply: async (r) => { ordem.push(r.content); } };
+  await D.avisarNoDuelo(clique, "⚔️", "Esse duelo já acabou.");
+  ok("primeiro reconhece (só para quem clicou), depois traduz e responde", ordem, ["reconheceu:64", "traduziu", "⚔️ EN:Esse duelo já acabou."]);
+
   verdade("a revanche chega na sala do outro e o novo duelo também",
-    /for \(const m of r\.msgs \|\| \[\]\) if \(m\.channelId !== inter\.channelId\) m\.channel\?\.send\(pedido\)/.test(fonteD) &&
+    /for \(const m of r\.msgs \|\| \[\]\) if \(m\.channelId !== inter\.channelId\) m\.channel\?\.send\(naSala\(m\)\)/.test(fonteD) &&
     /await levarDueloAQuemNaoVe\(estado, inter\.guild, humanos\.map\(\(p\) => p\.userId\)/.test(fonteD));
 }
 
