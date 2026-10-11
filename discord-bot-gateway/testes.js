@@ -11540,13 +11540,21 @@ function conferirCartao(onde, embed, componentes = []) {
  * pessoa, e que o privado continua o mesmo quando a IA não existe. */
 {
   const roteiroJs = await import("./roteiro.js");
+  const linguasDosComandos = await import("./comandos-linguas.js");
+  Object.assign(globalThis, { LOCAIS_DO_DISCORD: linguasDosComandos.LOCAIS_DO_DISCORD,
+    DESCRICOES_DOS_COMANDOS: linguasDosComandos.DESCRICOES_DOS_COMANDOS, ESCOLHAS_DOS_COMANDOS: linguasDosComandos.ESCOLHAS_DOS_COMANDOS,
+    NOMES_DOS_MENUS: linguasDosComandos.NOMES_DOS_MENUS });
   const { LINK_DO_CONTATO } = await import("./suporte.js");
   const elencoIA = await import("./duelo-elenco.js");
   Object.assign(globalThis, { QUEM_SOU: roteiroJs.QUEM_SOU, REGRAS: roteiroJs.REGRAS, DUVIDAS: roteiroJs.DUVIDAS, LINK_DO_CONTATO,
     PERSONAGENS: elencoIA.PERSONAGENS, ESPACOS: elencoIA.ESPACOS, EFEITOS: elencoIA.EFEITOS,
     NIVEIS_DO_PERSONAGEM: elencoIA.NIVEIS_DO_PERSONAGEM });
-  Object.assign(globalThis, carregar(["TRADUCOES_DO_EVENTO", "LEMBRETES", "SUPORTE_HORAS", "TRADUCOES_DAS_BOAS_VINDAS",
-    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
+  /* O TRADUCOES_DO_EVENTO e' uma funcao que se chama na hora ((() => {...})()):
+     o extrator pega so' a funcao, entao aqui ela e' chamada a mao. */
+  globalThis.LEMBRETES = carregar(["LEMBRETES"]).LEMBRETES;
+  globalThis.TRADUCOES_DO_EVENTO = (0, eval)(pedaco("TRADUCOES_DO_EVENTO").replace(/^var TRADUCOES_DO_EVENTO = /, "") + "()");
+  Object.assign(globalThis, carregar(["SUPORTE_HORAS", "TRADUCOES_DAS_BOAS_VINDAS",
+    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "locaisDoDiscord", "comLinguas", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
     "DUELO_ENERGIA_INICIAL", "DUELO_ENERGIA_TURNO", "DUELO_ENERGIA_MAX", "DUELO_TEMPO", "DUELO_AUSENCIAS",
     "DUELO_MORTE_SUBITA", "DUELO_XP", "DUELO_TREINOS_DIA", "DUELO_DUELOS_DIA", "PATENTES", "descricaoDaHabilidade",
     "venceEm", "hojeISO", "botaoDeSuporte"]));
@@ -11959,6 +11967,50 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("a revanche chega na sala do outro e o novo duelo também",
     /for \(const m of r\.msgs \|\| \[\]\) if \(m\.channelId !== inter\.channelId\) m\.channel\?\.send\(naSala\(m\)\)/.test(fonteD) &&
     /await levarDueloAQuemNaoVe\(estado, inter\.guild, humanos\.map\(\(p\) => p\.userId\)/.test(fonteD));
+}
+
+/* ====== OS COMANDOS NA LÍNGUA DE CADA UM ======
+ *
+ * O Discord mostra a lista de comandos no idioma do aplicativo de cada
+ * pessoa. Toda descrição (comando, subcomando, opção) tem as 18 línguas do
+ * comandos-linguas.js; os nomes dos comandos de barra não mudam. */
+{
+  const CL = await import("./comandos-linguas.js");
+  const todosOsLocais = Object.entries(CL.LOCAIS_DO_DISCORD).filter(([l]) => l !== "pt").flatMap(([, d]) => d);
+  const validos = new Set(["id", "en-US", "en-GB", "bg", "zh-CN", "zh-TW", "hr", "cs", "da", "nl", "fi", "fr", "de", "el", "hi", "hu",
+    "it", "ja", "ko", "lt", "no", "pl", "pt-BR", "ro", "ru", "es-ES", "es-419", "sv-SE", "th", "tr", "uk", "vi"]);
+  verdade("só códigos de língua que o Discord aceita", Object.values(CL.LOCAIS_DO_DISCORD).flat().every((d) => validos.has(d)));
+
+  const caminhos = [];
+  const andar = (o, caminho, nivel) => {
+    caminhos.push({ o, caminho, nivel });
+    for (const f of o.options || []) andar(f, `${caminho} ${f.name}`, nivel + 1);
+  };
+  for (const c of GLOBAIS_DO_CYRON) if (c.name !== "admin") andar(c, c.name, 0);
+  for (const { o, caminho } of caminhos) {
+    if (!o.description) continue;
+    const tem = Object.keys(o.descriptionLocalizations || {});
+    const faltam = todosOsLocais.filter((d) => !tem.includes(d));
+    ok(`${caminho}: a descrição está nas 18 línguas`, faltam, []);
+    const ruins = Object.entries(o.descriptionLocalizations).filter(([, t]) => !t || t.length > 100);
+    ok(`${caminho}: nenhuma descrição vazia ou com mais de 100 letras`, ruins, []);
+  }
+  const existentes = new Set(caminhos.map((c) => c.caminho));
+  ok("toda tradução da tabela é de um comando ou opção que existe", Object.keys(CL.DESCRICOES_DOS_COMANDOS).filter((k) => !existentes.has(k)), []);
+  verdade("os nomes dos comandos de barra não mudam (ninguém procura /ハグ sem saber)",
+    GLOBAIS_DO_CYRON.filter((c) => c.type !== 3).every((c) => !c.nameLocalizations?.ja && !c.nameLocalizations?.ru));
+  const menu = GLOBAIS_DO_CYRON.find((c) => c.name === "Criar evento");
+  verdade("o menu de botão direito ganha o nome traduzido", menu.nameLocalizations.ja === "イベントを作成" &&
+    Object.values(menu.nameLocalizations).every((n) => n.length <= 32));
+  const periodo = GLOBAIS_DO_CYRON.find((c) => c.name === "top").options[0];
+  verdade("as escolhas da lista também (🏆 Sempre / 📅 Semana)", periodo.choices.every((c) => c.nameLocalizations?.ja));
+  verdade("o que já estava escrito vale primeiro (o /hora em francês)",
+    GLOBAIS_DO_CYRON.find((c) => c.name === "hora").descriptionLocalizations.fr === TRADUCOES_DA_HORA.comando.fr);
+  verdade("texto igual ao padrão fica de fora (o Discord descarta e o bot republicaria toda vez)",
+    caminhos.every(({ o }) => !o.description || Object.values(o.descriptionLocalizations || {}).every((t) => t !== o.description)));
+  verdade("o /mylanguage (publicado fora da lista) ganha as descrições na partida",
+    /for \(const \[nome, textos\] of Object\.entries\(DESCRICOES_DE_FORA\)\)[^]*?setDescriptionLocalizations\(desejado\)/.test(semComentarios(fonte)));
+  ok("o /mylanguage tem as 18 línguas", Object.keys(CL.DESCRICOES_DE_FORA.mylanguage).length, 18);
 }
 
 let resumiu = false;
