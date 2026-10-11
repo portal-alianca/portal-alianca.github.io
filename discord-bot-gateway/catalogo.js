@@ -476,6 +476,18 @@ export const RECURSOS = [
     prova: "function usarHabilidade",
   },
   {
+    chave: "herois-no-chat",
+    categoria: "ferramentas",
+    plano: "gratis",
+    nome: { pt: "Heróis no chat e cartas", en: "Heroes in the chat and cards" },
+    como: { pt: "/colecao · /diario · /presentear", en: "/collection · /daily · /gift" },
+    oque: {
+      pt: "Com o chat animado, um herói aparece e quem tocar primeiro leva a carta: comum, rara ou lendária. Cada carta vai para a /colecao, dá XP ao herói no Duelo e, com os níveis ligados, sobe o nível da pessoa no servidor. O /diario dá uma carta por dia, com sequência de dias (todo sétimo dia seguido é lendária), e o /presentear passa uma carta para alguém. Tudo bilíngue, sem gastar tradução, e a administração desliga as aparições com um toque.",
+      en: "When the chat is lively, a hero shows up and whoever taps first gets the card: common, rare or legendary. Each card goes to /collection, gives the hero XP in the Duel and, with levels on, raises the person's server level. /daily gives one card a day, with a day streak (every seventh day in a row is legendary), and /gift passes a card to someone. All bilingual, using no translation, and admins turn the appearances off with one tap.",
+    },
+    prova: "function talvezAparecerHeroi",
+  },
+  {
     chave: "hora",
     categoria: "ferramentas",
     plano: "gratis",
