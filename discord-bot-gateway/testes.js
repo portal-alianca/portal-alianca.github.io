@@ -4026,12 +4026,16 @@ function conferirCartao(onde, embed, componentes = []) {
     conferirCartao("o anúncio traduzido", await anuncioTraduzido("de"), menuDoAnuncio());
   }
 
-  /* ---- a página do membro (/help) ---- */
+  /* ---- as páginas do /help ---- */
   {
-    const { paginaDoMembro, menuIdioma } = carregar([
-      "LINGUAS_MENU", "nomeNaPropriaLingua", "menuIdioma", "paginaDoMembro"]);
-    conferirCartao("o /help do membro", paginaDoMembro(false), menuIdioma());
-    conferirCartao("o /help de quem administra", paginaDoMembro(true), menuIdioma());
+    const { paginaDaAjuda, PAGINAS_DA_AJUDA, menuIdioma } = carregar([
+      "LINGUAS_MENU", "nomeNaPropriaLingua", "menuIdioma", "PAGINAS_DA_AJUDA", "paginaDaAjuda"]);
+    for (const { id: pagina } of PAGINAS_DA_AJUDA) {
+      for (const souAdmin of [false, true]) {
+        const { id, ...molde } = paginaDaAjuda(pagina, souAdmin);
+        conferirCartao(`o /help, página ${pagina}${souAdmin ? " (ADM)" : ""}`, molde, id === "inicio" ? menuIdioma() : []);
+      }
+    }
   }
 
   /* ---- o recibo da semana ---- */
@@ -12933,6 +12937,74 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("nada nos cargos e na moderação passa pelo tradutor (zero custo)", secao.length > 3000 && !/nalingua\(|traduzir\w*\(|traduzirEmbed\(/.test(secao));
   const priv = readFileSync(`${aqui}/../cyron/privacidade.html`, "utf8");
   verdade("a privacidade conta o que a moderação lê e copia", /Moderação, só se o ADM ligar/.test(priv) && /Moderation, only if an admin turns it on/.test(priv));
+}
+
+/* ====== 📖 O /HELP EM PÁGINAS ======
+ *
+ * Uma tela só, da tradução, que citava dois comandos, virou páginas num menu
+ * com TODOS os comandos, cada um com a descrição nas 18 línguas (a mesma que
+ * o Discord mostra). A lista sai das definições: comando novo fora dela, o
+ * teste reprova. */
+{
+  const antes = { client: globalThis.client, traduzirEmbed: globalThis.traduzirEmbed, traduzirLinha: globalThis.traduzirLinha,
+    COR: globalThis.COR };
+  try {
+    const CL = await import("./comandos-linguas.js");
+    Object.assign(globalThis, { DESCRICOES_DE_FORA: CL.DESCRICOES_DE_FORA, DESCRICOES_DA_AJUDA: CL.DESCRICOES_DA_AJUDA,
+      NOMES_DOS_MENUS: CL.NOMES_DOS_MENUS, LOCAIS_DO_DISCORD: CL.LOCAIS_DO_DISCORD });
+    const publicados = [{ name: "duelo", id: "111" }, { name: "xp", id: "222" }, { name: "mylanguage", id: "333" }];
+    globalThis.client = { application: { commands: { cache: { find: (f) => publicados.find(f) } } } };
+    globalThis.traduzirEmbed = async (e) => e;
+    globalThis.traduzirLinha = async (l) => l;
+    globalThis.COR = 1;
+    const A = carregar(["LINGUAS_MENU", "nomeNaPropriaLingua", "menuIdioma", "PAGINAS_DA_AJUDA", "COMANDOS_DA_AJUDA",
+      "LINGUAS_DAS_DESCRICOES", "linguaDaTabela", "descricaoNaLingua", "chamadaDoComando", "linhasDaAjuda", "paginaDaAjuda",
+      "menuDaAjuda", "telaDoHelp"]);
+
+    const naAjuda = new Set(Object.values(A.COMANDOS_DA_AJUDA).flat());
+    for (const c of GLOBAIS_DO_CYRON.filter((x) => !["admin", "help"].includes(x.name))) {
+      verdade(`o /help mostra ${c.type === 3 ? "Apps → " : "/"}${c.name}`, naAjuda.has(c.name));
+    }
+    verdade("e o /mylanguage e o Translate, publicados fora da lista", naAjuda.has("mylanguage") && naAjuda.has("Translate"));
+    for (const nome of naAjuda) {
+      verdade(`${nome}: a ajuda mostra a descrição nas 18 línguas (e não a de duas línguas juntas)`, A.LINGUAS_DAS_DESCRICOES.every((l) => {
+        const d = A.descricaoNaLingua(nome, l);
+        return typeof d === "string" && d.trim().length >= 2 && !d.includes(" / ");
+      }));
+    }
+
+    ok("descrição em japonês para quem usa japonês", A.descricaoNaLingua("colecao", "ja"), CL.DESCRICOES_DOS_COMANDOS.colecao.ja);
+    ok("zh-CN lê o chinês", A.linguaDaTabela("zh-CN"), "zh");
+    ok("árabe (sem linha na tabela) lê em inglês", A.descricaoNaLingua("duelo", "ar"), CL.DESCRICOES_DOS_COMANDOS.duelo.en);
+    ok("o comando com id vira menção clicável", A.chamadaDoComando("duelo", "pt"), "</duelo:111>");
+    ok("com subcomando não dá para mencionar: fica o nome", A.chamadaDoComando("xp", "pt"), "`/xp`");
+    ok("menu de botão direito: Apps → o nome na língua", A.chamadaDoComando("Criar evento", "en"), "**Apps → Create event**");
+
+    const doMembro = A.linhasDaAjuda("ferramentas", false, "pt").join("\n");
+    verdade("quem não administra não vê comando que o Discord esconde dele", !/evento|sorteio/.test(doMembro) && /hora/.test(doMembro));
+    verdade("quem administra vê", /sorteio/.test(A.linhasDaAjuda("ferramentas", true, "pt").join("\n")));
+    ok("a página de ADM não abre para quem não administra", A.paginaDaAjuda("admin", false).id, "inicio");
+    ok("e nem aparece no menu", A.menuDaAjuda("inicio", false).components[0].options.map((o) => o.value),
+      ["inicio", "traducao", "diversao", "ferramentas"]);
+    verdade("o menu marca a página atual", A.menuDaAjuda("diversao", true).components[0].options.find((o) => o.default)?.value === "diversao");
+
+    for (const idioma of ["pt", "en", "ru", "ja", "ar"]) {
+      for (const p of A.PAGINAS_DA_AJUDA) {
+        const tela = await A.telaDoHelp(p.id, { souAdmin: true, idioma, motor: null });
+        const desc = tela.embeds[0].description;
+        verdade(`${p.id} em ${idioma}: cabe no Discord`, desc.length <= 4096 && tela.components.length <= 5);
+      }
+    }
+    const diversao = await A.telaDoHelp("diversao", { souAdmin: false, idioma: "pt", motor: null });
+    verdade("a página de diversão lista o duelo, clicável, com a descrição", diversao.embeds[0].description.includes("</duelo:111> — Duelo de personagens"));
+    verdade("só a primeira página traz o menu de idioma", (await A.telaDoHelp("inicio", { souAdmin: false, idioma: "pt", motor: null })).components.length === 2 &&
+      diversao.components.length === 1);
+  } finally {
+    Object.assign(globalThis, antes);
+  }
+  const limpo = semComentarios(fonte);
+  verdade("o menu de páginas tem rota, antes dos outros menus", /if \(inter\.customId === "ajuda:pagina"\) return await cliqueAjuda\(inter\);\s*if \(inter\.customId === "escolher-idioma"\)/.test(limpo));
+  verdade("o /help abre na primeira página", /telaDoHelp\("inicio"/.test(pedaco("comandoAjuda")));
 }
 
 let resumiu = false;

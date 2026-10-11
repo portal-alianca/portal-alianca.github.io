@@ -19,8 +19,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
    nasce dele tambem -- uma lista so', e nao uma no bot e outra no site. */
 import { CATEGORIAS, doCliente } from "./catalogo.js";
 import { QUEM_SOU, REGRAS, DUVIDAS } from "./roteiro.js";
-import { LOCAIS_DO_DISCORD, DESCRICOES_DOS_COMANDOS, ESCOLHAS_DOS_COMANDOS, NOMES_DOS_MENUS, DESCRICOES_DE_FORA }
-  from "./comandos-linguas.js";
+import { LOCAIS_DO_DISCORD, DESCRICOES_DOS_COMANDOS, ESCOLHAS_DOS_COMANDOS, NOMES_DOS_MENUS, DESCRICOES_DE_FORA,
+  DESCRICOES_DA_AJUDA } from "./comandos-linguas.js";
 import { PERSONAGENS, ESPACOS, EFEITOS, NIVEIS_DO_PERSONAGEM } from "./duelo-elenco.js";
 /* O que e' so' da alianca [TOP]: fica fora daqui para nao se misturar com o
    produto. Ver o comentario no topo do alianca.js. */
@@ -18189,6 +18189,7 @@ const NOMES_DAS_FUNCOES = {
   "duelo-chamada": "⚔️ A CYRON chamou o chat para duelar",
   "duelo-chamada-aceita": "⚔️ Alguém aceitou a chamada da CYRON",
   "traduzir-na-conta": "📲 Traduzir pela conta (fora dos servidores da CYRON)",
+  "ajuda-pagina": "📖 Página do /help aberta",
   "heroi-apareceu": "🃏 Um herói apareceu no chat",
   "heroi-pego": "✋ Alguém pegou um herói",
   "heroi-presente": "🎁 Carta dada de presente",
@@ -20674,43 +20675,143 @@ async function cliqueTraduzirMsg(inter) {
 
    O seletor de idioma vem junto, na mesma resposta. Mandar a pessoa "ir no
    canal tal" e' perder metade dela no caminho. */
-function paginaDoMembro(souAdmin) {
-  /* Organizado pelo que a pessoa VE na tela -- o menu, a bandeira, o botao --
-     e nao pelo nome do recurso: quem esta' perdido reconhece o simbolo, nao
-     o conceito. Um simbolo por bloco, uma frase do que fazer. */
-  const linhas = [
+/* ---------------- o /help em paginas ----------------
+
+   O /help era uma tela so', da traducao, e citava dois comandos: o duelo, a
+   colecao, os cargos e a moderacao chegaram e ninguem ficava sabendo. Agora
+   sao paginas, trocadas num menu, e a lista de comandos sai das proprias
+   definicoes (GLOBAIS_DO_CYRON): comando novo que nao estiver aqui, o teste
+   reprova.
+
+   As frases de cada pagina passam pelo tradutor (com cache, uma vez por
+   lingua). A descricao de cada comando NAO: ela vem pronta nas 18 linguas
+   do comandos-linguas.js, a mesma que o Discord mostra ao digitar "/". */
+const PAGINAS_DA_AJUDA = [
+  { id: "inicio", emoji: "🏠", nome: "Começar" },
+  { id: "traducao", emoji: "🌐", nome: "Tradução" },
+  { id: "diversao", emoji: "🎮", nome: "Diversão e jogos" },
+  { id: "ferramentas", emoji: "🧰", nome: "Ferramentas" },
+  { id: "admin", emoji: "⚙️", nome: "Quem administra", admin: true },
+];
+const COMANDOS_DA_AJUDA = {
+  traducao: ["mylanguage", "Translate"],
+  diversao: ["duelo", "colecao", "diario", "presentear", "equipar", "codex", "perfil", "top", "abraco", "beijo", "tapa", "cafune"],
+  ferramentas: ["hora", "evento", "Criar evento", "sorteio"],
+  admin: ["cyron", "niveis", "xp", "boas-vindas", "cargos", "moderacao", "suporte"],
+};
+const LINGUAS_DAS_DESCRICOES = ["pt", "en", "es", "fr", "de", "it", "nl", "ru", "uk", "pl", "tr", "id", "vi", "th", "hi", "ja", "ko", "zh"];
+
+/* A lingua da tabela de descricoes para a lingua da pessoa. Arabe e
+   filipino nao tem linha la' (o Discord tambem nao): vao em ingles. Pura. */
+function linguaDaTabela(idioma) {
+  const base = String(idioma || "en").toLowerCase().split(/[-_]/)[0];
+  return LINGUAS_DAS_DESCRICOES.includes(base) ? base : "en";
+}
+
+/* A descricao que o proprio Discord mostra na lingua dela: a da definicao
+   publicada, que ja' juntou a tabela e os textos do /hora e do /boas-vindas.
+   Fora da lista (/mylanguage, menus), a tabela dela. */
+function descricaoNaLingua(nome, idioma) {
+  const l = linguaDaTabela(idioma);
+  const fora = DESCRICOES_DE_FORA[nome] || DESCRICOES_DA_AJUDA[nome];
+  if (fora?.[l]) return fora[l];
+  const def = GLOBAIS_DO_CYRON.find((c) => c.name === nome);
+  const local = def?.descriptionLocalizations?.[(LOCAIS_DO_DISCORD[l] || [])[0]];
+  if (local) return local;
+  const [pt, en] = String(def?.description || "").split(" / ");
+  return (l === "pt" ? pt : en || pt) || "";
+}
+
+/* Como o comando aparece: mencao clicavel (</duelo:id>) quando eu sei o id
+   e ele nao tem subcomando -- tocar ja' abre o comando. Menu de botao
+   direito vira "Apps → nome", no nome da lingua. */
+function chamadaDoComando(nome, idioma) {
+  const def = GLOBAIS_DO_CYRON.find((c) => c.name === nome);
+  if (def?.type === 3 || nome === "Translate") {
+    return `**Apps → ${NOMES_DOS_MENUS[nome]?.[linguaDaTabela(idioma)] || nome}**`;
+  }
+  const temSub = (def?.options || []).some((o) => o.type === 1 || o.type === 2);
+  const id = client.application?.commands?.cache?.find?.((c) => c.name === nome)?.id;
+  return id && !temSub ? `</${nome}:${id}>` : `\`/${nome}\``;
+}
+
+/* As linhas de comando de uma pagina, ja' na lingua da pessoa. Quem nao
+   administra nao ve comando que o Discord nao mostraria a ele. */
+function linhasDaAjuda(pagina, souAdmin, idioma) {
+  return (COMANDOS_DA_AJUDA[pagina] || [])
+    .filter((nome) => souAdmin || !GLOBAIS_DO_CYRON.find((c) => c.name === nome)?.defaultMemberPermissions)
+    .map((nome) => `${chamadaDoComando(nome, idioma)} — ${descricaoNaLingua(nome, idioma)}`);
+}
+
+/* As frases da pagina, em portugues (vao ao tradutor). Pura. */
+function paginaDaAjuda(pagina, souAdmin) {
+  const p = PAGINAS_DA_AJUDA.find((x) => x.id === pagina && (!x.admin || souAdmin)) || PAGINAS_DA_AJUDA[0];
+  const rodape = { text: "Só você está vendo esta mensagem. Troque de página no menu." };
+  if (p.id === "traducao") {
+    return { id: p.id, title: "🌐 Tradução", footer: rodape, description: [
+      "**Para entender uma mensagem que não foi traduzida:**",
+      "🏳️ Reaja com a bandeira do seu país — a tradução chega no seu privado.",
+      "🌐 Ou segure a mensagem → **Apps** → **Translate**. Instalando a CYRON na sua conta, isso vale em qualquer servidor.",
+      "",
+      "**Botões que aparecem nas mensagens:**",
+      "🌐 **Menu de línguas** — escolha a sua e leia só você.",
+      "📝 **Ler imagem** — o texto de um print ou cartaz, na sua língua.",
+      "🖼️ **Ver na imagem** — a própria imagem com o texto trocado. *(Pro)*",
+      "🎧 **Ouvir traduzido** — o que foi dito num áudio, na sua língua. *(Pro)*",
+      "▶️ Link de YouTube, Twitch ou Vimeo toca aqui mesmo, sem sair do Discord.",
+    ].join("\n") };
+  }
+  if (p.id === "diversao") {
+    return { id: p.id, title: "🎮 Diversão e jogos", footer: rodape, description:
+      "Quando o chat está animado, um herói aparece e quem tocar primeiro leva a carta. Duelos, níveis e coleção valem em qualquer língua." };
+  }
+  if (p.id === "ferramentas") {
+    return { id: p.id, title: "🧰 Ferramentas", footer: rodape, description:
+      "Para o dia a dia do servidor: a hora de cada país, eventos com lembrete e sorteios." };
+  }
+  if (p.id === "admin") {
+    return { id: p.id, title: "⚙️ Quem administra", footer: rodape, description:
+      "Só quem administra o servidor vê estes comandos. O `/cyron` abre o painel com tudo: canais traduzidos, plano e limites." };
+  }
+  return { id: "inicio", title: "🌐 CYRON — Ajuda", footer: rodape, description: [
     "**1️⃣ Escolha a sua língua** no menu aqui embaixo.",
     "Pronto: os avisos e as salas do servidor aparecem para você já traduzidos.",
     "",
     "**✍️ Escreva normal, na sua língua.**",
     "O que você escreve chega traduzido para quem fala outra língua.",
     "",
-    "**Para entender uma mensagem que não foi traduzida:**",
-    "🏳️ Reaja com a bandeira do seu país — a tradução chega no seu privado.",
-    "🌐 Ou segure a mensagem → **Apps** → **Translate**.",
-    "",
-    "**Botões que aparecem nas mensagens:**",
-    "🌐 **Menu de línguas** — escolha a sua e leia só você.",
-    "📝 **Ler imagem** — o texto de um print ou cartaz, na sua língua.",
-    "🖼️ **Ver na imagem** — a própria imagem com o texto trocado. O que não dá para trocar ganha um número, com a tradução embaixo. *(Pro)*",
-    "🎧 **Ouvir traduzido** — o que foi dito num áudio, na sua língua. *(Pro)*",
-    "▶️ Link de YouTube, Twitch ou Vimeo toca aqui mesmo, sem sair do Discord.",
-    "",
-    "**Comandos:**",
-    "`/mylanguage` — trocar de língua, quantas vezes quiser.",
-    "`/help` — esta tela.",
-  ];
-  if (souAdmin) {
-    linhas.push(
-      "",
-      "— — —",
-      "**Você administra este servidor:** use `/cyron` para escolher quais canais eu traduzo, ligar o tradutor por mensagem e ver os limites do plano.");
-  }
+    "**📖 Todos os comandos** estão nas páginas do menu: 🌐 Tradução · 🎮 Diversão e jogos · 🧰 Ferramentas" +
+      (souAdmin ? " · ⚙️ Quem administra." : "."),
+  ].join("\n") };
+}
+
+function menuDaAjuda(atual, souAdmin) {
+  return { type: 1, components: [{ type: 3, custom_id: "ajuda:pagina", placeholder: "📖 Páginas da ajuda",
+    options: PAGINAS_DA_AJUDA.filter((p) => !p.admin || souAdmin)
+      .map((p) => ({ label: p.nome, value: p.id, emoji: { name: p.emoji }, default: p.id === atual })) }] };
+}
+
+/* A tela pronta: as frases traduzidas, as linhas de comando ja' na lingua,
+   o menu de paginas e -- na primeira -- o menu de idioma. */
+async function telaDoHelp(pagina, { souAdmin, idioma, motor }) {
+  const p = paginaDaAjuda(pagina, souAdmin);
+  const { id, ...molde } = p;
+  const embed = { ...(await traduzirEmbed(molde, idioma, motor)) };
+  const linhas = linhasDaAjuda(id, souAdmin, idioma);
+  if (linhas.length) embed.description = `${embed.description}\n\n${linhas.join("\n")}`.slice(0, 4000);
   return {
-    title: "🌐 CYRON",
-    description: linhas.join("\n"),
-    footer: { text: "Só você está vendo esta mensagem." },
+    embeds: [{ color: COR, ...embed }],
+    components: [await traduzirLinha(menuDaAjuda(id, souAdmin), idioma), ...(id === "inicio" ? menuIdioma() : [])],
   };
+}
+
+async function cliqueAjuda(inter) {
+  await inter.deferUpdate();
+  const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
+  const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  contarUso("ajuda-pagina", inter.guildId);
+  return inter.editReply(await telaDoHelp(String(inter.values?.[0] || "inicio"),
+    { souAdmin, idioma, motor: await motorDoGuild(inter.guildId) }));
 }
 
 /* ---------------- primeiro contato, no privado ----------------
@@ -21901,11 +22002,7 @@ async function comandoAjuda(inter) {
   await inter.deferReply({ flags: 64 });
   const idioma = await idiomaDoJogador(inter.user.id, inter.locale);
   const souAdmin = !!inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-  const embed = await traduzirEmbed(paginaDoMembro(souAdmin), idioma, await motorDoGuild(inter.guildId));
-  return inter.editReply({
-    embeds: [{ color: COR, ...embed }],
-    components: menuIdioma(),
-  });
+  return inter.editReply(await telaDoHelp("inicio", { souAdmin, idioma, motor: await motorDoGuild(inter.guildId) }));
 }
 
 /* A arena em qualquer sala, e ja' na lingua de quem chamou.
@@ -22309,6 +22406,7 @@ client.on("interactionCreate", async (inter) => {
       return;
     }
     if (inter.isStringSelectMenu()) {
+      if (inter.customId === "ajuda:pagina") return await cliqueAjuda(inter);
       if (inter.customId === "escolher-idioma") return await cliqueEscolherIdioma(inter);
       if (inter.customId.startsWith("traduzir-msg:")) return await cliqueTraduzirMsg(inter);
       if (inter.customId.startsWith("traduzir-fixo:")) return await cliqueTraduzirFixo(inter);
@@ -23961,7 +24059,7 @@ const GLOBAIS_DO_CYRON = soNoServidor(comLinguas([
   },
   {
     name: "help",
-    description: "Como usar a CYRON / How to use CYRON",
+    description: "Todos os comandos e como usar a CYRON / All commands and how to use CYRON",
     dmPermission: false,
   },
   {
