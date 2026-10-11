@@ -1678,8 +1678,43 @@ async function estourouACota(servidorId, teto) {
   return (await jaGastouHoje(servidorId)) >= teto;
 }
 
+/* ---------------- quem traduz pela CONTA ----------------
+
+   Instalada na conta da pessoa, a CYRON traduz em servidor que nao e' dela e
+   em conversa privada -- lugares sem linha no banco, sem plano e sem a cota
+   do servidor. Sem teto proprio, cada pessoa que instalasse gastaria a minha
+   chave sem limite, e uma onda de gente nova esvaziaria o mes dos servidores
+   que de fato tem a CYRON.
+
+   O teto NAO corta a traducao: passado ele, a chave sai da fila so' para essa
+   pessoa e a fala segue pelo gratuito, como em servidor que estourou a dele.
+   Um por pessoa, para um so' nao gastar o de todos, e um de todos juntos,
+   para a soma nao crescer sem freio.
+
+   Em memoria, e nao no banco: reiniciar zera o dia, e isso e' aceitavel --
+   o pior caso e' um pouco mais de chave num dia, nunca um bot que nao
+   traduz. */
+const COTA_DA_CONTA = 2000;    // letras da minha chave por pessoa por dia
+const COTA_DAS_CONTAS = 10000; // e de todas as contas juntas
+const gastoDasContas = new Map(); // `${userId}|${dia}` e `*|${dia}` -> letras
+
+function motorDaConta(userId) {
+  return { tipo: "auto", conta: String(userId) };
+}
+
+function contaEstourou(userId, dia = hojeISO()) {
+  return (gastoDasContas.get(`${userId}|${dia}`) || 0) >= COTA_DA_CONTA ||
+    (gastoDasContas.get(`*|${dia}`) || 0) >= COTA_DAS_CONTAS;
+}
+
+function somarGastoDaConta(userId, quantos, dia = hojeISO()) {
+  for (const k of [`${userId}|${dia}`, `*|${dia}`]) gastoDasContas.set(k, (gastoDasContas.get(k) || 0) + quantos);
+  for (const k of gastoDasContas.keys()) if (!k.endsWith(`|${dia}`)) gastoDasContas.delete(k);
+}
+
 async function tentarChavesDoDono(texto, alvo, motor) {
   if (await estourouACota(motor.servidorId, motor.cotaDoDono)) return null;
+  if (motor.conta && contaEstourou(motor.conta)) return null;
   for (const reserva of motoresDoDono()) {
     if (estaDescansando(`dono:${reserva.tipo}`)) continue;
     try {
@@ -1687,6 +1722,7 @@ async function tentarChavesDoDono(texto, alvo, motor) {
       if (saiu) {
         anotarUso(motor.servidorId, `dono-${reserva.tipo}`, { caracteres: texto.length, traducoes: 1 });
         somarGasto(motor.servidorId, texto.length);
+        if (motor.conta) somarGastoDaConta(motor.conta, texto.length);
         return saiu;
       }
     } catch (e) {
@@ -17352,6 +17388,7 @@ const NOMES_DAS_FUNCOES = {
   audio: "🎧 Ouvir áudio",
   "duelo-chamada": "⚔️ A CYRON chamou o chat para duelar",
   "duelo-chamada-aceita": "⚔️ Alguém aceitou a chamada da CYRON",
+  "traduzir-na-conta": "📲 Traduzir pela conta (fora dos servidores da CYRON)",
 };
 
 function nomeDaFuncao(recurso) {
@@ -17590,6 +17627,14 @@ const PERMISSOES_DO_CONVITE = "327223209040";
 function linkDeConvite() {
   return `https://discord.com/oauth2/authorize?client_id=${client.user.id}` +
     `&permissions=${PERMISSOES_DO_CONVITE}&scope=bot%20applications.commands`;
+}
+
+/* O convite da CONTA: a CYRON instalada na pessoa, e nao num servidor.
+   Sem `bot` e sem permissao nenhuma -- so' os comandos --, entao qualquer um
+   instala, ADM ou nao, e nada muda em servidor nenhum. Ver ligarNaConta. */
+function linkDaConta() {
+  return `https://discord.com/oauth2/authorize?client_id=${client.user.id}` +
+    "&integration_type=1&scope=applications.commands";
 }
 
 /* Botoes da ficha do cliente.
@@ -19564,10 +19609,11 @@ async function rpc(fn, corpo) {
 /* ---------------- quem atende cada interacao ------------------------------ */
 
 /* Responder ja traduzido pro idioma de quem clicou. */
-async function responder(inter, embed, { efemera = true, idioma } = {}) {
+async function responder(inter, embed, { efemera = true, idioma, componentes } = {}) {
   const alvo = idioma ?? await idiomaDoJogador(inter.user.id, inter.locale);
-  const final = await traduzirEmbed(embed, alvo, await motorDoGuild(inter.guildId));
-  const carga = { embeds: [{ color: COR, ...final }] };
+  const motor = foraDaCyron(inter) ? motorDaConta(inter.user.id) : await motorDoGuild(inter.guildId);
+  const final = await traduzirEmbed(embed, alvo, motor);
+  const carga = { embeds: [{ color: COR, ...final }], ...(componentes?.length ? { components: componentes } : {}) };
   if (inter.deferred || inter.replied) return inter.editReply(carga);
   return inter.reply({ ...carga, flags: efemera ? 64 : undefined });
 }
@@ -19987,7 +20033,7 @@ function telaDoIdioma() {
 
 /* Com a IA ligada, a apresentacao conta que da' para perguntar. Sem ela,
    nao promete: a pergunta cairia no seletor de traducao. */
-function paginaDeApresentacao(comIA = false) {
+function paginaDeApresentacao(comIA = false, naConta = false) {
   return {
     title: "🌐 CYRON",
     description: [
@@ -19999,6 +20045,8 @@ function paginaDeApresentacao(comIA = false) {
       "**Você pode me testar agora:** me mande qualquer texto nesta conversa e eu " +
       "traduzo para você, em 20 idiomas.",
       ...(comIA ? ["", "**Ficou com alguma dúvida?** Me pergunte aqui mesmo, do seu jeito, e eu respondo."] : []),
+      ...(naConta ? ["", "**Você não precisa ser ADM:** toque em 📲 e me instale na sua conta. " +
+        "Depois, em qualquer servidor, segure uma mensagem → Apps → Translate, e só você vê a tradução."] : []),
       "",
       "— — —",
       "",
@@ -20032,8 +20080,8 @@ function botoesDaPergunta() {
 
 async function telaDeApresentacao(idioma) {
   return {
-    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDeApresentacao(await iaPronta()), idioma, MOTOR_AUTO)) }],
-    components: [await traduzirLinha(botoesDaPergunta(), idioma)],
+    embeds: [{ color: COR, ...(await traduzirEmbed(paginaDeApresentacao(await iaPronta(), contaLigada), idioma, MOTOR_AUTO)) }],
+    components: [await traduzirLinha(botoesDaPergunta(), idioma), ...(contaLigada ? [botaoDaConta()] : [])],
   };
 }
 
@@ -20582,7 +20630,7 @@ function vaiParaAIA(texto, conversa, agora = Date.now()) {
 const GOLPES_DO_MENU_DE_CONTEXTO = {
   "Criar evento": "lê a mensagem (texto ou print do jogo) e monta um evento com a hora certa",
 };
-function roteiroDaIA({ convite = "", suporte = "", beta = "" } = {}) {
+function roteiroDaIA({ convite = "", conta = "", suporte = "", beta = "" } = {}) {
   const pt = (t) => String(t || "").split(" / ")[0].trim();
   const preco = (f) => `${PRECOS[f].pt.replace("/mês", "")} ou ${PRECOS[f].en.replace("/mês", "")} por mês`;
   const trocar = (t) => String(t)
@@ -20632,7 +20680,8 @@ function roteiroDaIA({ convite = "", suporte = "", beta = "" } = {}) {
     "",
     "COMANDOS",
     "- /mylanguage: escolher a sua língua (vale em todos os servidores)",
-    "- Apps → Translate (toque e segure numa mensagem; no PC, botão direito): traduz aquela mensagem só para você",
+    "- Apps → Translate (toque e segure numa mensagem; no PC, botão direito): traduz aquela mensagem só para você" +
+      (conta ? `. Instalada na conta da pessoa (${conta}, não precisa ser ADM), vale em qualquer servidor, até onde eu não estou, e em conversa privada ou grupo` : ""),
     ...comandos,
     "",
     "O QUE EU FAÇO (resumo; o detalhe da função que a pessoa cita vem junto com a pergunta)",
@@ -20665,7 +20714,8 @@ function roteiroAtual() {
   const ate = venceEm(BETA_ATE);
   const beta = BETA || ate ? "Agora a CYRON está em beta: todo servidor tem a Aliança liberada de graça" +
     (ate ? ` até ${new Date(ate).toISOString().slice(0, 10).split("-").reverse().join("/")}.` : " enquanto o beta durar.") : "";
-  const links = { convite: client.user ? linkDeConvite() : "", suporte: SUPORTE.link || "", beta };
+  const links = { convite: client.user ? linkDeConvite() : "", conta: client.user && contaLigada ? linkDaConta() : "",
+    suporte: SUPORTE.link || "", beta };
   const chave = JSON.stringify(links);
   if (roteiroGuardado.chave !== chave) Object.assign(roteiroGuardado, { chave, texto: roteiroDaIA(links) });
   return roteiroGuardado.texto;
@@ -21048,9 +21098,99 @@ async function comandoArena(inter) {
   return mostrarArena(inter, servidor, escolhido || idiomaDoAplicativo(inter.locale) || "en", !!escolhido);
 }
 
+/* ---------------- Traduzir em qualquer lugar, pela conta ----------------
+
+   Instalada na CONTA (ver ligarNaConta), a CYRON vai com a pessoa: o
+   Traduzir aparece em servidor onde ela nao esta', no privado entre amigos e
+   em grupo. E' o que faz o bot circular sem depender de um ADM: quem gostou
+   leva para onde conversa, e os outros veem a CYRON funcionando.
+
+   Onde ela nao esta', nao ha' servidor meu -- nem plano, nem cota de
+   servidor, nem permissao de ler a sala. O que chega e' so' a mensagem que a
+   pessoa escolheu, e a resposta so' ela ve. */
+
+/* Fora de um servidor da CYRON? O privado COMIGO (contexto 1) nao conta como
+   fora: ali sempre foi meu, com tudo que ja' funcionava. */
+function foraDaCyron(inter) {
+  if (inter.guildId) return !client.guilds.cache.has(inter.guildId);
+  return inter.context != null && inter.context !== 1;
+}
+
+/* Quem pode trazer a CYRON para o servidor alheio ganha o botao, ja' com o
+   servidor escolhido. Quem nao pode, nao: o Discord recusaria la' na frente,
+   e o botao so' ensinaria que ele nao funciona. Bilingue de proposito, para
+   nao gastar traducao num rotulo. */
+function trazerParaOServidor(inter) {
+  if (!inter.guildId || !inter.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return [];
+  return [{ type: 1, components: [{ type: 2, style: 5, emoji: { name: "➕" },
+    label: "CYRON neste servidor · Add to this server",
+    url: `${linkDeConvite()}&guild_id=${inter.guildId}&disable_guild_select=true` }] }];
+}
+
+/* O caminho de volta: quem traduziu num servidor da CYRON fica sabendo que
+   pode levar o Traduzir para qualquer lugar. Uma vez por dia por pessoa --
+   o mesmo botao embaixo de toda traducao viraria paisagem -- e nunca para
+   quem ja' instalou na conta. */
+const OFERTA_DA_CONTA = 24 * 60 * 60 * 1000;
+const ofertasDaConta = new Map(); // userId -> quando ofereci
+
+function ofertaDaConta(inter, agora = Date.now()) {
+  if (!contaLigada || inter.authorizingIntegrationOwners?.userId) return [];
+  const id = String(inter.user.id);
+  const ultima = ofertasDaConta.get(id);
+  if (ultima != null && agora - ultima < OFERTA_DA_CONTA) return [];
+  for (const [k, t] of ofertasDaConta) if (agora - t >= OFERTA_DA_CONTA) ofertasDaConta.delete(k);
+  ofertasDaConta.set(id, agora);
+  return [botaoDaConta()];
+}
+
+/* Bilingue de proposito, como o "CYRON neste servidor": um rotulo que nao
+   gasta traducao em lugar nenhum onde aparece. */
+function botaoDaConta() {
+  return { type: 1, components: [{ type: 2, style: 5, emoji: { name: "📲" },
+    label: "Traduzir em qualquer servidor · Translate anywhere", url: linkDaConta() }] };
+}
+
+/* O Traduzir onde a CYRON nao esta'. So' TEXTO: ler imagem e ouvir audio
+   usam as minhas cotas da Azure, que sao uma so' para todos os servidores, e
+   gastar isso com quem nao tem a CYRON seria tirar dos que tem. Ali fica o
+   convite para trazer a CYRON, que e' onde essas duas funcionam. */
+async function traduzirPelaConta(inter, texto, idioma) {
+  contarUso("traduzir-na-conta");
+  const motor = motorDaConta(inter.user.id);
+  const trazer = trazerParaOServidor(inter);
+  const aviso = async (embed) => inter.editReply({
+    embeds: [{ color: COR, ...(await traduzirEmbed(embed, idioma, motor)) }], components: trazer });
+
+  if (!texto) {
+    const midia = audioDaMensagem(inter.targetMessage) || imagemDaMensagem(inter.targetMessage);
+    return aviso(midia
+      ? { title: "🖼️ Imagem e áudio: só onde a CYRON está",
+          description: "Aqui eu traduzo o texto das mensagens. Ler o que está escrito numa imagem e " +
+            "ouvir um áudio funcionam nos servidores que têm a CYRON." }
+      : { title: "🤔 Mensagem vazia", description: "Essa mensagem não tem texto para traduzir." });
+  }
+
+  const t = await traduzirLongo(texto, idioma, motor);
+  if (!t) return aviso({ title: "❌ Não deu", description: "Não consegui traduzir agora. Tente de novo em instantes." });
+  if (t.trim() === texto.trim()) {
+    return aviso({ title: `🌐 Já está em ${nomeDoIdioma(idioma)}`,
+      description: "Esta mensagem já está no idioma em que eu falo com você.\n\n" +
+        "Se você lê em outra língua, troque com **/mylanguage** — eu passo a traduzir tudo para ela." });
+  }
+  const rodape = await traduzirEmbed({ footer: { text: "Só você está vendo isto · Quer mudar o idioma? Use /mylanguage" } }, idioma, motor);
+  return inter.editReply({
+    embeds: [{ color: COR, title: `🌐 ${nomeDoIdioma(idioma)}`, description: t.slice(0, 3800), footer: rodape.footer }],
+    components: trazer,
+  });
+}
+
 async function comandoDeInteracao(inter) {
   const nome = inter.commandName;
-  contarUso(inter.isMessageContextMenuCommand?.() ? `menu:${nome}` : `cmd:${nome}`, inter.guildId);
+  /* Servidor que nao e' meu (a CYRON veio na conta de quem chamou) conta sem
+     servidor: ele nao tem linha no banco, e procura-lo a cada minuto seria
+     uma ida a' rede por servidor alheio. */
+  contarUso(inter.isMessageContextMenuCommand?.() ? `menu:${nome}` : `cmd:${nome}`, foraDaCyron(inter) ? null : inter.guildId);
 
   /* Rotear PRIMEIRO, ler o banco depois.
 
@@ -21156,6 +21296,7 @@ async function comandoDeInteracao(inter) {
        avisos, que sao o texto que mais gente precisa ler traduzido. */
     const texto = textoDaMensagem(inter.targetMessage);
     await inter.deferReply({ flags: 64 });
+    if (foraDaCyron(inter)) return traduzirPelaConta(inter, texto, await lingua());
     if (!texto && audioDaMensagem(inter.targetMessage)) {
       /* So' audio: o 🎧 pelo menu, para servidor sem sala espelhada. A lingua
          de quem gravou vem da escolha dele no bot; copia de webhook nao tem
@@ -21197,7 +21338,8 @@ async function comandoDeInteracao(inter) {
     return responder(inter, t
       ? { title: `🌐 ${nomeDoIdioma(await lingua())}`, description: t.slice(0, 3800),
           footer: { text: "Quer mudar o idioma? Use /mylanguage" } }
-      : { title: "❌ Não deu", description: "Não consegui traduzir agora." }, { idioma: "pt" });
+      : { title: "❌ Não deu", description: "Não consegui traduzir agora." },
+    { idioma: "pt", componentes: t ? ofertaDaConta(inter) : [] });
   }
 
   /* /portal, /player, /settings, /events e /ranking: comandos da alianca
@@ -22942,7 +23084,18 @@ function comLinguas(defs) {
   });
 }
 
-const GLOBAIS_DO_CYRON = comLinguas([
+/* So' no servidor, escrito com todas as letras.
+
+   Comando novo sem `integration_types` nasce com os tipos do APLICATIVO -- e
+   com a instalacao na conta ligada (ver ligarNaConta), isso poria /cyron,
+   /niveis e /duelo na conta de todo mundo, em lugar onde eles so' saberiam
+   dizer "isto so' funciona num servidor". O /admin fica de fora: ele tambem
+   e' criado como comando de servidor, e la' o campo nao existe. */
+function soNoServidor(defs) {
+  return defs.map((c) => (c.name === "admin" ? c : { ...c, integrationTypes: [0] }));
+}
+
+const GLOBAIS_DO_CYRON = soNoServidor(comLinguas([
   {
     name: "cyron",
     description: "Abrir o painel de configuração da CYRON",
@@ -23197,7 +23350,7 @@ const GLOBAIS_DO_CYRON = comLinguas([
     description: "Painel do dono da CYRON",
     dmPermission: false,
   },
-]);
+]));
 
 /* O /admin some da lista de quem nao e' o dono.
 
@@ -23216,7 +23369,9 @@ async function arrumarOndeMoraOAdmin() {
     const gid = await guildDoPainel();
 
     if (!gid) {
-      if (!noGlobal) await client.application.commands.create(def);
+      /* Global so' ate' o painel existir, e mesmo assim so' no servidor: na
+         conta ele apareceria para quem instalou, em todo lugar. */
+      if (!noGlobal) await client.application.commands.create({ ...def, integrationTypes: [0] });
       return;
     }
     const guild = client.guilds.cache.get(gid);
@@ -23253,6 +23408,79 @@ async function adminNoSuporte(def, gidDoPainel) {
   if ([...doGuild.values()].some((c) => c.name === "admin")) return;
   await guild.commands.create({ ...def, defaultMemberPermissions: PermissionFlagsBits.Administrator });
   console.log(`comandos: /admin também em ${guild.name} (só administradores o veem)`);
+}
+
+/* ---------------- a CYRON instalada na CONTA ----------------
+
+   Ate' aqui ela so' existia onde um ADM a convidou. O Discord tambem deixa
+   instalar um aplicativo na conta da pessoa: sem bot no servidor, sem
+   permissao nenhuma, so' os comandos -- e eles valem em qualquer servidor,
+   no privado e em grupo. Para um tradutor, e' a porta mais larga que existe:
+   quem nao e' ADM nao precisava de ninguem para comecar a usar.
+
+   Isto e' uma chave do aplicativo (o "User Install" do Portal), e ligo pelo
+   proprio bot, como a trava de HTTP: um passo a menos para o dono lembrar.
+   O que ja' estava no servidor (a chave "0") vai de volta exatamente como
+   veio -- e' o convite de todo mundo. */
+let contaLigada = false;
+
+/* Os dois que servem em qualquer lugar: o Traduzir e a escolha da lingua.
+   O resto depende de um servidor com a CYRON dentro (painel, niveis, duelo)
+   e fica so' no servidor -- comando que aparece e responde "so' funciona num
+   servidor" e' pior que comando nenhum. */
+const NA_CONTA = new Set(["Translate", "mylanguage"]);
+const TIPOS_NA_CONTA = [0, 1];       // instalada no servidor e na conta
+const LUGARES_NA_CONTA = [0, 1, 2];  // servidor, privado comigo, privado e grupo entre pessoas
+
+/* A configuracao nova, ou null quando nao ha' nada a mudar. Pura.
+
+   Com "Discord Provided Link" (a chave "0" com oauth2_install_params), a
+   conta ganha o dela, para o botao "Adicionar" do meu perfil oferecer as
+   duas. Com link proprio, vai vazia: o meu link ja' diz o que pede, e
+   parametro de instalacao ao lado de link proprio o Discord recusa. */
+function configComConta(app) {
+  const atual = app?.integration_types_config || {};
+  if (atual["1"]) return null;
+  const doServidor = atual["0"] || {};
+  const daConta = app?.custom_install_url || !doServidor.oauth2_install_params
+    ? {} : { oauth2_install_params: { scopes: ["applications.commands"], permissions: "0" } };
+  return { ...atual, 0: doServidor, 1: daConta };
+}
+
+async function ligarNaConta() {
+  const cabecalho = { Authorization: `Bot ${TOKEN}`, "Content-Type": "application/json" };
+  try {
+    const app = await (await chamarDiscord("/applications/@me", { headers: cabecalho })).json();
+    const nova = configComConta(app);
+    if (nova) {
+      await chamarDiscord("/applications/@me", {
+        method: "PATCH", headers: cabecalho, body: JSON.stringify({ integration_types_config: nova }),
+      });
+      console.log("conta: a instalação na conta foi ligada");
+    }
+    contaLigada = true;
+  } catch (e) {
+    /* Sem ela, tudo continua como era: os comandos ficam so' no servidor.
+       Marcar o Translate para a conta com a chave desligada o Discord
+       recusaria -- por isso comandosNaConta pergunta por contaLigada. */
+    const porque = String(e?.message || e).slice(0, 300);
+    console.error("conta: não consegui ligar a instalação na conta:", porque);
+    /* Um aviso por dia, e nao um por partida: cada publicacao reinicia o bot. */
+    if ((await ajustes().catch(() => ({})))["aviso:conta"] === hojeISO()) return;
+    await porAjuste("aviso:conta", hojeISO()).catch(() => {});
+    await avisarNoPainel(CANAL_ERROS, { embeds: [{
+      color: 0xE0A63A,
+      title: "📲 Não consegui ligar a CYRON na conta das pessoas",
+      description: "O Traduzir continua funcionando nos servidores com a CYRON; só não vale ainda fora deles.\n\n" +
+        "Para ligar à mão: Portal do Desenvolvedor → o aplicativo → **Installation** → marque **User Install** " +
+        "e salve. Na próxima partida eu ponho o Traduzir na conta sozinha.\n\n" + `\`${porque}\``,
+      timestamp: new Date().toISOString(),
+    }] }).catch(() => {});
+  }
+}
+
+function mesmaLista(a, b) {
+  return JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
 }
 
 /* Comandos que existiram e sairam: sem isto, o Discord continuaria
@@ -23295,6 +23523,24 @@ async function garantirComandosGlobais() {
     }
   } catch (e) {
     console.error("comandos: não consegui publicar os globais:", e?.message || e);
+  }
+}
+
+/* O Translate e o /mylanguage tambem na conta -- so' com ela ligada, e so'
+   DEPOIS de garantirComandosGlobais ter marcado os outros como "so' no
+   servidor". Edito so' os dois campos: o resto deles (nome nas linguas, a
+   lista de idiomas) foi publicado fora daqui e esta' certo. */
+async function comandosNaConta() {
+  if (!contaLigada) return;
+  try {
+    const globais = await client.application.commands.fetch();
+    for (const publicado of [...globais.values()].filter((c) => NA_CONTA.has(c.name))) {
+      if (mesmaLista(publicado.integrationTypes, TIPOS_NA_CONTA) && mesmaLista(publicado.contexts, LUGARES_NA_CONTA)) continue;
+      await publicado.edit({ integrationTypes: TIPOS_NA_CONTA, contexts: LUGARES_NA_CONTA });
+      console.log(`comandos: ${publicado.name} agora vale na conta também`);
+    }
+  } catch (e) {
+    console.error("comandos: não consegui pôr o Traduzir na conta:", e?.message || e);
   }
 }
 
@@ -23609,6 +23855,8 @@ client.once("clientReady", () => {
 
   separarComandos()
     .then(() => garantirComandosGlobais())
+    .then(() => ligarNaConta())
+    .then(() => comandosNaConta())
     .then(() => arrumarOndeMoraOAdmin())
     /* Convite do suporte vencido ao subir: refeito ja', sem esperar o dono
        apertar Montar suporte. O botao 💬 de todos os servidores aponta

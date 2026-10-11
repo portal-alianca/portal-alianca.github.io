@@ -562,6 +562,22 @@ html[lang="en"] [data-en]{display:revert}
   </div>
 
   <div class="msg pergunta">
+    <div class="av" style="background:#E67E22">D</div>
+    <div>
+      <span class="nome" style="color:#F0B27A">Duda</span><span class="hora">21:13</span>
+      <p><span data-pt>não sou ADM de servidor nenhum. dá pra usar?</span><span data-en>I'm not an admin anywhere. can I still use it?</span></p>
+    </div>
+  </div>
+  <div class="msg">
+    <img class="av bot" src="./img/cyron.png" alt="" width="40" height="40">
+    <div>
+      <span class="nome bot-nome">CYRON</span><span class="tag">BOT</span><span class="hora">21:13</span>
+      <p><span data-pt>Dá. Me instale na sua conta e eu vou com você: em qualquer servidor — até onde eu não estou —, no privado e em grupo, segure uma mensagem → <b>Apps</b> → <b>Translate</b>. Só você vê a tradução, e ninguém precisa te dar permissão.</span><span data-en>Yes. Add me to your account and I go with you: in any server — even where I'm not —, in DMs and group chats, hold a message → <b>Apps</b> → <b>Translate</b>. Only you see the translation, and nobody has to give you permission.</span></p>
+      <div class="botoes"><a class="bt bt-1 na-conta" href="#"><span data-pt>📲 Instalar na minha conta</span><span data-en>📲 Add to my account</span></a></div>
+    </div>
+  </div>
+
+  <div class="msg pergunta">
     <div class="av" style="background:#F1C40F; color:#222">J</div>
     <div>
       <span class="nome" style="color:#F7DC6F">Jo</span><span class="hora">21:15</span>
@@ -614,6 +630,13 @@ var CONVITE = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
   "&permissions=" + PERMISSOES + "&scope=bot%20applications.commands";
 
 [].forEach.call(document.querySelectorAll(".convite"), function (a) { a.href = CONVITE; });
+
+/* A CYRON na CONTA de quem instala, e não num servidor: sem bot e sem
+   permissão nenhuma, só o Translate e o /mylanguage, que passam a valer em
+   qualquer servidor. É a porta de quem não é ADM. */
+var NA_CONTA = "https://discord.com/oauth2/authorize?client_id=" + CLIENT_ID +
+  "&integration_type=1&scope=applications.commands";
+[].forEach.call(document.querySelectorAll(".na-conta"), function (a) { a.href = NA_CONTA; });
 
 /* ---- o menu ☰ do celular ---- */
 var botaoMenu = document.querySelector(".menu-bt");

@@ -11560,7 +11560,7 @@ function conferirCartao(onde, embed, componentes = []) {
   globalThis.LEMBRETES = carregar(["LEMBRETES"]).LEMBRETES;
   globalThis.TRADUCOES_DO_EVENTO = (0, eval)(pedaco("TRADUCOES_DO_EVENTO").replace(/^var TRADUCOES_DO_EVENTO = /, "") + "()");
   Object.assign(globalThis, carregar(["SUPORTE_HORAS", "TRADUCOES_DAS_BOAS_VINDAS",
-    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "locaisDoDiscord", "comLinguas", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
+    "TRADUCOES_DA_HORA", "OPCAO_DE_MEMBRO", "locaisDoDiscord", "comLinguas", "soNoServidor", "GLOBAIS_DO_CYRON", "PRECOS", "SITE_DO_CYRON", "LINGUAS_MENU", "ESPACOS_ORDEM", "DUELO_VIDA",
     "DUELO_ENERGIA_INICIAL", "DUELO_ENERGIA_TURNO", "DUELO_ENERGIA_MAX", "DUELO_TEMPO", "DUELO_AUSENCIAS",
     "DUELO_MORTE_SUBITA", "DUELO_XP", "DUELO_TREINOS_DIA", "DUELO_DUELOS_DIA", "PATENTES", "descricaoDaHabilidade",
     "venceEm", "hojeISO", "botaoDeSuporte"]));
@@ -11570,6 +11570,9 @@ function conferirCartao(onde, embed, componentes = []) {
     "GOLPES_DO_MENU_DE_CONTEXTO", "roteiroDaIA", "primeiraFrase", "roteiroGuardado", "roteiroAtual", "OUTROS_NOMES_DOS_HEROIS",
     "golpesCitados", "PALAVRAS_QUE_NAO_DIZEM_NADA", "funcoesCitadas", "perguntarAIA", "limparRespostaDaIA", "filaDaIA", "naFilaDaIA", "responderComIA",
     "conferirChaveDaIA", "janelaDaIA", "iaPronta", "TRADUZIR_A_PERGUNTA"]);
+  /* A instalação na conta liga na partida (ligarNaConta); aqui ela começa
+     desligada, como num bot que ainda não conseguiu falar com o Discord. */
+  globalThis.contaLigada = false;
 
   /* ---- o que é pergunta ---- */
   for (const t of ["como ligo os níveis?", "Como ligo os níveis", "how do I change my language", "Wie funktioniert das Duell",
@@ -12285,6 +12288,212 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("e todo XP de duelo também vai para os níveis do servidor", /xpDoServidorPeloDuelo\(estado, l\.userId, ganho\)/.test(limpo));
   verdade("os cliques da chamada são tratados antes de procurar o duelo", /if \(acao === "cyron"\) return aceitarChamada\(inter\);[^]{0,200}const estado = duelos\.get\(id\)/.test(limpo));
   verdade("todo duelo que começa marca o servidor (a chamada não interrompe)", /async function comecarDuelo\(estado\) \{\s*clearTimeout\(estado\.expira\);\s*ultimoDueloNoServidor\.set/.test(limpo));
+}
+
+/* ====== A CYRON NA CONTA DA PESSOA ======
+ *
+ * Instalada na conta, o Translate e o /mylanguage valem em qualquer servidor,
+ * no privado e em grupo, sem ninguém precisar ser ADM. Fora dos servidores da
+ * CYRON ela traduz só texto, a minha chave tem teto por pessoa e de todas as
+ * contas juntas (passado ele, segue pelo gratuito), e os outros comandos ficam
+ * só no servidor. */
+{
+  const antes = { client: globalThis.client, contaLigada: globalThis.contaLigada, hojeISO: globalThis.hojeISO,
+    chamarDiscord: globalThis.chamarDiscord, ajustes: globalThis.ajustes, porAjuste: globalThis.porAjuste,
+    avisarNoPainel: globalThis.avisarNoPainel, CANAL_ERROS: globalThis.CANAL_ERROS, TOKEN: globalThis.TOKEN,
+    traduzirLongo: globalThis.traduzirLongo, traduzirEmbed: globalThis.traduzirEmbed, nomeDoIdioma: globalThis.nomeDoIdioma,
+    audioDaMensagem: globalThis.audioDaMensagem, imagemDaMensagem: globalThis.imagemDaMensagem, COR: globalThis.COR,
+    estourouACota: globalThis.estourouACota, motoresDoDono: globalThis.motoresDoDono, MOTORES: globalThis.MOTORES,
+    estaDescansando: globalThis.estaDescansando, anotarUso: globalThis.anotarUso, somarGasto: globalThis.somarGasto };
+  try {
+    globalThis.client = { user: { id: "999" }, guilds: { cache: new Map([["g-cyron", { id: "g-cyron" }]]) } };
+    const C = carregar(["PERMISSOES_DO_CONVITE", "linkDeConvite", "linkDaConta", "COTA_DA_CONTA", "COTA_DAS_CONTAS",
+      "gastoDasContas", "motorDaConta", "contaEstourou", "somarGastoDaConta", "tentarChavesDoDono", "NA_CONTA",
+      "TIPOS_NA_CONTA", "LUGARES_NA_CONTA", "configComConta", "ligarNaConta", "mesmaLista", "comandosNaConta",
+      "foraDaCyron", "trazerParaOServidor", "OFERTA_DA_CONTA", "ofertasDaConta", "ofertaDaConta", "botaoDaConta",
+      "traduzirPelaConta", "NOMES_DAS_FUNCOES"]);
+
+    /* ---- os links ---- */
+    const conta = C.linkDaConta();
+    verdade("o link da conta pede a instalação na CONTA (integration_type=1)", conta.includes("integration_type=1") && conta.includes("client_id=999"));
+    verdade("e só os comandos: sem bot e sem permissão nenhuma",
+      conta.includes("scope=applications.commands") && !conta.includes("bot") && !conta.includes("permissions="));
+
+    /* ---- ligar a chave do aplicativo ---- */
+    const doServidor = { oauth2_install_params: { scopes: ["applications.commands", "bot"], permissions: "327223209040" } };
+    const nova = C.configComConta({ integration_types_config: { 0: doServidor } });
+    ok("o convite do servidor volta exatamente como veio", nova[0], doServidor);
+    ok("e a conta ganha só os comandos, sem permissão", nova[1], { oauth2_install_params: { scopes: ["applications.commands"], permissions: "0" } });
+    ok("com link próprio de instalação, a conta vai sem parâmetro (o Discord recusaria)",
+      C.configComConta({ custom_install_url: "https://x", integration_types_config: { 0: {} } })[1], {});
+    ok("já ligada: nada a mudar", C.configComConta({ integration_types_config: { 0: doServidor, 1: {} } }), null);
+
+    const pedidos = [];
+    const marcas = {};
+    const paineis = [];
+    globalThis.TOKEN = "t"; globalThis.CANAL_ERROS = "erros";
+    globalThis.hojeISO = () => "2026-10-11";
+    globalThis.ajustes = async () => marcas;
+    globalThis.porAjuste = async (k, v) => { marcas[k] = v; };
+    globalThis.avisarNoPainel = async (canal, m) => { paineis.push(m); };
+    globalThis.chamarDiscord = async (caminho, op = {}) => {
+      pedidos.push([op.method || "GET", caminho, op.body ? JSON.parse(op.body) : null]);
+      return { json: async () => ({ integration_types_config: { 0: doServidor } }) };
+    };
+    globalThis.contaLigada = false;
+    await C.ligarNaConta();
+    verdade("liga a instalação na conta pelo próprio bot", globalThis.contaLigada === true);
+    ok("com um PATCH no aplicativo, levando o do servidor junto",
+      pedidos.map(([m, c, b]) => [m, c, b && Object.keys(b.integration_types_config)]), [["GET", "/applications/@me", null], ["PATCH", "/applications/@me", ["0", "1"]]]);
+
+    globalThis.contaLigada = false;
+    globalThis.chamarDiscord = async () => { throw new Error("PATCH 400 recusado"); };
+    await C.ligarNaConta();
+    await C.ligarNaConta();
+    verdade("se o Discord recusa, nada vai para a conta", globalThis.contaLigada === false);
+    ok("e o dono fica sabendo uma vez por dia, com o caminho à mão", paineis.length, 1);
+    verdade("o aviso ensina a ligar no Portal", /User Install/.test(paineis[0].embeds[0].description));
+
+    /* ---- só o Translate e o /mylanguage vão para a conta ---- */
+    const editados = [];
+    const cmd = (name, integrationTypes = [0], contexts = null) => ({ name, integrationTypes, contexts,
+      edit: async (d) => { editados.push([name, d]); } });
+    globalThis.client.application = { commands: { fetch: async () => new Map([
+      ["1", cmd("Translate")], ["2", cmd("mylanguage")], ["3", cmd("cyron")], ["4", cmd("duelo")],
+      ["5", cmd("hora", [0], [0, 1, 2])]]) } };
+    globalThis.contaLigada = false;
+    await C.comandosNaConta();
+    ok("com a conta desligada, nenhum comando é mexido", editados, []);
+    globalThis.contaLigada = true;
+    await C.comandosNaConta();
+    ok("ligada: o Translate e o /mylanguage valem no servidor, na conta e em todo lugar",
+      editados, [["Translate", { integrationTypes: [0, 1], contexts: [0, 1, 2] }], ["mylanguage", { integrationTypes: [0, 1], contexts: [0, 1, 2] }]]);
+    editados.length = 0;
+    globalThis.client.application.commands.fetch = async () => new Map([["1", cmd("Translate", [1, 0], [2, 1, 0])]]);
+    await C.comandosNaConta();
+    ok("já certo (em qualquer ordem): não edita de novo a cada partida", editados, []);
+
+    const soServidor = GLOBAIS_DO_CYRON.filter((c) => c.name !== "admin");
+    verdade("todos os outros comandos ficam só no servidor (senão nasceriam na conta também)",
+      soServidor.length > 10 && soServidor.every((c) => JSON.stringify(c.integrationTypes) === "[0]"));
+    verdade("o /admin fica sem o campo: ele também é criado como comando de servidor",
+      !("integrationTypes" in GLOBAIS_DO_CYRON.find((c) => c.name === "admin")));
+    verdade("nenhum dos de servidor é um dos da conta", soServidor.every((c) => !C.NA_CONTA.has(c.name)));
+
+    /* ---- onde a CYRON não está ---- */
+    verdade("servidor com a CYRON: é dela", !C.foraDaCyron({ guildId: "g-cyron" }));
+    verdade("servidor sem a CYRON: fora", C.foraDaCyron({ guildId: "g-alheio" }));
+    verdade("privado comigo (contexto 1): é meu, como sempre foi", !C.foraDaCyron({ guildId: null, context: 1 }));
+    verdade("privado ou grupo entre pessoas (contexto 2): fora", C.foraDaCyron({ guildId: null, context: 2 }));
+
+    const adm = { guildId: "g-alheio", memberPermissions: { has: (p) => p === PermissionFlagsBits.ManageGuild } };
+    const trazer = C.trazerParaOServidor(adm)[0].components[0];
+    verdade("quem administra o servidor alheio ganha o convite já com o servidor escolhido",
+      trazer.url.includes("guild_id=g-alheio") && trazer.url.includes("disable_guild_select=true") && trazer.url.includes("scope=bot"));
+    ok("quem não administra, não (o Discord recusaria lá na frente)",
+      C.trazerParaOServidor({ guildId: "g-alheio", memberPermissions: { has: () => false } }), []);
+    ok("no privado não há servidor para trazer", C.trazerParaOServidor({ guildId: null }), []);
+
+    /* ---- o teto da minha chave ---- */
+    C.gastoDasContas.clear();
+    verdade("pessoa nova: dentro do teto", !C.contaEstourou("u1", "2026-10-11"));
+    C.somarGastoDaConta("u1", C.COTA_DA_CONTA, "2026-10-11");
+    verdade("passou do dela: a chave sai da fila para ela", C.contaEstourou("u1", "2026-10-11"));
+    verdade("mas não para os outros", !C.contaEstourou("u2", "2026-10-11"));
+    for (let i = 0; i < 5; i++) C.somarGastoDaConta(`v${i}`, C.COTA_DAS_CONTAS / 5, "2026-10-11");
+    verdade("todas as contas juntas também têm teto", C.contaEstourou("u3", "2026-10-11"));
+    C.somarGastoDaConta("u1", 10, "2026-10-12");
+    verdade("dia novo: tudo de novo, e o dia velho sai da memória",
+      !C.contaEstourou("u3", "2026-10-12") && [...C.gastoDasContas.keys()].every((k) => k.endsWith("|2026-10-12")));
+
+    C.gastoDasContas.clear();
+    globalThis.hojeISO = () => "2026-10-11";
+    globalThis.estourouACota = async () => false;
+    globalThis.motoresDoDono = () => [{ tipo: "azure" }];
+    globalThis.MOTORES = { azure: { traduzir: async () => "ok" } };
+    globalThis.estaDescansando = () => false;
+    globalThis.anotarUso = () => {};
+    globalThis.somarGasto = () => {};
+    ok("pela conta, a chave traduz", await C.tentarChavesDoDono("x".repeat(1500), "en", C.motorDaConta("u9")), "ok");
+    ok("e o gasto fica na conta de quem pediu", C.gastoDasContas.get("u9|2026-10-11"), 1500);
+    await C.tentarChavesDoDono("x".repeat(600), "en", C.motorDaConta("u9"));
+    ok("passado o teto da pessoa, a chave devolve vazio (a fala segue pelo gratuito)",
+      await C.tentarChavesDoDono("oi", "en", C.motorDaConta("u9")), null);
+    ok("e servidor da CYRON não entra nessa conta", await C.tentarChavesDoDono("oi", "en", { tipo: "auto", servidorId: "s1" }), "ok");
+
+    /* ---- o convite de volta, nos servidores da CYRON ---- */
+    C.ofertasDaConta.clear();
+    const quem = (id, owners = {}) => ({ user: { id }, authorizingIntegrationOwners: owners });
+    globalThis.contaLigada = false;
+    ok("conta desligada: nada de oferta", C.ofertaDaConta(quem("a"), 0), []);
+    globalThis.contaLigada = true;
+    ok("quem já instalou na conta não vê a oferta", C.ofertaDaConta(quem("a", { userId: "a" }), 0), []);
+    const primeira = C.ofertaDaConta(quem("a"), 1000);
+    verdade("a primeira tradução do dia oferece levar o Traduzir para qualquer lugar",
+      primeira[0]?.components[0].url.includes("integration_type=1") && /Translate anywhere/.test(primeira[0].components[0].label));
+    ok("e não de novo no mesmo dia", C.ofertaDaConta(quem("a"), 1000 + 3600000), []);
+    verdade("no dia seguinte, sim", C.ofertaDaConta(quem("a"), 1000 + C.OFERTA_DA_CONTA).length === 1);
+    verdade("o rótulo cabe no botão (80)", C.botaoDaConta().components[0].label.length <= 80);
+
+    /* ---- o Traduzir onde a CYRON não está ---- */
+    globalThis.COR = 1;
+    globalThis.nomeDoIdioma = (c) => ({ en: "Inglês" })[c] || c;
+    globalThis.traduzirEmbed = async (e) => e;
+    const motores = [];
+    globalThis.traduzirLongo = async (t, alvo, motor) => { motores.push(motor); return t === "hello" ? "hello" : `[${alvo}] ${t}`; };
+    globalThis.audioDaMensagem = () => null;
+    globalThis.imagemDaMensagem = (m) => m.imagem || null;
+    const resposta = (alvo, guildId = "g-alheio", perms = () => true) => {
+      const r = { saida: null };
+      r.inter = { guildId, user: { id: "u5" }, targetMessage: alvo, memberPermissions: { has: perms },
+        editReply: async (m) => { r.saida = m; } };
+      return r;
+    };
+    USO_DE_FUNCAO.clear();
+    const t1 = resposta({});
+    await C.traduzirPelaConta(t1.inter, "olá a todos", "en");
+    ok("traduz o texto para a língua de quem pediu", t1.saida.embeds[0].description, "[en] olá a todos");
+    ok("com a minha chave sob o teto de quem pediu", motores[0], { tipo: "auto", conta: "u5" });
+    verdade("e o convite para trazer a CYRON vai junto para quem administra", t1.saida.components[0]?.components[0].url.includes("guild_id=g-alheio"));
+    ok("conta como uso pela conta, sem servidor", USO_DE_FUNCAO.get("traduzir-na-conta|"), 1);
+    const t2 = resposta({ imagem: { id: "i" } });
+    await C.traduzirPelaConta(t2.inter, "", "en");
+    verdade("imagem fora da CYRON: explica onde funciona, sem gastar a leitura de imagem",
+      /só onde a CYRON está/.test(t2.saida.embeds[0].title) && motores.length === 1);
+    const t3 = resposta({}, null);
+    await C.traduzirPelaConta(t3.inter, "hello", "en");
+    verdade("já está na língua dela: diz isso, e ensina o /mylanguage", /Já está em Inglês/.test(t3.saida.embeds[0].title) && t3.saida.components.length === 0);
+    ok("o nome da função no painel do dono", C.NOMES_DAS_FUNCOES["traduzir-na-conta"].startsWith("📲"), true);
+  } finally {
+    Object.assign(globalThis, antes);
+  }
+
+  /* ---- a apresentação e o roteiro ---- */
+  const { paginaDeApresentacao } = carregar(["paginaDeApresentacao"]);
+  verdade("com a conta ligada, a apresentação no privado diz que não precisa ser ADM",
+    /não precisa ser ADM/.test(paginaDeApresentacao(false, true).description) && !/não precisa ser ADM/.test(paginaDeApresentacao(false, false).description));
+
+  const limpo = semComentarios(fonte);
+  verdade("na partida: os comandos ficam só no servidor ANTES de a conta ligar, e o Translate vai para a conta depois",
+    /garantirComandosGlobais\(\)\)\s*\.then\(\(\) => ligarNaConta\(\)\)\s*\.then\(\(\) => comandosNaConta\(\)\)/.test(limpo));
+  verdade("o Translate fora da CYRON sai pelo caminho da conta, antes de imagem e áudio",
+    /await inter\.deferReply\(\{ flags: 64 \}\);\s*if \(foraDaCyron\(inter\)\) return traduzirPelaConta\(inter, texto, await lingua\(\)\);\s*if \(!texto && audioDaMensagem/.test(limpo));
+  verdade("a tradução num servidor da CYRON oferece a conta", /componentes: t \? ofertaDaConta\(inter\) : \[\]/.test(limpo));
+  verdade("o contador não procura servidor alheio no banco", /foraDaCyron\(inter\) \? null : inter\.guildId\)/.test(limpo));
+  verdade("responder traduz pela conta fora da CYRON", /async function responder[^]*?foraDaCyron\(inter\) \? motorDaConta\(inter\.user\.id\)/.test(limpo));
+  verdade("o roteiro da IA só fala da conta quando ela está ligada", /conta: client\.user && contaLigada \? linkDaConta\(\) : ""/.test(limpo));
+  verdade("o /admin global nasce só no servidor", /commands\.create\(\{ \.\.\.def, integrationTypes: \[0\] \}\)/.test(limpo));
+  const IA = carregar(["roteiroDaIA", "GOLPES_DO_MENU_DE_CONTEXTO", "primeiraFrase"]);
+  verdade("com a conta, a IA sabe o link e onde vale", IA.roteiroDaIA({ conta: "https://discord.com/oauth2/authorize?client_id=1&integration_type=1" }).includes("integration_type=1"));
+  verdade("sem ela, a IA não promete o que não existe", !/Instalada na conta/.test(IA.roteiroDaIA({})));
+
+  const site = readFileSync(`${aqui}/../cyron/index.html`, "utf8");
+  verdade("o site tem o botão de instalar na conta, com o link certo",
+    /class="bt bt-1 na-conta"/.test(site) && /&integration_type=1&scope=applications\.commands/.test(site));
+  const priv = readFileSync(`${aqui}/../cyron/privacidade.html`, "utf8");
+  verdade("a privacidade conta o que chega quando o Translate é usado pela conta", /A única exceção é a que você escolhe/.test(priv) && /The only exception is the one you choose/.test(priv));
+  const termos = readFileSync(`${aqui}/../cyron/termos.html`, "utf8");
+  verdade("os termos dizem que na conta qualquer pessoa instala", /Na sua conta, qualquer pessoa instala/.test(termos));
 }
 
 let resumiu = false;
