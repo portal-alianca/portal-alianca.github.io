@@ -11126,10 +11126,134 @@ async function textosNaLingua(base, idioma, guildId, memo) {
 }
 const DUELO_NA_LINGUA = new Map();
 
-/* A lingua da luta: a de quem comecou o duelo. */
+/* O DUELO NA LINGUA DE CADA SALA.
+
+   O duelo pode morar em varias mensagens ao mesmo tempo: a de origem e as
+   copias nas outras salas de idioma. Cada uma tem que sair na lingua da sala
+   dela -- o desafio que apareceu em portugues na sala -en foi o print do
+   Tiago. Entao o texto do duelo e' montado com MARCAS no lugar das palavras
+   (⟦tx:venceu⟧) e dos nomes das habilidades e curiosidades
+   (⟦h:alexandre:kit:basica:0⟧), e cada mensagem troca as marcas pela lingua
+   dela na hora de mostrar. O motor (usarHabilidade, passarVez) nem sabe
+   disso: ele so' monta frases com o que recebe.
+
+   Os nomes dos herois ficam como sao (Zumbi dos Palmares nao vira "zumbi"
+   no tradutor); o titulo, as habilidades e as curiosidades vao traduzidos,
+   uma vez por lingua, e dai' saem da memoria. O cartaz e' uma imagem so':
+   sai na lingua de quem desafiou. */
+const MARCAS_DO_DUELO = Object.fromEntries(Object.keys(DUELO_TEXTOS).map((k) => [k, `⟦tx:${k}⟧`]));
+
+/* O heroi com marcas no lugar do que muda de lingua. Puro. */
+function heroiMarcado(p) {
+  if (!p) return p;
+  const m = (campo) => `⟦h:${p.id}:${campo}⟧`;
+  return { ...p, titulo: m("titulo"),
+    kit: Object.fromEntries(ESPACOS_ORDEM.map((e) => [e, p.kit[e].map((h, i) => ({ ...h, nome: m(`kit:${e}:${i}`) }))])),
+    fatos: p.fatos.map((_, n) => m(`fato:${n}`)) };
+}
+
+/* Troca as marcas pelo texto da lingua L ({ tx, titulos, herois }). Sem L
+   (ou faltando um pedaco), o portugues original. Puro. */
+function desmarcar(texto, L) {
+  return String(texto).replace(/⟦(tx|h):([^⟧]+)⟧/g, (_, tipo, resto) => {
+    if (tipo === "tx") return L?.tx?.[resto] ?? DUELO_TEXTOS[resto] ?? "";
+    const [id, campo, a, b] = resto.split(":");
+    const original = personagemPorId(id);
+    const traduzido = L?.herois?.get?.(id) || null;
+    if (campo === "kit") return traduzido?.kit?.[a]?.[b]?.nome ?? original?.kit?.[a]?.[b]?.nome ?? "";
+    if (campo === "fato") return traduzido?.fatos?.[a] ?? original?.fatos?.[a] ?? "";
+    if (campo === "titulo") return L?.titulos?.[id] ?? original?.titulo ?? "";
+    return original?.[campo] ?? "";
+  });
+}
+
+/* A mesma troca numa mensagem inteira: texto, cartao e botoes, cada um
+   cortado de novo no tamanho que o Discord aceita. Puro. */
+function desmarcarCarga(carga, L) {
+  const d = (t) => desmarcar(t, L);
+  const novo = { ...carga };
+  if (typeof novo.content === "string") novo.content = d(novo.content).slice(0, 2000);
+  if (Array.isArray(novo.embeds)) {
+    novo.embeds = novo.embeds.map((e) => ({ ...e,
+      ...(e.title ? { title: d(e.title).slice(0, 256) } : {}),
+      ...(e.description ? { description: d(e.description).slice(0, 4096) } : {}),
+      ...(e.footer?.text ? { footer: { ...e.footer, text: d(e.footer.text).slice(0, 2048) } } : {}) }));
+  }
+  if (Array.isArray(novo.components)) {
+    novo.components = novo.components.map((linha) => ({ ...linha, components: (linha.components || []).map((c) => ({ ...c,
+      ...(c.label ? { label: d(c.label).slice(0, 80) } : {}),
+      ...(c.placeholder ? { placeholder: d(c.placeholder).slice(0, 150) } : {}),
+      ...(Array.isArray(c.options) ? { options: c.options.map((o) => ({ ...o, label: d(o.label).slice(0, 100),
+        ...(o.description ? { description: d(o.description).slice(0, 100) } : {}) })) } : {}) })) }));
+  }
+  return novo;
+}
+
+/* Os titulos dos doze herois numa lingua (a lista de escolha usa todos). */
+const TITULOS_NA_LINGUA = new Map();
+async function titulosNaLingua(idioma, guildId) {
+  if (!idioma || idioma === "pt") return {};
+  if (TITULOS_NA_LINGUA.has(idioma)) return TITULOS_NA_LINGUA.get(idioma);
+  const t = await traduzirTextos(PERSONAGENS.map((p) => p.titulo), idioma, guildId);
+  const pronto = Object.fromEntries(PERSONAGENS.map((p, i) => [p.id, t[i]]));
+  TITULOS_NA_LINGUA.set(idioma, pronto);
+  return pronto;
+}
+
+/* A lingua L de uma sala, para este duelo: as palavras, os titulos e os
+   herois que estao no duelo. Guardada no duelo; herois novos (escolhidos
+   depois) entram quando aparecem. */
+async function linguaDoDuelo(estado, idioma) {
+  const lingua = idioma || "pt";
+  estado.porLingua ??= new Map();
+  let L = estado.porLingua.get(lingua);
+  if (!L) {
+    const [tx, titulos] = await Promise.all([
+      textosNaLingua(DUELO_TEXTOS, lingua, estado.guildId, DUELO_NA_LINGUA).catch(() => DUELO_TEXTOS),
+      titulosNaLingua(lingua, estado.guildId).catch(() => ({}))]);
+    L = { tx, titulos, herois: new Map() };
+    estado.porLingua.set(lingua, L);
+  }
+  for (const id of Object.values(estado.escolhas || {})) {
+    const p = personagemPorId(id);
+    if (!p || L.herois.has(p.id)) continue;
+    L.herois.set(p.id, (await heroiNaLingua(p, lingua, estado.guildId, { texto: true }).catch(() => null))?.p || p);
+  }
+  return L;
+}
+
+/* Em que lingua mora cada mensagem do duelo. */
+function lembrarLingua(estado, m, idioma) {
+  if (m?.id) (estado.linguas ??= new Map()).set(m.id, idioma || "pt");
+}
+function idiomaDaMensagem(estado, m) {
+  return estado.linguas?.get(m?.id) || estado.idioma || "pt";
+}
+
+/* A mesma tela (com marcas) em todas as mensagens do duelo, cada uma na
+   lingua da sua sala. */
+async function editarTodas(estado, carga, mensagens = mensagensDoDuelo(estado)) {
+  return Promise.all(mensagens.map(async (m) => {
+    const L = await linguaDoDuelo(estado, idiomaDaMensagem(estado, m)).catch(() => null);
+    return m.edit(desmarcarCarga(carga, L)).catch((e) => console.error("duelo: nao editei:", e?.message || e));
+  }));
+}
+
+/* Aviso so' para quem clicou. Reconhece o clique ANTES de traduzir: o
+   Discord da' 3 segundos, e traduzir um aviso pela primeira vez numa lingua
+   pode passar disso ("Esta interacao falhou"). */
+async function avisarNoDuelo(inter, emoji, frase, depois = "") {
+  if (!inter.deferred && !inter.replied) await inter.deferReply({ flags: 64 }).catch(() => {});
+  const [t] = await nalingua(await linguaDe(inter), inter.guildId, frase).catch(() => [frase]);
+  return inter.editReply({ content: `${emoji} ${t}${depois}` }).catch(() => {});
+}
+
+/* A lingua da luta: a de quem comecou o duelo (vale para o cartaz). O texto
+   usa as marcas, e cada mensagem sai na lingua da sua sala. */
 async function prepararLingua(estado, idioma) {
   estado.idioma = idioma || "pt";
-  estado.tx = await textosNaLingua(DUELO_TEXTOS, estado.idioma, estado.guildId, DUELO_NA_LINGUA).catch(() => DUELO_TEXTOS);
+  estado.tx = MARCAS_DO_DUELO;
+  await linguaDoDuelo(estado, estado.idioma).catch(() => null);
   return estado.tx;
 }
 
@@ -11318,7 +11442,7 @@ function telaDoDuelo(estado, agora = Date.now()) {
 function escolhaDePersonagem(id, quem, tx = DUELO_TEXTOS) {
   return [{ type: 1, components: [{ type: 3, custom_id: `duelo:escolher:${id}`,
     placeholder: `⚔️ ${quem}: ${tx.escolhaSeu}`.slice(0, 150),
-    options: PERSONAGENS.map((p) => ({ label: `${p.nome} · ${p.titulo}`.slice(0, 100), value: p.id, emoji: { name: p.bandeira } })) }] }];
+    options: PERSONAGENS.map((p) => ({ label: `${p.nome} · ⟦h:${p.id}:titulo⟧`, value: p.id, emoji: { name: p.bandeira } })) }] }];
 }
 
 async function progressoDoDuelista(userId, personagemId) {
@@ -11612,16 +11736,17 @@ async function cliqueDoPainel(inter) {
   const heroi = personagemPorId(await heroiAtivo(eu));
   const estado = novoDuelo(inter, [{ userId: eu, nome }, null], { 0: heroi.id }, { fixo: { 0: true } });
   const tx = await prepararLingua(estado, ctx.idioma);
-  const heroiNome = (await heroiNaLingua(heroi, ctx.idioma, inter.guildId).catch(() => null))?.p.curto || heroi.curto;
   /* No canal, a' vista de todos. Sem permissao de mandar ali (app
      instalado so' pela pessoa), vai como resposta publica da interacao. */
-  const conteudo = { content: `⚔️ <@${eu}> ${tx.querDuelar} ${heroi.bandeira} **${heroiNome}**! ${tx.quemAceita}\n-# ${tx.abertoPor}`,
+  const conteudo = { content: `⚔️ <@${eu}> ${tx.querDuelar} ${heroi.bandeira} **${heroi.curto}**! ${tx.quemAceita}\n-# ${tx.abertoPor}`,
     components: [{ type: 1, components: [
       { type: 2, custom_id: `duelo:aceitar:${estado.id}`, style: 3, emoji: { name: "⚔️" }, label: String(tx.aceitar).slice(0, 80) },
       { type: 2, custom_id: `duelo:treino:${estado.id}`, style: 2, emoji: { name: "🤖" }, label: String(tx.treinar).slice(0, 80) },
     ] }], allowedMentions: { parse: [] } };
-  estado.msg = await inter.channel?.send(conteudo).catch(() => null) ||
-    await inter.followUp({ ...conteudo, flags: 0 }).catch((e) => { console.error("duelo: nao publiquei:", e?.message || e); return null; });
+  const naMinha = desmarcarCarga(conteudo, await linguaDoDuelo(estado, estado.idioma).catch(() => null));
+  estado.msg = await inter.channel?.send(naMinha).catch(() => null) ||
+    await inter.followUp({ ...naMinha, flags: 0 }).catch((e) => { console.error("duelo: nao publiquei:", e?.message || e); return null; });
+  lembrarLingua(estado, estado.msg, estado.idioma);
   if (!estado.msg) {
     cancelarDuelo(estado.id);
     return inter.editReply(await telaDoPainel(eu, "herois", idx, `⚠️ ${await fala("Não consegui mandar o desafio neste canal.")}`, ctx));
@@ -11631,8 +11756,10 @@ async function cliqueDoPainel(inter) {
   estado.convites = [];
   for (const sala of await salasIrmas(inter.guildId, estado.msg.channelId).catch(() => [])) {
     const c = inter.guild?.channels.cache.get(sala.canal_id) || await client.channels.fetch(sala.canal_id).catch(() => null);
-    const convite = typeof c?.send === "function" ? await c.send(conteudo).catch(() => null) : null;
-    if (convite) estado.convites.push(convite);
+    if (typeof c?.send !== "function") continue;
+    const L = await linguaDoDuelo(estado, sala.idioma).catch(() => null);
+    const convite = await c.send(desmarcarCarga(conteudo, L)).catch(() => null);
+    if (convite) { estado.convites.push(convite); lembrarLingua(estado, convite, sala.idioma); }
   }
   return inter.editReply(await telaDoPainel(eu, "herois", idx, `✅ ${await fala("Seu desafio está no canal!")}`, ctx));
 }
@@ -11678,18 +11805,22 @@ async function comandoDuelo(inter) {
   duelistaEm.set(inter.user.id, id);
   if (contraHumano) duelistaEm.set(alvo.id, id);
   estado.expira = setTimeout(() => cancelarDuelo(id, "⌛"), DUELO_ESCOLHA);
-  /* O Discord da' 3 s para responder: se a lingua ainda nao esta' na
-     memoria, o convite sai em portugues e a traducao chega a tempo da luta. */
+  /* O Discord da' 3 s para responder, e a lingua pode ainda nao estar na
+     memoria: primeiro uma linha curta (que ja' chama o desafiado), depois o
+     convite inteiro, na lingua de quem desafiou. */
   estado.idioma = idioma || "pt";
-  const tx = (estado.idioma === "pt" ? DUELO_TEXTOS : DUELO_NA_LINGUA.get(estado.idioma)) || DUELO_TEXTOS;
+  const tx = MARCAS_DO_DUELO;
   estado.tx = tx;
-  if (tx === DUELO_TEXTOS && estado.idioma !== "pt") prepararLingua(estado, estado.idioma).catch(() => {});
+  await inter.reply({ content: `⚔️ <@${inter.user.id}>${contraHumano ? ` → <@${alvo.id}>` : " → 🤖 CYRON"}`,
+    allowedMentions: { users: contraHumano ? [alvo.id] : [] } });
   const titulo = contraHumano ? `⚔️ <@${inter.user.id}> ${tx.desafiou} <@${alvo.id}> ${tx.paraDuelo}` : `⚔️ <@${inter.user.id}> ${tx.vaiTreinar} 🤖 CYRON`;
   const convite = { content: `${titulo}\n-# ${tx.cadaUm}`,
     components: escolhaDePersonagem(id, contraHumano ? "1 · 2" : (inter.member?.displayName || "🤖"), tx),
     allowedMentions: { users: contraHumano ? [alvo.id] : [] } };
-  await inter.reply(convite);
+  const naMinha = desmarcarCarga(convite, await linguaDoDuelo(estado, estado.idioma).catch(() => null));
+  await inter.editReply({ ...naMinha, allowedMentions: { parse: [] } }).catch(() => {});
   estado.msg = await inter.fetchReply().catch(() => null);
+  lembrarLingua(estado, estado.msg, estado.idioma);
   /* Quem foi desafiado le em outra sala de idioma: o desafio (e depois a
      luta) vai para la' tambem. */
   if (contraHumano) await levarDueloAQuemNaoVe(estado, inter.guild, [alvo.id], convite).catch(() => {});
@@ -11719,7 +11850,7 @@ async function salaDeQuemNaoVe(guild, canalDoDuelo, userId) {
   if (ve(canalDoDuelo)) return null;
   for (const sala of await salasIrmas(guild.id, canalDoDuelo.id).catch(() => [])) {
     const c = guild.channels.cache.get(sala.canal_id) || await client.channels.fetch(sala.canal_id).catch(() => null);
-    if (ve(c) && typeof c.send === "function") return c;
+    if (ve(c) && typeof c.send === "function") return { canal: c, idioma: sala.idioma || "pt" };
   }
   return null;
 }
@@ -11730,10 +11861,12 @@ async function levarDueloAQuemNaoVe(estado, guild, userIds, carga) {
   estado.copias ??= [];
   const ja = new Set([canal.id, ...estado.copias.map((m) => m.channelId)]);
   for (const id of userIds) {
-    const sala = await salaDeQuemNaoVe(guild, canal, id);
-    if (!sala || ja.has(sala.id)) continue;
-    const copia = await sala.send(carga).catch((e) => { console.error("duelo: nao levei a outra sala:", e?.message || e); return null; });
-    if (copia) { estado.copias.push(copia); ja.add(sala.id); }
+    const achada = await salaDeQuemNaoVe(guild, canal, id);
+    if (!achada || ja.has(achada.canal.id)) continue;
+    const L = await linguaDoDuelo(estado, achada.idioma).catch(() => null);
+    const copia = await achada.canal.send(desmarcarCarga(carga, L))
+      .catch((e) => { console.error("duelo: nao levei a outra sala:", e?.message || e); return null; });
+    if (copia) { estado.copias.push(copia); lembrarLingua(estado, copia, achada.idioma); ja.add(achada.canal.id); }
   }
 }
 
@@ -11744,9 +11877,7 @@ function cancelarDuelo(id, motivo = "") {
   for (const p of estado.pessoas) if (p?.userId && duelistaEm.get(p.userId) === id) duelistaEm.delete(p.userId);
   duelos.delete(id);
   if (motivo && estado.vencedor === null) {
-    for (const m of mensagensDoDuelo(estado)) {
-      m.edit({ content: `${motivo} ${(estado.tx || DUELO_TEXTOS).cancelado}`, components: [], embeds: [] }).catch(() => {});
-    }
+    editarTodas(estado, { content: `${motivo} ${(estado.tx || DUELO_TEXTOS).cancelado}`, components: [], embeds: [] }).catch(() => {});
   }
 }
 
@@ -11754,17 +11885,12 @@ async function cliqueDuelo(inter) {
   const [, acao, id, extra] = inter.customId.split(":");
   if (acao === "revanche") return cliqueRevanche(inter, id);
   const estado = duelos.get(id);
-  /* Clique de duelo tem pressa (3 s): a lingua so' e' buscada quando ha'
-     aviso para dar. */
-  const fala = async (t) => (await nalingua(await linguaDe(inter), inter.guildId, t))[0];
-  if (!estado) {
-    return inter.reply({ flags: 64, content: `⚔️ ${await fala("Esse duelo já acabou.")}` });
-  }
+  if (!estado) return avisarNoDuelo(inter, "⚔️", "Esse duelo já acabou.");
   /* Desafio aberto: o primeiro que aceitar entra na vaga. */
   if (acao === "aceitar") {
-    if (estado.pessoas[0].userId === inter.user.id) return inter.reply({ flags: 64, content: `⚔️ ${await fala("Esse desafio é seu: espere alguém aceitar.")}` });
-    if (estado.pessoas[1] || estado.comecando) return inter.reply({ flags: 64, content: `⚔️ ${await fala("Alguém já aceitou esse desafio.")}` });
-    if (duelistaEm.has(inter.user.id)) return inter.reply({ flags: 64, content: `⚔️ ${await fala("Você já está num duelo. Termine ele primeiro.")}` });
+    if (estado.pessoas[0].userId === inter.user.id) return avisarNoDuelo(inter, "⚔️", "Esse desafio é seu: espere alguém aceitar.");
+    if (estado.pessoas[1] || estado.comecando) return avisarNoDuelo(inter, "⚔️", "Alguém já aceitou esse desafio.");
+    if (duelistaEm.has(inter.user.id)) return avisarNoDuelo(inter, "⚔️", "Você já está num duelo. Termine ele primeiro.");
     estado.pessoas[1] = { userId: inter.user.id, nome: inter.member?.displayName || inter.user.username };
     duelistaEm.set(inter.user.id, id);
     clearTimeout(estado.expira);
@@ -11773,13 +11899,16 @@ async function cliqueDuelo(inter) {
     const tx = estado.tx || DUELO_TEXTOS;
     const carga = { content: `⚔️ <@${inter.user.id}> ${tx.aceitou} <@${estado.pessoas[0].userId}> (${h.bandeira} **${h.curto}**)!\n-# <@${inter.user.id}>, ${tx.escolhaAbaixo}`,
       components: escolhaDePersonagem(id, estado.pessoas[1].nome, tx), allowedMentions: { parse: [] } };
-    await inter.update(carga);
-    aceitoNaSala(estado, inter.message?.id, carga);
+    /* Reconhece primeiro; a tela nova vai para todas as mensagens, cada uma
+       na lingua da sua sala. */
+    await inter.deferUpdate();
+    aceitoNaSala(estado, inter.message?.id, null);
+    await editarTodas(estado, carga);
     return;
   }
   /* 🤖 no desafio: so' quem desafiou, e so' enquanto ninguem aceitou. */
   if (acao === "treino") {
-    if (estado.pessoas[0].userId !== inter.user.id) return inter.reply({ flags: 64, content: `🤖 ${await fala("Só quem desafiou pode treinar com a CYRON. Para duelar, toque em Aceitar.")}` });
+    if (estado.pessoas[0].userId !== inter.user.id) return avisarNoDuelo(inter, "🤖", "Só quem desafiou pode treinar com a CYRON. Para duelar, toque em Aceitar.");
     if (estado.pessoas[1] || estado.comecando) return inter.deferUpdate();
     const outros = PERSONAGENS.filter((x) => x.id !== estado.escolhas[0]);
     estado.pessoas[1] = { bot: true };
@@ -11787,23 +11916,24 @@ async function cliqueDuelo(inter) {
     estado.treino = true;
     estado.comecando = true;
     await inter.deferUpdate();
-    /* Treino e' so' de quem desafiou: os convites das outras salas saem. */
-    aceitoNaSala(estado, estado.msg?.id, null);
+    /* Treino e' so' de quem desafiou: o convite onde ele tocou fica (vira
+       copia, se for de outra sala); os das outras salas saem. */
+    aceitoNaSala(estado, inter.message?.id, null);
     return comecarDuelo(estado);
   }
   const indice = estado.pessoas.findIndex((p) => p?.userId === inter.user.id);
   if (indice < 0) {
-    return inter.reply({ flags: 64, content: `👀 ${await fala("Você está assistindo. Para duelar, use /duelo.")}` });
+    return avisarNoDuelo(inter, "👀", "Você está assistindo. Para duelar, use /duelo.");
   }
 
   if (acao === "escolher") {
     if (estado.lutadores) return inter.deferUpdate();
     /* Quem ja' veio do painel com o heroi escolhido nao troca aqui. */
-    if (estado.fixo?.[indice]) return inter.reply({ flags: 64, content: `⚔️ ${await fala("Seu herói já está escolhido. Agora é a vez do outro.")}` });
+    if (estado.fixo?.[indice]) return avisarNoDuelo(inter, "⚔️", "Seu herói já está escolhido. Agora é a vez do outro.");
     const personagem = personagemPorId(inter.values?.[0]);
     if (!personagem) return inter.deferUpdate();
     estado.escolhas[indice] = personagem.id;
-    await inter.reply({ flags: 64, content: `${personagem.bandeira} ${await fala("Personagem escolhido:")} **${personagem.nome}**` });
+    await avisarNoDuelo(inter, personagem.bandeira, "Personagem escolhido:", ` **${personagem.nome}**`);
     if (estado.pessoas[1]?.bot && estado.escolhas[1] === undefined) {
       const outros = PERSONAGENS.filter((p) => p.id !== personagem.id);
       estado.escolhas[1] = outros[Math.floor(Math.random() * outros.length)].id;
@@ -11819,7 +11949,7 @@ async function cliqueDuelo(inter) {
   if (acao === "hab") {
     if (!estado.lutadores || estado.vencedor !== null) return inter.deferUpdate();
     if (estado.vez !== indice) {
-      return inter.reply({ flags: 64, content: `⏳ ${await fala("Ainda não é a sua vez.")}` });
+      return avisarNoDuelo(inter, "⏳", "Ainda não é a sua vez.");
     }
     /* Clique duplo: a segunda jogada chega com o duelo ja' ocupado. */
     if (estado.ocupado) return inter.deferUpdate();
@@ -11852,9 +11982,9 @@ async function comecarDuelo(estado) {
   const lutadores = [];
   for (let i = 0; i < 2; i++) {
     const pessoa = estado.pessoas[i];
-    /* O heroi na lingua da luta: nome, habilidades e curiosidades. */
+    /* O heroi com MARCAS: cada mensagem troca pela lingua da sua sala. */
     const original = personagemPorId(estado.escolhas[i]);
-    const personagem = (await heroiNaLingua(original, estado.idioma, estado.guildId).catch(() => null))?.p || original;
+    const personagem = heroiMarcado(original);
     if (pessoa.bot) { lutadores.push(novoLutador({ userId: null, nome: "CYRON", personagem, nivel: 1, bot: true })); continue; }
     const prog = await progressoDoDuelista(pessoa.userId, personagem.id);
     const nivel = nivelDoPersonagem(prog.xp);
@@ -11864,6 +11994,14 @@ async function comecarDuelo(estado) {
     lutadores[i].derrotas = Number(prog.derrotas) || 0;
   }
   estado.lutadores = lutadores;
+  /* O cartaz e' um so': sai na lingua de quem desafiou. E as linguas de
+     todas as mensagens ficam prontas antes da primeira jogada. */
+  estado.heroisDaImagem = await Promise.all([0, 1].map(async (i) => {
+    const o = personagemPorId(estado.escolhas[i]);
+    return (await heroiNaLingua(o, estado.idioma, estado.guildId).catch(() => null))?.p || o;
+  }));
+  await Promise.all([...new Set(mensagensDoDuelo(estado).map((m) => idiomaDaMensagem(estado, m)))]
+    .map((l) => linguaDoDuelo(estado, l).catch(() => null)));
   const primeiro = Math.random() < 0.5 ? 0 : 1;
   estado.vez = 1 - primeiro;
   estado.historico.push(`🎲 ${lutadores[primeiro].p.curto} ${(estado.tx || DUELO_TEXTOS).comeca}`);
@@ -12033,9 +12171,12 @@ async function cartazDoDuelo(estado) {
   if (!sharp) return null;
   const [a, b] = estado.lutadores;
   if (!estado.base && !estado.fotos) estado.fotos = await fotosDosLutadores(estado);
+  /* A imagem e' uma so': as palavras e os herois na lingua de quem desafiou
+     (o texto das mensagens usa marcas, que nao servem para desenhar). */
+  const tx = (await linguaDoDuelo(estado, estado.idioma).catch(() => null))?.tx || DUELO_TEXTOS;
+  const [ha, hb] = estado.heroisDaImagem || [a.p, b.p];
   return await naFilaDeDesenho(async () => {
-    const tx = estado.tx || DUELO_TEXTOS;
-    estado.base ??= await desenharDuelo(sharp, a.p, b.p, RETRATOS_DO_DUELO, FONTE_DA_IMAGEM, [a.nivel, b.nivel], tx.nv);
+    estado.base ??= await desenharDuelo(sharp, ha, hb, RETRATOS_DO_DUELO, FONTE_DA_IMAGEM, [a.nivel, b.nivel], tx.nv);
     estado.selos ??= await selosDosJogadores(sharp, estado.fotos || []);
     return await desenharQuadroDoDuelo(sharp, estado.base, estado.lutadores, estado.vez, estado.vencedor, FONTE_DA_IMAGEM,
       String(tx.cartazVenceu).toLocaleUpperCase(), estado.selos);
@@ -12053,8 +12194,7 @@ async function editarDuelo(estado) {
   const anexo = cartaz ? { files: [{ attachment: cartaz, name: "duelo.jpg" }], attachments: [] } : { attachments: [] };
   /* A tela vai para a mensagem do duelo e para as copias nas outras salas
      de idioma (ver levarDueloAQuemNaoVe). */
-  return await Promise.all(mensagensDoDuelo(estado).map((m) => m.edit({ content: "", ...telaDoDuelo(estado), ...anexo })
-    .catch((e) => console.error("duelo: nao editei:", e?.message || e))));
+  return await editarTodas(estado, { content: "", ...telaDoDuelo(estado), ...anexo });
 }
 
 /* A FICHA DO PERSONAGEM (/codex personagem): um pergaminho com o retrato,
@@ -12113,8 +12253,10 @@ async function traduzirTextos(textos, idioma, guildId) {
 
 /* O heroi e os rotulos na lingua do card. Guardado por lingua e heroi. */
 const HEROIS_NA_LINGUA = new Map();
-async function heroiNaLingua(p, idioma, guildId) {
-  const lingua = linguaDoCard(idioma);
+async function heroiNaLingua(p, idioma, guildId, { texto = false } = {}) {
+  /* Texto do Discord desenha qualquer escrita: la' vale a lingua de verdade.
+     O card (imagem) cai no ingles quando a fonte nao tem as letras. */
+  const lingua = texto ? (idioma || "pt") : linguaDoCard(idioma);
   const virgula = p.epoca.lastIndexOf(",");
   const base = { ...p, lugar: virgula > 0 ? p.epoca.slice(0, virgula) : p.epoca, quando: virgula > 0 ? p.epoca.slice(virgula + 1).trim() : "",
     kit: Object.fromEntries(Object.entries(p.kit).map(([e, habs]) => [e, habs.map((h) => ({ ...h, desc: descricaoDaHabilidade(h) }))])) };
@@ -12489,7 +12631,7 @@ async function terminarDuelo(estado) {
   estado.revancheAte = Date.now() + DUELO_REVANCHE;
   revanches.set(estado.id, { pessoas: estado.pessoas, escolhas: { ...estado.escolhas }, treino: estado.treino,
     idioma: estado.idioma, tx: estado.tx, guildId: estado.guildId, ate: estado.revancheAte, querem: new Set(), msg: estado.msg,
-    msgs: mensagensDoDuelo(estado) });
+    msgs: mensagensDoDuelo(estado), porLingua: estado.porLingua, linguas: estado.linguas });
   for (const [id, r] of revanches) if (r.ate < Date.now()) revanches.delete(id);
   await editarDuelo(estado);
   estado.base = null;
@@ -12506,27 +12648,28 @@ const revanches = new Map();   // id do duelo que acabou -> como recomecar
 
 async function cliqueRevanche(inter, id) {
   const r = revanches.get(id);
-  const fala = async (t) => (await nalingua(await linguaDe(inter), inter.guildId, t))[0];
   if (!r || r.ate < Date.now()) {
     revanches.delete(id);
-    return inter.reply({ flags: 64, content: `🔁 ${await fala("A revanche expirou. Use /duelo para um novo duelo.")}` });
+    return avisarNoDuelo(inter, "🔁", "A revanche expirou. Use /duelo para um novo duelo.");
   }
   const eu = inter.user.id;
-  if (!r.pessoas.some((p) => p?.userId === eu)) return inter.reply({ flags: 64, content: `👀 ${await fala("Só quem duelou pode pedir revanche.")}` });
-  if (duelistaEm.has(eu)) return inter.reply({ flags: 64, content: `⚔️ ${await fala("Você já está num duelo. Termine ele primeiro.")}` });
+  if (!r.pessoas.some((p) => p?.userId === eu)) return avisarNoDuelo(inter, "👀", "Só quem duelou pode pedir revanche.");
+  if (duelistaEm.has(eu)) return avisarNoDuelo(inter, "⚔️", "Você já está num duelo. Termine ele primeiro.");
   const humanos = r.pessoas.filter((p) => p?.userId);
   r.querem.add(eu);
   if (humanos.some((p) => !r.querem.has(p.userId))) {
     const outro = humanos.find((p) => !r.querem.has(p.userId));
     const pedido = { content: `🔁 <@${eu}> ${r.tx?.querRevanche || DUELO_TEXTOS.querRevanche} <@${outro.userId}>, ${r.tx?.toqueAceitar || DUELO_TEXTOS.toqueAceitar}`,
       allowedMentions: { users: [outro.userId] } };
-    await inter.reply(pedido);
+    /* Na lingua de cada sala (as linguas do duelo ja' estao na memoria). */
+    const naSala = (m) => desmarcarCarga(pedido, r.porLingua?.get(r.linguas?.get(m?.id) || r.idioma));
+    await inter.reply(naSala(inter.message));
     /* O outro pode estar lendo a copia, em outra sala de idioma: o pedido vai
        para la' tambem. */
-    for (const m of r.msgs || []) if (m.channelId !== inter.channelId) m.channel?.send(pedido).catch(() => {});
+    for (const m of r.msgs || []) if (m.channelId !== inter.channelId) m.channel?.send(naSala(m)).catch(() => {});
     return;
   }
-  if (humanos.some((p) => duelistaEm.has(p.userId))) return inter.reply({ flags: 64, content: `⚔️ ${await fala("A outra pessoa já está em outro duelo.")}` });
+  if (humanos.some((p) => duelistaEm.has(p.userId))) return avisarNoDuelo(inter, "⚔️", "A outra pessoa já está em outro duelo.");
   revanches.delete(id);
   await inter.update({ components: [] }).catch(() => inter.deferUpdate().catch(() => {}));
   for (const m of r.msgs || []) if (m.id !== inter.message?.id) m.edit({ components: [] }).catch(() => {});
@@ -12537,11 +12680,13 @@ async function cliqueRevanche(inter, id) {
   }
   const estado = novoDuelo(inter, r.pessoas.map((p) => (p?.bot ? { bot: true } : { ...p })), escolhas, { treino: r.treino, fixo: { 0: true, 1: true } });
   estado.idioma = r.idioma || "pt";
-  estado.tx = r.tx || DUELO_TEXTOS;
+  estado.tx = MARCAS_DO_DUELO;
+  estado.porLingua = r.porLingua;
   estado.msg = await inter.channel?.send({ content: `🔁 ${humanos.map((p) => `<@${p.userId}>`).join(" × ")}${r.treino ? " × 🤖 CYRON" : ""}`,
     allowedMentions: { parse: [] } }).catch(() => null) ||
     await inter.followUp({ content: "🔁", flags: 0 }).catch(() => null);
   if (!estado.msg) return cancelarDuelo(estado.id);
+  lembrarLingua(estado, estado.msg, r.linguas?.get(inter.message?.id) || r.idioma);
   await levarDueloAQuemNaoVe(estado, inter.guild, humanos.map((p) => p.userId),
     { content: `🔁 ${humanos.map((p) => `<@${p.userId}>`).join(" × ")}`, allowedMentions: { parse: [] } }).catch(() => {});
   estado.comecando = true;
