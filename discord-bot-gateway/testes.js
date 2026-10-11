@@ -12709,7 +12709,7 @@ function conferirCartao(onde, embed, componentes = []) {
       "MOD_PADRAO", "DOMINIOS_OFICIAIS", "MARCAS_IMITADAS", "ISCA_DE_GOLPE", "SPAM_JANELA", "SPAM_CANAIS", "FLOOD_JANELA",
       "FLOOD_MENSAGENS", "MENCOES_EM_MASSA", "CASTIGO_GOLPE", "CASTIGO_SPAM", "falasRecentes", "apagadasPorMim",
       "configDaModeracao", "dominiosDoTexto", "dominioLido", "pareceGolpe", "anotarESpam", "ehDaModeracao", "registrar",
-      "moderarMensagem", "linhaDeEntrada", "comandoModeracao"]);
+      "moderarMensagem", "linhaDeEntrada", "salvarModeracao", "faltasDaModeracao", "telaDaModeracao", "comandoModeracao", "cliqueModeracao"]);
 
     /* ---- que cargo pode ir no painel ---- */
     const perms = (...quais) => ({ has: (p) => quais.includes(p) });
@@ -12876,6 +12876,33 @@ function conferirCartao(onde, embed, componentes = []) {
     await C.comandoModeracao(pedido(true, { "anti-golpe": false, "desligar-registro": true }));
     ok("tudo desligado: o ajuste some", marcas["moderacao:g3"], null);
 
+    /* ---- os botões da tela ---- */
+    const tela = C.telaDaModeracao({ registro: null, golpe: true, spam: false });
+    const [linha1, linha2] = tela.components;
+    ok("botões de ligar e desligar na própria tela", linha1.components.map((b) => b.custom_id), ["mod:golpe", "mod:spam"]);
+    ok("ligado é verde, desligado é cinza", linha1.components.map((b) => b.style), [3, 2]);
+    verdade("e uma lista de canais para ligar o registro", linha2.components[0].type === 8 && linha2.components[0].custom_id === "mod:registro" &&
+      JSON.stringify(linha2.components[0].channel_types) === "[0,5]" && !linha2.components[0].default_values);
+    const comRegistro = C.telaDaModeracao({ registro: "log1", golpe: false, spam: false });
+    verdade("com registro: o botão de desligar aparece e a lista já mostra o canal",
+      comRegistro.components[0].components.some((b) => b.custom_id === "mod:sem-registro") &&
+      comRegistro.components[1].components[0].default_values[0].id === "log1");
+    const toques = [];
+    const toque = (customId, pode = true, values = undefined) => ({ guildId: "g4", customId, values,
+      guild: { members: { me: { permissions: perms(PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ModerateMembers) } }, channels: { cache: new Map() } },
+      memberPermissions: { has: () => pode }, reply: async (m) => { toques.push(["reply", m]); },
+      update: async (m) => { toques.push(["update", m]); }, deferUpdate: async () => { toques.push(["nada"]); } });
+    await C.cliqueModeracao(toque("mod:golpe", false));
+    verdade("tocar sem ser ADM não muda nada", toques[0][0] === "reply" && marcas["moderacao:g4"] === undefined);
+    await C.cliqueModeracao(toque("mod:golpe"));
+    verdade("tocar liga, e a mesma tela se atualiza", JSON.parse(marcas["moderacao:g4"]).golpe === true && toques[1][0] === "update" &&
+      toques[1][1].components[0].components[0].style === 3);
+    await C.cliqueModeracao(toque("mod:registro", true, ["canal9"]));
+    ok("escolher o canal liga o registro", JSON.parse(marcas["moderacao:g4"]).registro, "canal9");
+    await C.cliqueModeracao(toque("mod:golpe"));
+    await C.cliqueModeracao(toque("mod:sem-registro"));
+    ok("desligando tudo pelos botões, o ajuste some", marcas["moderacao:g4"], null);
+
     const agora = Date.UTC(2026, 9, 11);
     verdade("conta nova (menos de 7 dias) ganha ⚠️", C.linhaDeEntrada({ id: "1", username: "x", createdTimestamp: agora - 86400000 }, agora).includes("⚠️") &&
       !C.linhaDeEntrada({ id: "1", username: "x", createdTimestamp: agora - 30 * 86400000 }, agora).includes("⚠️"));
@@ -12892,6 +12919,7 @@ function conferirCartao(onde, embed, componentes = []) {
   const limpo = semComentarios(fonte);
   verdade("a moderação roda antes de tudo (golpe não chega a ser traduzido)",
     /if \(msg\.author\.bot\) return;\s*if \(await moderarMensagem\(msg\)[^\n]*\)\) return;\s*const servidor = await servidorDoGuild/.test(limpo));
+  verdade("os botões da moderação têm rota", /isChannelSelectMenu\(\)\) && inter\.customId\.startsWith\("mod:"\)\)\s*\{\s*return await cliqueModeracao\(inter\)/.test(limpo));
   verdade("os cliques têm rota", /isRoleSelectMenu\(\) && inter\.customId\.startsWith\("cargos:"\)/.test(limpo) &&
     /isButton\(\) && inter\.customId\.startsWith\("cargo:"\)/.test(limpo));
   verdade("o registro ouve apagadas, editadas, entradas e saídas", ["messageDelete", "messageUpdate", "guildMemberAdd", "guildMemberRemove"]
