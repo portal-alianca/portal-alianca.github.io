@@ -7703,9 +7703,9 @@ function textoDaDuracao(seg) {
    pode ter ficado fora varias repeticoes: quem chega atrasado pula todas.
 
    Com duracao, o "repete a cada" conta de quando o evento FECHA, como o
-   contador do jogo: o Urso dura 30m e volta 47h depois de fechar, entao de
-   um inicio ao outro sao 47h30m. Evento sem duracao conta de inicio a
-   inicio, como sempre contou. */
+   contador do jogo: a recarga do Urso so' comeca quando ele fecha (o preset
+   URSO, la' embaixo, da' as 48h de inicio a inicio). Evento sem duracao
+   conta de inicio a inicio, como sempre contou. */
 function proximaVez(quandoMs, repetirMin, agora = Date.now(), duracaoSeg = 0) {
   const passo = Number(repetirMin) > 0 ? Number(repetirMin) * 60000 + (Number(duracaoSeg) || 0) * 1000 : 0;
   if (!(passo > 0)) return null;
@@ -8084,6 +8084,17 @@ function avisoVenceu(m, agora = Date.now()) {
   return agora - Number(m?.createdTimestamp || agora) > AVISO_FICA;
 }
 
+/* O "comeca em X min" de uma hora que nenhum evento tem mais: o evento mudou
+   de hora depois que o lembrete saiu. Ficar na sala dizendo "07:00" quando a
+   armadilha e' as 08:30 e' pior que nao avisar. So' o ⏰: o "Comecou!" diz o
+   que ja' aconteceu, e sai sozinho quando o evento fecha. */
+function avisoDeHoraVelha(m, eventos) {
+  if (!String(m?.embeds?.[0]?.title || "").startsWith("⏰")) return false;
+  const hora = String(m?.content || "").match(/<t:(\d+):t>/);
+  if (!hora) return false;
+  return !eventos.some((ev) => Math.floor(new Date(ev.quando).getTime() / 1000) === Number(hora[1]));
+}
+
 function ehAvisoDeInicio(m) {
   return m?.author?.id === client.user?.id && !eventoDoCartao(m) &&
     String(m?.content || "").startsWith("🔔 **");
@@ -8098,7 +8109,7 @@ async function pintarSala(canal, eventos, cargaDe, aoPostar = null, agora = Date
   for (const m of [...(recentes?.values?.() || [])].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))) {
     if (m.author?.id !== client.user?.id) continue;
     if (ehAvisoDeInicio(m)) {
-      if (avisoVenceu(m, agora)) await m.delete().catch(() => {});
+      if (avisoVenceu(m, agora) || avisoDeHoraVelha(m, eventos)) await m.delete().catch(() => {});
       continue;
     }
     const id = eventoDoCartao(m);
@@ -8421,10 +8432,15 @@ async function nalingua(idioma, guildId, ...frases) {
 }
 
 /* As opcoes que viraram LISTA. Escolher numa lista nao tem "nao entendi". */
-/* Sem o 47h30m de antes: o Urso agora e' 47h DEPOIS DE FECHAR, com 30m de
-   duracao -- a opcao "urso" da lista marca os dois de uma vez. */
+/* O Urso volta 48h depois de COMECAR: 30m de urso, 47h de recarga e mais 30m
+   ate' o proximo comecar. Antes era 47h depois de fechar (47h30m de inicio a
+   inicio), e a agenda adiantava 30m a cada volta: em 6 dias, o aviso chegou
+   1h30 antes da armadilha (no jogo: recarga acabando 11:00, urso as 11:30).
+   Como o repetir conta de quando FECHA, sao 47h30m depois dos 30m de urso --
+   a opcao "urso" da lista marca os dois de uma vez. */
 const REPETICOES = [0, 720, 1440, 2880, 10080];
-const URSO = { repetir: 2820, duracao: 1800 };
+const URSO = { repetir: 2850, duracao: 1800 };
+const ROTULO_DO_URSO = "🐻 Urso · 48h (30m + 47h + 30m)";
 function ehUrso(p) {
   return p.repetir === URSO.repetir && p.duracao === URSO.duracao;
 }
@@ -8499,7 +8515,7 @@ function sugestoesDeTempo(digitado, qual) {
     ? { name: v ? `⏱️ ${textoDaDuracao(v)}` : "⏱️ —", value: v ? textoDaDuracao(v) : "0" }
     : { name: rotuloDaRepeticao(v), value: v ? textoDaRepeticao(v) : "0" });
   const comuns = dur ? [900, 1800, 3600, 7200, 86400].map(opcao)
-    : [...REPETICOES.map(opcao), { name: "🐻 47h + ⏱️ 30m", value: "urso" }];
+    : [...REPETICOES.map(opcao), { name: ROTULO_DO_URSO, value: "urso" }];
   const fora = lido !== null && lido !== undefined && t ? [opcao(lido)] : [];
   for (const o of comuns) if (!fora.some((f) => f.value === o.value)) fora.push(o);
   return fora.slice(0, 25);
@@ -8791,7 +8807,7 @@ async function painelDoRascunho(token, p, idioma, agora = Date.now()) {
   const reps = REPETICOES.includes(p.repetir) || ehUrso(p) ? REPETICOES : [...REPETICOES, p.repetir];
   const opcoesDeRepetir = [
     ...reps.map((r) => ({ label: rotuloDaRepeticao(r), value: String(r), default: r === p.repetir && !ehUrso(p) })),
-    { label: "🐻 47h + ⏱️ 30m", value: "urso", default: ehUrso(p) },
+    { label: ROTULO_DO_URSO, value: "urso", default: ehUrso(p) },
   ];
 
   return {
