@@ -122,6 +122,11 @@ jobs:
               "top_config", "top_missoes", "top_loja", "top_dicas",
               "top_eventos", "top_tutorial_passos", "top_inscricoes",
               "top_membros", "top_convites",
+              # --- o que cada jogador conquistou: nível, heróis, cartas, sequência ---
+              "cyron_xp", "cyron_duelo_personagem", "cyron_colecao", "cyron_diario",
+              # --- prêmio, sorteio em andamento, cota gasta, fuso de cada um ---
+              "cyron_indicacao", "cyron_sorteio", "cyron_sorteio_entrada",
+              "cyron_uso_audio", "cyron_uso_recurso", "cyron_fuso", "cyron_suporte",
           ]
 
           # NAO entram, e o motivo importa:
@@ -130,6 +135,7 @@ jobs:
           #     apaga o que passa dele. Copiar aqui esticaria esse prazo por
           #     fora, sem ninguem ter combinado.
           #   discord_traducao_cache  -> cache; refaz-se sozinho.
+          #   cyron_erro  -> registro de erro; o que importa dele vira commit.
           #   login_ponte, discord_link_codes, discord_sessions -> credencial
           #     de passagem, de vida curta. Guardar so' aumenta o estrago de
           #     um vazamento.

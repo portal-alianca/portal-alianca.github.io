@@ -5107,8 +5107,16 @@ function conferirCartao(onde, embed, componentes = []) {
     m.proximaVez(T0, 1440, T0 + 3 * 24 * H + 5 * 60000), T0 + 4 * 24 * H);
   ok("o Urso anda 47h30m", m.proximaVez(T0, 2850, T0 + 1000), T0 + 2850 * 60000);
   ok("não repete: nada", m.proximaVez(T0, 0, T0), null);
-  ok("com duração, o repetir conta de quando FECHA: Urso 30m + 47h = 47h30m de início a início",
+  ok("com duração, o repetir conta de quando FECHA: 30m + 47h = 47h30m de início a início",
     m.proximaVez(T0, 2820, T0 + 1000, 1800), T0 + 2850 * 60000);
+  /* O caso que adiantou 1h30 em 6 dias: no jogo, a Armadilha 1 voltou as
+     11:30 de 14/10, 48h depois das 11:30 de 12/10 (recarga acabando 11:00). */
+  const presetDoUrso = carregar(["URSO"]).URSO;
+  const doze = Date.UTC(2026, 9, 12, 11, 30);
+  ok("o Urso volta 48h depois de começar, como no jogo",
+    m.proximaVez(doze, presetDoUrso.repetir, doze + 1000, presetDoUrso.duracao), Date.UTC(2026, 9, 14, 11, 30));
+  ok("e três voltas depois continua na mesma hora",
+    m.proximaVez(doze, presetDoUrso.repetir, doze + 5 * 24 * H, presetDoUrso.duracao), Date.UTC(2026, 9, 18, 11, 30));
   ok("duração quebrada entra inteira, até o segundo",
     m.proximaVez(T0, 1440, T0 + 1000, 6207), T0 + 24 * H + 6207 * 1000);
   ok("sem repetir, duração não inventa repetição", m.proximaVez(T0, 0, T0, 1800), null);
@@ -5242,7 +5250,7 @@ function conferirCartao(onde, embed, componentes = []) {
 /* ============ o painel de seletores do /evento ============ */
 {
   const m = carregar(["EVENTO_MAX", "LEMBRETES", "REPETICOES", "TODOS_FUSOS", "MINUTOS_DOS_FUSOS", "fusoDoTexto", "rotuloDoFuso", "sugestoesDeFuso", "fusoDoCampo", "textoDaRepeticao",
-    "rotuloDaRepeticao", "textoDaDuracao", "URSO", "ehUrso", "linhaDoTempo", "textoDoFuso", "partesNoFuso", "instanteDe", "horarioInicial", "opcoesDoDia",
+    "rotuloDaRepeticao", "textoDaDuracao", "URSO", "ROTULO_DO_URSO", "ehUrso", "linhaDoTempo", "textoDoFuso", "partesNoFuso", "instanteDe", "horarioInicial", "opcoesDoDia",
     "nalingua", "painelDoRascunho"]);
   globalThis.COR = 0xF5A623;
   globalThis.traduzirEmbed = async (e) => e;
@@ -5270,9 +5278,11 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o Urso aparece como 🐻 47h30m", painel.components[3].components[0].options.some((o) => o.default && o.label === "🐻 47h30m"));
   ok("a última fileira tem 5 botões, o máximo do Discord", painel.components[4].components.length, 5);
   verdade("o ⏱️ da duração está na fileira", painel.components[4].components.some((b) => b.custom_id === "evsel:tempo:abc"));
-  const comUrso = await m.painelDoRascunho("abc", { ...p, repetir: 2820, duracao: 1800 }, "pt", AGORA);
+  const comUrso = await m.painelDoRascunho("abc", { ...p, repetir: m.URSO.repetir, duracao: m.URSO.duracao }, "pt", AGORA);
   const repUrso = comUrso.components[3].components[0].options;
-  verdade("o 🐻 da lista marca 47h + 30m", repUrso.some((o) => o.default && o.value === "urso"));
+  verdade("o 🐻 da lista marca o Urso (30m + 47h30m)", repUrso.some((o) => o.default && o.value === "urso"));
+  verdade("e o rótulo diz o ritmo do jogo: 48h", repUrso.some((o) => o.value === "urso" && o.label === m.ROTULO_DO_URSO && /48h/.test(o.label)));
+  verdade("o Urso antigo (47h depois de fechar) não passa mais por Urso", !m.ehUrso({ repetir: 2820, duracao: 1800 }));
   ok("e só ele marcado", repUrso.filter((o) => o.default).length, 1);
   verdade("o botão mostra a duração", comUrso.components[4].components.find((b) => b.custom_id === "evsel:tempo:abc").label === "30m");
   verdade("e a linha do painel também", comUrso.embeds[0].description.includes("⏱️ 30m"));
@@ -5490,7 +5500,7 @@ function conferirCartao(onde, embed, componentes = []) {
   globalThis.motorDe = () => ({ tipo: "auto" });
   globalThis.client = { user: { id: "bot" } };
   const m = carregar(["EVENTO_SOBREVIVE", "TIPO_AGENDA", "ROTULO_INSCREVER", "textoDaRepeticao",
-    "CRONOMETRO_FINO", "cronometro", "PALAVRAS_DO_CARTAO", "COR_PERTO", "COR_COMECOU", "PERTO", "corDoEvento", "nomeLimpo", "textoDaDuracao", "cartaoDoEvento", "botoesDoEvento", "eventoDoCartao", "traducoesDaAgenda", "traduzirPara", "palavrasNaLingua", "cargaNaLingua", "AVISO_FICA", "emOrdem", "avisoVenceu", "ehAvisoDeInicio", "pintarSala", "avisoDeInicio",
+    "CRONOMETRO_FINO", "cronometro", "PALAVRAS_DO_CARTAO", "COR_PERTO", "COR_COMECOU", "PERTO", "corDoEvento", "nomeLimpo", "textoDaDuracao", "cartaoDoEvento", "botoesDoEvento", "eventoDoCartao", "traducoesDaAgenda", "traduzirPara", "palavrasNaLingua", "cargaNaLingua", "AVISO_FICA", "emOrdem", "avisoVenceu", "avisoDeHoraVelha", "ehAvisoDeInicio", "pintarSala", "avisoDeInicio",
     "ultimaCargaDaCopia", "apagarAvisosDeAntes", "desenharNasCopias"]);
   const AGORA = Date.UTC(2026, 9, 2, 12);
   const ev = { id: 7, titulo: "Armadilha de Caça 1", detalhes: "Cavalaria", quando: new Date(AGORA + 3600000).toISOString() };
@@ -5590,6 +5600,21 @@ function conferirCartao(onde, embed, componentes = []) {
     { ev, aviso: { content: "🔔 **Armadilha** <@1>", allowedMentions: { parse: [], users: ["1"], roles: [] } } }, AGORA);
   verdade("na hora, o aviso de antes sai e o Começou! entra", naHora.apagados.includes("970") &&
     /Começou/.test(naHora.enviados.at(-1)?.embeds?.[0]?.description));
+
+  /* O evento mudou de hora depois do lembrete (a armadilha passou de 07:00
+     para 08:30): o "começa em 14 min" das 07:00 sai na próxima pintura, sem
+     esperar meia hora, e o lembrete da hora certa fica. */
+  const s = Math.floor(new Date(ev.quando).getTime() / 1000);
+  const lembrete = (id, t) => ({ id, author: { id: "bot" }, components: [], createdTimestamp: AGORA - 5 * 60000,
+    content: `🔔 **Armadilha** · <t:${t}:t>`, embeds: [{ title: "⏰ Armadilha", description: "**Começa em 14 min**" }] });
+  const mudou = sala("pt", [cartaoDe("980", 7), lembrete("981", s - 5400), lembrete("982", s)]);
+  globalThis.salasDaAgenda = async () => [{ canal: mudou.canal, idioma: "pt" }];
+  await m.desenharNasCopias({}, { id: "s" }, [ev], null, AGORA);
+  ok("o lembrete da hora velha sai na hora; o da hora certa fica", mudou.apagados, ["981"]);
+  verdade("o Começou! não é tratado como hora velha",
+    !m.avisoDeHoraVelha({ content: `🔔 **Armadilha** · <t:${s - 5400}:t>`, embeds: [{ title: "🔴 Armadilha" }] }, [ev]));
+  verdade("lembrete sem hora escrita não é apagado por isso",
+    !m.avisoDeHoraVelha({ content: "🔔 **Armadilha**", embeds: [{ title: "⏰ Armadilha" }] }, [ev]));
 }
 
 {
@@ -10448,6 +10473,11 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o cliente pagante entra", copiadas.includes("cyron_servidor"));
   verdade("os ajustes vivos entram", copiadas.includes("cyron_ajuste"));
   verdade("os comandos escritos pelo dono entram", copiadas.includes("cyron_comando"));
+  /* As tabelas que nasceram depois do backup ficaram de fora dele por um mês:
+     nível, heróis, cartas e indicação de ninguém tinham cópia. */
+  for (const conquista of ["cyron_xp", "cyron_duelo_personagem", "cyron_colecao", "cyron_diario", "cyron_indicacao"]) {
+    verdade(`o que o jogador conquistou entra (${conquista})`, copiadas.includes(conquista));
+  }
 
   /* Estas são as que NÃO podem entrar, cada uma pelo seu motivo. */
   for (const proibida of ["discord_fala_espelhada", "discord_msg_traducao"]) {
