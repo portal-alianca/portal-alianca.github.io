@@ -68,8 +68,15 @@ jobs:
           try:
               chave = api("GET", "/public-key")
           except urllib.error.HTTPError as e:
-              print(f"::error::O token não abriu os segredos do HiCyron (HTTP {e.code}). "
-                    "Ele precisa de 'Secrets: Read and write' no hicyron.github.io.")
+              # A resposta do GitHub diz o PORQUÊ (aprovação pendente, permissão
+              # que falta...) e não carrega segredo nenhum: vai para o log.
+              try:
+                  motivo = json.loads(e.read() or b"{}").get("message", "")
+              except Exception:
+                  motivo = ""
+              precisa = e.headers.get("X-Accepted-GitHub-Permissions", "")
+              print(f"::error::O token não abriu os segredos do HiCyron (HTTP {e.code}): {motivo}"
+                    + (f" | permissão que a chamada aceita: {precisa}" if precisa else ""))
               sys.exit(1)
           caixa = public.SealedBox(public.PublicKey(chave["key"].encode(), encoding.Base64Encoder()))
 
