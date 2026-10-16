@@ -1,0 +1,88 @@
+# Copia, UMA vez, os segredos da CYRON deste repositório para o HiCyron.
+#
+# A CYRON mudou para HiCyron/hicyron.github.io, e os robôs de lá precisam
+# dos mesmos segredos. O GitHub não deixa ninguém ler um segredo, nem pela
+# tela nem pela API: só um robô que roda AQUI enxerga os valores. Este os
+# cifra com a chave pública do HiCyron (é o que a API de segredos exige) e
+# grava lá. Nenhum valor aparece no log, só os nomes.
+#
+# Precisa do segredo COPIAR_SEGREDOS neste repositório: um token do GitHub
+# com "Secrets: Read and write" no HiCyron/hicyron.github.io. Sem ele, avisa
+# e sai verde, sem copiar nada.
+#
+# TEMPORÁRIO: depois de copiar, este arquivo sai do repositório e o token é
+# apagado.
+
+name: Copiar segredos para o HiCyron
+
+on:
+  push:
+    branches: [claude/continue-previous-chat-zho3ha]
+    paths: [".github/workflows/copiar-segredos.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  copiar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Copiar os segredos
+        env:
+          TOKEN: ${{ secrets.COPIAR_SEGREDOS }}
+          V_FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          V_DISCORD_WEBHOOK_ERROS: ${{ secrets.DISCORD_WEBHOOK_ERROS }}
+          V_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          V_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          V_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          V_BACKUP_FRASE_SECRETA: ${{ secrets.BACKUP_FRASE_SECRETA }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::Ainda falta o segredo COPIAR_SEGREDOS neste repositório; nada foi copiado."
+            exit 0
+          fi
+          pip install --quiet pynacl
+          # Heredoc com 'PY' entre aspas: apóstrofo e cifrão passam intactos.
+          cat > /tmp/copiar.py <<'PY'
+          import base64, json, os, sys, urllib.error, urllib.request
+          from nacl import encoding, public
+
+          DESTINO = "HiCyron/hicyron.github.io"
+          NOMES = ["FLY_API_TOKEN", "DISCORD_WEBHOOK_ERROS", "CLOUDFLARE_API_TOKEN",
+                   "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BACKUP_FRASE_SECRETA"]
+
+          def api(metodo, caminho, corpo=None):
+              pedido = urllib.request.Request(
+                  f"https://api.github.com/repos/{DESTINO}/actions/secrets{caminho}",
+                  method=metodo,
+                  data=json.dumps(corpo).encode() if corpo is not None else None,
+                  headers={"Authorization": "Bearer " + os.environ["TOKEN"],
+                           "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28"})
+              with urllib.request.urlopen(pedido, timeout=30) as r:
+                  texto = r.read()
+                  return json.loads(texto) if texto else {}
+
+          try:
+              chave = api("GET", "/public-key")
+          except urllib.error.HTTPError as e:
+              print(f"::error::O token não abriu os segredos do HiCyron (HTTP {e.code}). "
+                    "Ele precisa de 'Secrets: Read and write' no hicyron.github.io.")
+              sys.exit(1)
+          caixa = public.SealedBox(public.PublicKey(chave["key"].encode(), encoding.Base64Encoder()))
+
+          copiados = 0
+          for nome in NOMES:
+              valor = os.environ.get("V_" + nome, "")
+              if not valor:
+                  print(f"{nome}: não existe aqui, ficou de fora")
+                  continue
+              cifrado = base64.b64encode(caixa.encrypt(valor.encode())).decode()
+              api("PUT", f"/{nome}", {"encrypted_value": cifrado, "key_id": chave["key_id"]})
+              print(f"{nome}: copiado")
+              copiados += 1
+          print(f"{copiados} segredo(s) copiado(s) para {DESTINO}.")
+          PY
+          python3 /tmp/copiar.py
