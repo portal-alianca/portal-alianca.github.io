@@ -10473,6 +10473,11 @@ function conferirCartao(onde, embed, componentes = []) {
   verdade("o cliente pagante entra", copiadas.includes("cyron_servidor"));
   verdade("os ajustes vivos entram", copiadas.includes("cyron_ajuste"));
   verdade("os comandos escritos pelo dono entram", copiadas.includes("cyron_comando"));
+  /* As tabelas que nasceram depois do backup ficaram de fora dele por um mês:
+     nível, heróis, cartas e indicação de ninguém tinham cópia. */
+  for (const conquista of ["cyron_xp", "cyron_duelo_personagem", "cyron_colecao", "cyron_diario", "cyron_indicacao"]) {
+    verdade(`o que o jogador conquistou entra (${conquista})`, copiadas.includes(conquista));
+  }
 
   /* Estas são as que NÃO podem entrar, cada uma pelo seu motivo. */
   for (const proibida of ["discord_fala_espelhada", "discord_msg_traducao"]) {
